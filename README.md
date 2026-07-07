@@ -12,6 +12,44 @@ users — it's sideloaded via Xcode for one person's own finances. See
 [`docs/PROJECT_SPEC.md`](docs/PROJECT_SPEC.md) for the full product spec,
 including the core carry-forward mechanic and UX design.
 
+## Running locally
+
+**Prerequisites**: Xcode 16+ (iOS 17 SDK or later) and
+[XcodeGen](https://github.com/yonaskolb/XcodeGen):
+
+```
+brew install xcodegen
+```
+
+**Open in Xcode**:
+
+```
+git clone https://github.com/JohnPease/reservoir.git
+cd reservoir
+xcodegen generate   # generates Reservoir.xcodeproj from project.yml — not committed, see Technical details
+open Reservoir.xcodeproj
+```
+
+In Xcode, select the `Reservoir` scheme and an iOS Simulator (e.g. iPhone
+16) from the destination picker, then hit **⌘R** to build and run, or
+**⌘U** to run the test suite.
+
+**Re-run `xcodegen generate`** any time you pull changes to `project.yml`
+or add/remove source files — the `.xcodeproj` is a build artifact, not
+tracked in git, so it can go stale otherwise.
+
+**Command line**, as an alternative to the Xcode GUI:
+
+```
+xcodebuild -project Reservoir.xcodeproj -scheme Reservoir \
+  -destination 'platform=iOS Simulator,name=<device>,OS=<version>' build
+```
+
+Substitute an available simulator name/OS from `xcrun simctl list devices`.
+No signing setup or Apple ID is needed to run in the Simulator; a
+development team is only required to run on a physical device (see
+Technical details below).
+
 ## Architecture
 
 - **Platform**: iOS 17+, Swift + SwiftUI
@@ -42,7 +80,7 @@ ReservoirUITests/  — XCUITest
 | Entity | Key fields |
 |---|---|
 | `SavingsGoal` | `targetAmount`, `targetDate`, `startDate`, `startingBalance`, `dailyBase` (fixed at creation/edit) |
-| `Transaction` | `amount`, `date`, `merchantName`, `type` (variable/fixed), `entryMethod` (manual/imported), `plaidTransactionID`, `isManualOverride` |
+| `SpendTransaction` | `amount`, `date`, `merchantName`, `type` (variable/fixed), `entryMethod` (manual/imported), `plaidTransactionID`, `isManualOverride` |
 | `MerchantRule` | `merchantName` (exact, case-insensitive match), `type` |
 
 `SavingsGoal.currentBalance` (per `docs/PROJECT_SPEC.md`'s data model) is
@@ -58,19 +96,8 @@ live outside SwiftData (`UserDefaults`/a settings singleton).
 - **Minimum iOS version**: 17.0 (required for SwiftData and `@Observable`)
 - **Project generation**: the Xcode project is generated from
   [`project.yml`](project.yml) via [XcodeGen](https://github.com/yonaskolb/XcodeGen)
-  (`brew install xcodegen`) rather than committing `Reservoir.xcodeproj`
-  directly — run `xcodegen generate` after pulling changes to `project.yml`
-  or adding/removing source files.
-- **Build**:
-  ```
-  xcodegen generate
-  open Reservoir.xcodeproj
-  ```
-  Or from the command line:
-  ```
-  xcodebuild -project Reservoir.xcodeproj -scheme Reservoir \
-    -destination 'platform=iOS Simulator,name=<device>,OS=<version>' build
-  ```
+  rather than committing `Reservoir.xcodeproj` directly — see "Running
+  locally" above for setup steps.
 - **Signing/distribution**: sideloaded via Xcode, not App Store — set your
   own development team in Xcode's Signing & Capabilities before running on
   a device.
