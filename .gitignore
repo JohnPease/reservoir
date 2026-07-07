@@ -2,3 +2,11 @@
 # Dolt database files (added by bd init)
 .dolt/
 *.db
+
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+.swiftpm/
+*.xcscmblueprint
