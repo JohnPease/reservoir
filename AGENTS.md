@@ -148,3 +148,6 @@ For more details, see README.md and docs/QUICKSTART.md.
 - If push fails, resolve and retry until it succeeds
 
 <!-- END BEADS INTEGRATION -->
+
+## Development standards
+See STANDARDS.md for branching, commits, code quality, testing, and README requirements. All agents (orchestrator, product-lead, engineer, tester) follow it in full — this is not optional guidance.
