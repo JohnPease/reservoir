@@ -42,8 +42,13 @@ ReservoirUITests/  — XCUITest
 | Entity | Key fields |
 |---|---|
 | `SavingsGoal` | `targetAmount`, `targetDate`, `startDate`, `startingBalance`, `dailyBase` (fixed at creation/edit) |
-| `Transaction` | `amount`, `date`, `merchantName`, `type` (variable/fixed), `entryMethod` (manual/imported), `plaidTransactionID` |
+| `Transaction` | `amount`, `date`, `merchantName`, `type` (variable/fixed), `entryMethod` (manual/imported), `plaidTransactionID`, `isManualOverride` |
 | `MerchantRule` | `merchantName` (exact, case-insensitive match), `type` |
+
+`SavingsGoal.currentBalance` (per `docs/PROJECT_SPEC.md`'s data model) is
+intentionally **not** a stored field — it's derived from `startingBalance`
+and the goal's transactions, so it's computed on demand by the daily-limit
+calculator (`Services/`) rather than persisted and kept in sync.
 
 No `User` entity — single-user, single-device, no auth. App-wide settings
 live outside SwiftData (`UserDefaults`/a settings singleton).

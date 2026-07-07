@@ -15,15 +15,23 @@ final class ModelPersistenceTests: XCTestCase {
         container = nil
     }
 
+    private func makeGoal(
+        targetAmount: Decimal = 1000,
+        startingBalance: Decimal = 100,
+        dailyBase: Decimal = 30
+    ) -> SavingsGoal {
+        SavingsGoal(
+            targetAmount: targetAmount,
+            targetDate: Calendar.current.date(byAdding: .day, value: 30, to: .now)!,
+            startDate: .now,
+            startingBalance: startingBalance,
+            dailyBase: dailyBase
+        )
+    }
+
     func testSavingsGoalPersists() throws {
         let context = ModelContext(container)
-        let goal = SavingsGoal(
-            targetAmount: 1000,
-            targetDate: Date(timeIntervalSinceNow: 60 * 60 * 24 * 30),
-            startDate: Date(),
-            startingBalance: 100,
-            dailyBase: 30
-        )
+        let goal = makeGoal()
         context.insert(goal)
         try context.save()
 
@@ -35,16 +43,10 @@ final class ModelPersistenceTests: XCTestCase {
 
     func testTransactionLinksToSavingsGoal() throws {
         let context = ModelContext(container)
-        let goal = SavingsGoal(
-            targetAmount: 1000,
-            targetDate: Date(timeIntervalSinceNow: 60 * 60 * 24 * 30),
-            startDate: Date(),
-            startingBalance: 100,
-            dailyBase: 30
-        )
+        let goal = makeGoal()
         context.insert(goal)
 
-        let manualTransaction = Transaction(
+        let manualTransaction = SpendTransaction(
             amount: 12.50,
             date: Date(),
             merchantName: "Coffee Shop",
@@ -58,11 +60,12 @@ final class ModelPersistenceTests: XCTestCase {
         XCTAssertEqual(goal.transactions.count, 1)
         XCTAssertEqual(goal.transactions.first?.merchantName, "Coffee Shop")
         XCTAssertNil(goal.transactions.first?.plaidTransactionID)
+        XCTAssertFalse(goal.transactions.first?.isManualOverride ?? true)
     }
 
     func testImportedTransactionCarriesPlaidID() throws {
         let context = ModelContext(container)
-        let transaction = Transaction(
+        let transaction = SpendTransaction(
             amount: 45.00,
             date: Date(),
             merchantName: "Grocery Store",
@@ -73,9 +76,26 @@ final class ModelPersistenceTests: XCTestCase {
         context.insert(transaction)
         try context.save()
 
-        let fetched = try context.fetch(FetchDescriptor<Transaction>())
+        let fetched = try context.fetch(FetchDescriptor<SpendTransaction>())
         XCTAssertEqual(fetched.first?.plaidTransactionID, "plaid-txn-123")
         XCTAssertEqual(fetched.first?.entryMethod, .imported)
+    }
+
+    func testManualOverridePreventsRetagging() throws {
+        let context = ModelContext(container)
+        let transaction = SpendTransaction(
+            amount: 20.00,
+            date: Date(),
+            merchantName: "Ambiguous Merchant",
+            type: .fixed,
+            entryMethod: .manual,
+            isManualOverride: true
+        )
+        context.insert(transaction)
+        try context.save()
+
+        let fetched = try context.fetch(FetchDescriptor<SpendTransaction>())
+        XCTAssertEqual(fetched.first?.isManualOverride, true)
     }
 
     func testMerchantRulePersists() throws {

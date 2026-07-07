@@ -5,7 +5,7 @@ enum SchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
 
     static var models: [any PersistentModel.Type] {
-        [SavingsGoal.self, Transaction.self, MerchantRule.self]
+        [SavingsGoal.self, SpendTransaction.self, MerchantRule.self]
     }
 
     enum TransactionType: String, Codable {
@@ -28,8 +28,8 @@ enum SchemaV1: VersionedSchema {
         /// Computed by the daily-limit calculator, not by this model.
         var dailyBase: Decimal
 
-        @Relationship(deleteRule: .nullify, inverse: \Transaction.savingsGoal)
-        var transactions: [Transaction] = []
+        @Relationship(deleteRule: .nullify, inverse: \SpendTransaction.savingsGoal)
+        var transactions: [SpendTransaction] = []
 
         init(
             targetAmount: Decimal,
@@ -46,15 +46,21 @@ enum SchemaV1: VersionedSchema {
         }
     }
 
+    /// Named `SpendTransaction`, not `Transaction` — SwiftUI already exports a
+    /// `Transaction` type (animation transactions), and this module imports
+    /// SwiftUI, so the bare name would be ambiguous at any call site using both.
     @Model
-    final class Transaction {
+    final class SpendTransaction {
         var amount: Decimal
         var date: Date
         var merchantName: String
         var type: TransactionType
         var entryMethod: EntryMethod
         /// nil for manual entries; set for Plaid-imported transactions.
-        var plaidTransactionID: String?
+        @Attribute(.unique) var plaidTransactionID: String?
+        /// True when a user explicitly set/changed `type` on this transaction.
+        /// MerchantRule re-application must not overwrite a manual override.
+        var isManualOverride: Bool
 
         var savingsGoal: SavingsGoal?
 
@@ -65,6 +71,7 @@ enum SchemaV1: VersionedSchema {
             type: TransactionType,
             entryMethod: EntryMethod,
             plaidTransactionID: String? = nil,
+            isManualOverride: Bool = false,
             savingsGoal: SavingsGoal? = nil
         ) {
             self.amount = amount
@@ -73,13 +80,14 @@ enum SchemaV1: VersionedSchema {
             self.type = type
             self.entryMethod = entryMethod
             self.plaidTransactionID = plaidTransactionID
+            self.isManualOverride = isManualOverride
             self.savingsGoal = savingsGoal
         }
     }
 
     @Model
     final class MerchantRule {
-        /// Matched exact, case-insensitive against Transaction.merchantName.
+        /// Matched exact, case-insensitive against SpendTransaction.merchantName.
         var merchantName: String
         var type: TransactionType
 
