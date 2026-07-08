@@ -64,13 +64,12 @@ public enum DailyLimitCalculator {
         guard startDay < today else { return 0 }
 
         let spentByDay = variableSpendByDay(goal.spendEntries, calendar: calendar)
+        let dayCount = calendar.dateComponents([.day], from: startDay, to: today).day ?? 0
 
         var carry: Decimal = 0
-        var day = startDay
-        while day < today {
+        for offset in 0..<dayCount {
+            let day = calendar.date(byAdding: .day, value: offset, to: startDay)!
             carry += goal.dailyBase - (spentByDay[day] ?? 0)
-            guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
-            day = next
         }
         return carry
     }
