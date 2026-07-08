@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import OSLog
 
 /// The Today tab — the app's launch screen and the home of the core mechanic. Layout
 /// per `docs/PROJECT_SPEC.md` "UX design — Today screen": date header with settings
@@ -14,8 +15,30 @@ struct TodayView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
 
-    @Query private var goals: [SavingsGoal]
-    @Query private var transactions: [SpendTransaction]
+    @Query(sort: \SavingsGoal.targetDate) private var goals: [SavingsGoal]
+    /// Sorted so `spentToday`'s filtering doesn't have to fault/sort the whole table on
+    /// every body re-evaluation to find today's entries; still unlimited because
+    /// `spentToday` needs every transaction dated today, not just the most recent ones.
+    @Query(sort: \SpendTransaction.date, order: .reverse) private var transactions: [SpendTransaction]
+    /// Store-level equivalent of `TodayScreenCalculator.recentTransactions`'s ordering
+    /// (date desc, `createdAt` desc tiebreak) with a `fetchLimit`, so SwiftData does the
+    /// sort/limit instead of fetching the full history into memory just to take the top
+    /// 3. `recentTransactions` (the pure function) stays in `TodayScreenCalculator` and
+    /// under test as the source of truth for the ordering rule; this query mirrors it at
+    /// the persistence layer for performance.
+    @Query(Self.recentTransactionsDescriptor)
+    private var recentTransactionsQuery: [SpendTransaction]
+
+    private static var recentTransactionsDescriptor: FetchDescriptor<SpendTransaction> {
+        var descriptor = FetchDescriptor<SpendTransaction>(
+            sortBy: [
+                SortDescriptor(\.date, order: .reverse),
+                SortDescriptor(\.createdAt, order: .reverse)
+            ]
+        )
+        descriptor.fetchLimit = 3
+        return descriptor
+    }
 
     /// "Now," recomputed on foreground resume and at the next midnight rollover so the
     /// hero number, active-goal set, and completion banners stay correct without
@@ -26,8 +49,10 @@ struct TodayView: View {
     @State private var isShowingAddTransaction = false
     @State private var isShowingCreateGoal = false
     @State private var isShowingSettings = false
+    @State private var dismissError: String?
 
     private let calendar: Calendar = .current
+    private let logger = Logger(subsystem: "com.reservoir.app", category: "TodayView")
 
     private var activeGoals: [SavingsGoal] {
         TodayScreenCalculator.activeGoals(goals, referenceDate: referenceDate, calendar: calendar)
@@ -40,14 +65,37 @@ struct TodayView: View {
     private var summary: TodayScreenCalculator.Summary? {
         TodayScreenCalculator.summary(
             activeGoals: activeGoals,
+            completedUndismissedGoals: completedGoals,
             allTransactions: transactions,
             referenceDate: referenceDate,
             calendar: calendar
         )
     }
 
+    /// True only when there is truly nothing to show for goals — no active goal and no
+    /// completed-but-undismissed goal either. Distinct from `summary == nil`, which is
+    /// also true whenever there's no active goal even if a completion banner is showing;
+    /// using that alone to gate the empty-state prompt made the prompt render underneath
+    /// a completion banner, which is a real (fixed) bug — see `TodayScreenCalculator`.
+    private var hasNoGoalsAtAll: Bool {
+        activeGoals.isEmpty && completedGoals.isEmpty
+    }
+
+    /// Today's spend attributable to a completed-but-undismissed goal or unattributed
+    /// entirely, for display when there's no active goal (so `summary` is `nil` and the
+    /// hero/two-stat row aren't shown) but that spend still shouldn't disappear from the
+    /// screen.
+    private var spentTodayWithoutActiveGoal: Decimal {
+        TodayScreenCalculator.spentToday(
+            allTransactions: transactions,
+            attributedGoals: completedGoals,
+            referenceDate: referenceDate,
+            calendar: calendar
+        )
+    }
+
     private var recentTransactions: [SpendTransaction] {
-        TodayScreenCalculator.recentTransactions(from: transactions)
+        recentTransactionsQuery
     }
 
     private var dateHeaderText: String {
@@ -67,10 +115,16 @@ struct TodayView: View {
                     if let summary {
                         HeroSection(summary: summary)
                         TwoStatRow(summary: summary)
-                    } else {
+                    } else if hasNoGoalsAtAll {
                         NoActiveGoalPrompt {
                             isShowingCreateGoal = true
                         }
+                    } else {
+                        // A completed-but-undismissed goal exists (its banner is already
+                        // shown above) but there's no active goal, so there's no daily
+                        // limit to show. Still surface today's spend rather than letting
+                        // it disappear from the screen — see TodayScreenCalculator.
+                        SpentTodayOnlyCard(amount: spentTodayWithoutActiveGoal)
                     }
 
                     RecentTransactionsSection(transactions: recentTransactions)
@@ -103,18 +157,64 @@ struct TodayView: View {
             if newPhase == .active { referenceDate = .now }
         }
         .task { await scheduleMidnightRefresh() }
-        .sheet(isPresented: $isShowingAddTransaction) { AddTransactionStubSheet() }
-        .sheet(isPresented: $isShowingCreateGoal) { CreateGoalStubSheet() }
-        .sheet(isPresented: $isShowingSettings) { SettingsStubSheet() }
+        .sheet(isPresented: $isShowingAddTransaction) {
+            StubSheet(
+                title: "Add Transaction",
+                icon: "plus.circle",
+                description: "Manual transaction entry is coming in a future story.",
+                accessibilityIdentifier: "today.addTransactionSheet"
+            )
+        }
+        .sheet(isPresented: $isShowingCreateGoal) {
+            StubSheet(
+                title: "Create a Goal",
+                icon: "target",
+                description: "Goal creation is coming in a future story.",
+                accessibilityIdentifier: "today.createGoalSheet"
+            )
+        }
+        .sheet(isPresented: $isShowingSettings) {
+            StubSheet(
+                title: "Settings",
+                icon: "gearshape",
+                description: "Settings are coming in a future story.",
+                accessibilityIdentifier: "today.settingsSheet"
+            )
+        }
+        .alert(
+            "Couldn't save",
+            isPresented: Binding(
+                get: { dismissError != nil },
+                set: { isPresented in if !isPresented { dismissError = nil } }
+            ),
+            presenting: dismissError
+        ) { _ in
+            Button("OK") { dismissError = nil }
+        } message: { message in
+            Text(message)
+        }
     }
 
     /// Dismissing a completion banner resets the goal to a true empty/no-goal state:
     /// once `dismissedAt` is set, `TodayScreenCalculator.isActive` and
     /// `completedUndismissedGoals` both exclude it permanently, so the Today screen
     /// falls back to the "no active goal" empty state until the user creates a new one.
+    ///
+    /// If the save fails, the in-memory `dismissedAt` is rolled back rather than left
+    /// set-but-unpersisted — otherwise the banner would silently vanish for the rest of
+    /// this session (SwiftData's in-memory state already reflects the mutation) while
+    /// reappearing on next launch with no indication anything went wrong. The error is
+    /// both logged and surfaced via an alert so a persistent failure (e.g. a full disk)
+    /// doesn't fail silently.
     private func dismiss(_ goal: SavingsGoal) {
         goal.dismissedAt = .now
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            goal.dismissedAt = nil
+            logger.error("Failed to save goal dismissal: \(error.localizedDescription, privacy: .public)")
+            dismissError = "Your change couldn't be saved. Please try again."
+        }
     }
 
     /// Recomputes `referenceDate` at every midnight boundary while the view is alive,
@@ -183,6 +283,21 @@ private struct TwoStatRow: View {
     }
 }
 
+/// Shown in place of `HeroSection`/`TwoStatRow` when there's no active goal (so no
+/// daily limit is defined) but there's still today's spend worth surfacing — e.g. every
+/// goal is completed-but-undismissed. See `TodayView.spentTodayWithoutActiveGoal`.
+private struct SpentTodayOnlyCard: View {
+    let amount: Decimal
+
+    var body: some View {
+        StatCard(title: "Spent today", amount: amount, isOverLimit: false)
+            // .contain, matching HeroSection/TwoStatRow, so this stays queryable as its
+            // own "Other" element in XCUITest instead of being auto-flattened.
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("today.spentTodayOnly")
+    }
+}
+
 private struct StatCard: View {
     let title: String
     let amount: Decimal
@@ -240,12 +355,16 @@ private struct CompletionBannerView: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: "checkmark.seal.fill")
-                .foregroundStyle(.green)
+            Image(systemName: "calendar.badge.clock")
+                .foregroundStyle(.blue)
             VStack(alignment: .leading, spacing: 4) {
-                Text("Goal complete!")
+                Text("Goal target date reached")
                     .font(.headline)
-                Text("You reached your target of \(goal.targetAmount, format: .currency(code: "USD")). Nice work.")
+                // Deliberately doesn't claim the target was met — the calculator doesn't
+                // currently verify actual spend/remaining balance against the goal
+                // lifetime, only that targetDate has passed (see reservoir-adq.2 review
+                // finding 5; true goal-met verification is tracked as a follow-up).
+                Text("Your goal's target date of \(goal.targetDate, format: .dateTime.month(.wide).day()) has arrived. Target: \(goal.targetAmount, format: .currency(code: "USD")).")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -258,7 +377,7 @@ private struct CompletionBannerView: View {
             .accessibilityIdentifier("today.dismissBanner")
         }
         .padding()
-        .background(.green.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
+        .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("today.completionBanner")
     }

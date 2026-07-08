@@ -10,7 +10,7 @@ struct ReservoirApp: App {
     /// try once more against a fresh store file before falling back to an
     /// in-memory container (data loss, but the app stays usable).
     private static func makeModelContainer() -> ModelContainer {
-        let schema = Schema(versionedSchema: SchemaV1.self)
+        let schema = Schema(versionedSchema: SchemaV2.self)
 
         #if DEBUG
         if let scenario = UITestScenario.current {

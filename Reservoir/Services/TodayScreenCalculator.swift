@@ -94,10 +94,22 @@ enum TodayScreenCalculator {
     /// (`savingsGoal == nil`) dated today, which still counts against the user's spend
     /// even though it isn't attributed to a specific goal.
     ///
-    /// Returns `nil` when `activeGoals` is empty — the Today screen's "no active goal"
-    /// empty state (PROJECT_SPEC "Empty states and validation").
+    /// `completedUndismissedGoals` only affects `spentToday`/`remaining`: a goal whose
+    /// `targetDate` has passed but hasn't been dismissed yet is still "current" from the
+    /// spend-tracking point of view — its transactions shouldn't vanish from
+    /// `spentToday` the instant the target date passes, only once the user dismisses its
+    /// completion banner (see `TodayScreenCalculator.spentToday`). It never contributes
+    /// to `dailyBase`/`carriedForward`/`limit`, which are strictly a function of the
+    /// still-active goal set.
+    ///
+    /// Returns `nil` when `activeGoals` is empty — the daily limit itself is undefined
+    /// with no active goal. Callers that still need to surface today's spend in that
+    /// case (finding: orphaned/completed-goal spend shouldn't disappear from the screen
+    /// just because there's no active goal) should call `spentToday` directly instead of
+    /// relying on this returning a `Summary`.
     static func summary(
         activeGoals: [SavingsGoal],
+        completedUndismissedGoals: [SavingsGoal] = [],
         allTransactions: [SpendTransaction],
         referenceDate: Date,
         calendar: Calendar = .current
@@ -111,23 +123,12 @@ enum TodayScreenCalculator {
         let carriedForward = goalLimits.reduce(Decimal(0)) { $0 + $1.carryForward }
         let limit = goalLimits.reduce(Decimal(0)) { $0 + $1.limit }
 
-        let today = calendar.startOfDay(for: referenceDate)
-        let activeGoalIDs = Set(activeGoals.map(\.persistentModelID))
-        let spentToday = allTransactions.reduce(Decimal(0)) { total, transaction in
-            guard transaction.type == .variable,
-                  calendar.startOfDay(for: transaction.date) == today
-            else { return total }
-
-            let countsTowardLimit: Bool
-            if let owningGoalID = transaction.savingsGoal?.persistentModelID {
-                countsTowardLimit = activeGoalIDs.contains(owningGoalID)
-            } else {
-                // Orphaned transaction (savingsGoal == nil) — still counts, per this
-                // story's acceptance criteria.
-                countsTowardLimit = true
-            }
-            return countsTowardLimit ? total + transaction.amount : total
-        }
+        let spentToday = self.spentToday(
+            allTransactions: allTransactions,
+            attributedGoals: activeGoals + completedUndismissedGoals,
+            referenceDate: referenceDate,
+            calendar: calendar
+        )
 
         return Summary(
             dailyBase: dailyBase,
@@ -136,6 +137,40 @@ enum TodayScreenCalculator {
             spentToday: spentToday,
             remaining: limit - spentToday
         )
+    }
+
+    /// Total spend today (variable transactions dated `referenceDate`) attributed to any
+    /// goal in `attributedGoals`, plus any orphaned transaction (`savingsGoal == nil`),
+    /// which always counts regardless of `attributedGoals` — it isn't attributed to a
+    /// specific goal, so there's no goal-lifecycle state that could exclude it.
+    ///
+    /// Exposed standalone (not just as a `summary` implementation detail) so the Today
+    /// screen can still show today's spend when there's no active goal — e.g. every goal
+    /// is completed-but-undismissed — rather than that spend disappearing from view
+    /// entirely just because `summary` returns `nil` in that case.
+    static func spentToday(
+        allTransactions: [SpendTransaction],
+        attributedGoals: [SavingsGoal],
+        referenceDate: Date,
+        calendar: Calendar = .current
+    ) -> Decimal {
+        let today = calendar.startOfDay(for: referenceDate)
+        let attributedGoalIDs = Set(attributedGoals.map(\.persistentModelID))
+        return allTransactions.reduce(Decimal(0)) { total, transaction in
+            guard transaction.type == .variable,
+                  calendar.startOfDay(for: transaction.date) == today
+            else { return total }
+
+            let countsTowardLimit: Bool
+            if let owningGoalID = transaction.savingsGoal?.persistentModelID {
+                countsTowardLimit = attributedGoalIDs.contains(owningGoalID)
+            } else {
+                // Orphaned transaction (savingsGoal == nil) — still counts, per this
+                // story's acceptance criteria.
+                countsTowardLimit = true
+            }
+            return countsTowardLimit ? total + transaction.amount : total
+        }
     }
 
     // MARK: - Recent transactions

@@ -1,17 +1,29 @@
 import SwiftUI
 
-/// Minimal stub for the full "Add transaction" flow (adq.3). The Today screen needs a
-/// real entry point to lay out and test now; the actual entry form is that story's own
-/// scope, so this deliberately doesn't get built out further here.
-struct AddTransactionStubSheet: View {
+/// Shared minimal stub for flows not yet built out — reached from the Today screen's
+/// "Add transaction" button (adq.3 scope), the "no active goal" empty state's "Create a
+/// goal" button (adq.5/adq.7 scope), and the header's settings icon (Settings tab, out
+/// of this story's scope). Each call site needs a real entry point to lay out and test
+/// now, but the actual destination is a future story's own scope, so this deliberately
+/// doesn't get built out further here.
+///
+/// Collapsed from three structurally identical views (`AddTransactionStubSheet`,
+/// `CreateGoalStubSheet`, `SettingsStubSheet`) that differed only in their string
+/// literals — STANDARDS.md §3 ("no copy-paste").
+struct StubSheet: View {
     @Environment(\.dismiss) private var dismiss
+
+    let title: String
+    let icon: String
+    let description: String
+    let accessibilityIdentifier: String
 
     var body: some View {
         NavigationStack {
             ContentUnavailableView(
-                "Add Transaction",
-                systemImage: "plus.circle",
-                description: Text("Manual transaction entry is coming in a future story.")
+                title,
+                systemImage: icon,
+                description: Text(description)
             )
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -19,50 +31,6 @@ struct AddTransactionStubSheet: View {
                 }
             }
         }
-        .accessibilityIdentifier("today.addTransactionSheet")
-    }
-}
-
-/// Minimal stub for goal creation (adq.5/adq.7), reached from the Today screen's "no
-/// active goal" empty state.
-struct CreateGoalStubSheet: View {
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            ContentUnavailableView(
-                "Create a Goal",
-                systemImage: "target",
-                description: Text("Goal creation is coming in a future story.")
-            )
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }
-                }
-            }
-        }
-        .accessibilityIdentifier("today.createGoalSheet")
-    }
-}
-
-/// Minimal stub reached from the Today screen header's settings icon. The Settings tab
-/// itself is out of this story's scope.
-struct SettingsStubSheet: View {
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            ContentUnavailableView(
-                "Settings",
-                systemImage: "gearshape",
-                description: Text("Settings are coming in a future story.")
-            )
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }
-                }
-            }
-        }
-        .accessibilityIdentifier("today.settingsSheet")
+        .accessibilityIdentifier(accessibilityIdentifier)
     }
 }

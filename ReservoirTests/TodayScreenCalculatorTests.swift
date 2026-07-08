@@ -19,7 +19,7 @@ final class TodayScreenCalculatorTests: XCTestCase {
     private var context: ModelContext!
 
     override func setUpWithError() throws {
-        let schema = Schema(versionedSchema: SchemaV1.self)
+        let schema = Schema(versionedSchema: SchemaV2.self)
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         container = try ModelContainer(for: schema, migrationPlan: ReservoirMigrationPlan.self, configurations: [configuration])
         context = ModelContext(container)
@@ -229,20 +229,75 @@ final class TodayScreenCalculatorTests: XCTestCase {
         XCTAssertEqual(result.spentToday, 20)
     }
 
-    func testSummaryExcludesTransactionsBelongingToInactiveGoal() throws {
+    func testSummaryExcludesTransactionsBelongingToDismissedInactiveGoal() throws {
+        // The inactive goal here is *dismissed*, not just past its target date, so it's
+        // correctly excluded from spend-tracking entirely (finding 3's fix only concerns
+        // completed-but-*undismissed* goals; a dismissed goal really should be invisible).
         let active = makeGoal(startDate: today, targetDate: day(5), dailyBase: 50)
-        let inactive = makeGoal(startDate: today, targetDate: day(-1), dailyBase: 50)
-        makeTransaction(amount: 30, date: today, type: .variable, savingsGoal: inactive)
+        let dismissedInactive = makeGoal(startDate: today, targetDate: day(-1), dailyBase: 50, dismissedAt: .now)
+        makeTransaction(amount: 30, date: today, type: .variable, savingsGoal: dismissedInactive)
         try context.save()
 
         let result = try XCTUnwrap(TodayScreenCalculator.summary(
             activeGoals: [active],
-            allTransactions: inactive.transactions,
+            allTransactions: dismissedInactive.transactions,
             referenceDate: today,
             calendar: calendar
         ))
 
         XCTAssertEqual(result.spentToday, 0)
+    }
+
+    // Regression test for review finding 3: a goal whose targetDate has passed but
+    // hasn't been dismissed yet must not have its spend silently excluded from
+    // spentToday just because it dropped out of activeGoals.
+    func testSummaryIncludesTransactionsBelongingToCompletedUndismissedGoal() throws {
+        let active = makeGoal(startDate: today, targetDate: day(5), dailyBase: 50)
+        let completedUndismissed = makeGoal(startDate: today, targetDate: day(-1), dailyBase: 50)
+        makeTransaction(amount: 30, date: today, type: .variable, savingsGoal: completedUndismissed)
+        try context.save()
+
+        let result = try XCTUnwrap(TodayScreenCalculator.summary(
+            activeGoals: [active],
+            completedUndismissedGoals: [completedUndismissed],
+            allTransactions: completedUndismissed.transactions,
+            referenceDate: today,
+            calendar: calendar
+        ))
+
+        XCTAssertEqual(result.spentToday, 30)
+    }
+
+    // MARK: - spentToday (standalone)
+
+    func testSpentTodayCountsOrphanedTransactionsRegardlessOfAttributedGoals() {
+        let orphan = makeTransaction(amount: 20, date: today, type: .variable, savingsGoal: nil)
+
+        let result = TodayScreenCalculator.spentToday(
+            allTransactions: [orphan],
+            attributedGoals: [],
+            referenceDate: today,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(result, 20)
+    }
+
+    func testSpentTodayCountsTransactionsForAttributedGoalsOnly() throws {
+        let attributed = makeGoal(dailyBase: 10)
+        let notAttributed = makeGoal(dailyBase: 10)
+        makeTransaction(amount: 15, date: today, type: .variable, savingsGoal: attributed)
+        makeTransaction(amount: 40, date: today, type: .variable, savingsGoal: notAttributed)
+        try context.save()
+
+        let result = TodayScreenCalculator.spentToday(
+            allTransactions: attributed.transactions + notAttributed.transactions,
+            attributedGoals: [attributed],
+            referenceDate: today,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(result, 15)
     }
 
     func testSummaryRemainingGoesNegativeWhenOverLimit() throws {

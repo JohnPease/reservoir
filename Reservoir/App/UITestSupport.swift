@@ -14,6 +14,11 @@ enum UITestScenario: String {
     /// One goal whose `targetDate` has already passed and hasn't been dismissed yet —
     /// the Today screen's completion banner.
     case completedGoalBanner
+    /// Same as `completedGoalBanner`, plus an orphaned (no `savingsGoal`) transaction
+    /// dated today — regression coverage for review finding 2: today's spend must still
+    /// be visible even though there's no active goal, and the empty-state prompt must
+    /// not render underneath the completion banner.
+    case completedGoalBannerWithOrphanedSpend
 
     static var current: UITestScenario? {
         ProcessInfo.processInfo.environment["UITEST_SCENARIO"].flatMap(UITestScenario.init(rawValue:))
@@ -60,6 +65,24 @@ enum UITestScenario: String {
                 dailyBase: 20
             )
             context.insert(goal)
+
+        case .completedGoalBannerWithOrphanedSpend:
+            let goal = SavingsGoal(
+                targetAmount: 500,
+                targetDate: Calendar.current.date(byAdding: .day, value: -1, to: .now)!,
+                startDate: Calendar.current.date(byAdding: .day, value: -30, to: .now)!,
+                startingBalance: 0,
+                dailyBase: 20
+            )
+            context.insert(goal)
+            context.insert(SpendTransaction(
+                amount: 20,
+                date: .now,
+                merchantName: "Orphaned Purchase",
+                type: .variable,
+                entryMethod: .manual,
+                savingsGoal: nil
+            ))
         }
 
         try? context.save()

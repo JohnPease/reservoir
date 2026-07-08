@@ -74,6 +74,15 @@ small — pick one layout and stay consistent as it grows.
 **Naming**: suffix by role, not by pattern dogma — `*View` for SwiftUI
 views, `*Calculator`/`*Projector` for pure business logic with no
 SwiftUI/SwiftData import, `*Service` for I/O/third-party SDK wrappers.
+Exception: a `*Calculator` may import SwiftData (never SwiftUI) when its whole
+job is mapping `@Model` types into the plain value types a lower-level pure
+calculator consumes (e.g. `TodayScreenCalculator` reading `SavingsGoal`/
+`SpendTransaction` to build `DailyLimitCalculator.GoalCarryForwardInput`) —
+that mapping still needs to live somewhere, doesn't belong in a view, and
+splitting it into a separate file buys nothing when the `*Calculator` type
+already has no SwiftUI dependency and is unit-testable via an in-memory
+`ModelContainer`. The bar stays: never import SwiftUI, and never let
+view-layer concerns leak in alongside the model mapping.
 `@Model` SwiftData entities are named as plain domain nouns (`SavingsGoal`,
 not `SavingsGoalModel`) — the `@Model` macro already marks them as entities,
 so a redundant suffix doesn't earn its keep; match whatever name the

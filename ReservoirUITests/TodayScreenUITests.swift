@@ -59,6 +59,21 @@ final class TodayScreenUITests: XCTestCase {
         // The completed goal isn't active, so the hero number shouldn't render alongside
         // the banner.
         XCTAssertFalse(app.otherElements["today.hero"].exists)
+        // Regression for review finding 2: the "no active goal" empty-state prompt must
+        // not render underneath a completion banner — a completed-undismissed goal isn't
+        // the same as having no goals at all.
+        XCTAssertFalse(app.otherElements["today.emptyGoalState"].exists)
+    }
+
+    func testCompletedGoalWithOrphanedSpendShowsSpendWithoutEmptyStateOrHero() {
+        let app = launchedApp(scenario: "completedGoalBannerWithOrphanedSpend")
+
+        XCTAssertTrue(app.otherElements["today.completionBanner"].waitForExistence(timeout: 5))
+        // Regression for review finding 2: orphaned spend dated today must stay visible
+        // even though there's no active goal to attach a daily-limit hero to.
+        XCTAssertTrue(app.otherElements["today.spentTodayOnly"].exists)
+        XCTAssertFalse(app.otherElements["today.hero"].exists)
+        XCTAssertFalse(app.otherElements["today.emptyGoalState"].exists)
     }
 
     func testDismissingBannerResetsToEmptyGoalState() {

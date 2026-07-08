@@ -53,8 +53,11 @@ Technical details below).
 ## Architecture
 
 - **Platform**: iOS 17+, Swift + SwiftUI
-- **Persistence**: SwiftData, wrapped in a `VersionedSchema` (`SchemaV1`)
-  from day one so future migrations don't require retrofitting
+- **Persistence**: SwiftData, wrapped in a `VersionedSchema` (currently
+  `SchemaV2`) from day one so migrations don't require retrofitting. Bumping
+  the schema version (rather than editing the current `VersionedSchema` in
+  place) is required any time a `@Model` type's shape changes — see "Data
+  model" below
 - **Bank integration**: Plaid iOS LinkKit SDK, called directly from the app
   — no backend, no hosted infrastructure
 - **Pattern**: MV (plain `@Observable` models/services bound directly from
@@ -67,7 +70,7 @@ Reservoir/
   App/            — entry point, RootTabView, ModelContainer setup
   Features/       — one folder per tab (Today, Goals, Transactions, Settings)
   Models/         — SwiftData @Model types
-    Migrations/   — VersionedSchema (SchemaV1) + SchemaMigrationPlan
+    Migrations/   — VersionedSchema (SchemaV1, SchemaV2, …) + SchemaMigrationPlan
   Services/       — I/O boundaries (Plaid, persistence) and business logic
   Shared/         — reusable views, extensions
   Resources/      — assets
@@ -75,13 +78,27 @@ ReservoirTests/    — XCTest
 ReservoirUITests/  — XCUITest
 ```
 
-**Data model** (current — `Models/Migrations/SchemaV1.swift`):
+**Data model** (current — `Models/Migrations/SchemaV2.swift`; the app-wide
+type aliases in `Models/CurrentSchema.swift` always point at the current
+version, so the rest of the app never references a `SchemaVN` directly):
 
 | Entity | Key fields |
 |---|---|
-| `SavingsGoal` | `targetAmount`, `targetDate`, `startDate`, `startingBalance`, `dailyBase` (fixed at creation/edit), `dismissedAt` (set when the user dismisses the Today screen's completion banner — see below) |
-| `SpendTransaction` | `amount`, `date`, `merchantName`, `type` (variable/fixed), `entryMethod` (manual/imported), `plaidTransactionID`, `isManualOverride`, `createdAt` (record-creation time, distinct from the user-facing `date`; breaks ties when ordering same-day transactions) |
+| `SavingsGoal` | `targetAmount`, `targetDate`, `startDate`, `startingBalance`, `dailyBase` (fixed at creation/edit), `dismissedAt` (set when the user dismisses the Today screen's completion banner — see below; added in `SchemaV2`) |
+| `SpendTransaction` | `amount`, `date`, `merchantName`, `type` (variable/fixed), `entryMethod` (manual/imported), `plaidTransactionID`, `isManualOverride`, `createdAt` (record-creation time, distinct from the user-facing `date`; breaks ties when ordering same-day transactions; added in `SchemaV2`) |
 | `MerchantRule` | `merchantName` (exact, case-insensitive match), `type` |
+
+**Migrations**: `Models/Migrations/MigrationPlan.swift`'s
+`ReservoirMigrationPlan` lists every `VersionedSchema` in order and the
+`MigrationStage`s between them. `SchemaV1` -> `SchemaV2` is a lightweight
+(inferred) stage — both new fields are optional, no renames or type changes.
+Any change to a `@Model` type's shape (new/removed/retyped field) requires a
+new `SchemaVN`, not an in-place edit to the current one — an in-place edit
+means a store created from an older build no longer matches the version its
+data was validated against, and `ModelContainer(for:migrationPlan:)` fails to
+open it (see `ReservoirApp.makeModelContainer`'s corrupted-store fallback,
+which deletes the on-disk store as a last resort — exactly what a missing
+migration stage would trigger for real user data).
 
 `SavingsGoal.currentBalance` (per `docs/PROJECT_SPEC.md`'s data model) is
 intentionally **not** a stored field — it's derived from `startingBalance`
@@ -111,13 +128,24 @@ not been dismissed, the `SavingsGoal`/`SpendTransaction` ->
 `Services/TodayScreenCalculator.swift`, not the view, so it's unit-testable
 without driving the UI. A goal stays active through `targetDate` inclusive;
 the day after, if `dismissedAt` is still nil, the Today screen shows a
-completion banner. Dismissing the banner sets `dismissedAt`, which
-permanently excludes the goal from both "active" and "completed" — the
-screen falls back to its "no active goal" empty state until a new goal is
-created. Orphaned transactions (`savingsGoal == nil`) still count toward
-spent/remaining. "Add transaction" and goal creation from the empty state
-are minimal stub sheets for now — their real flows are separate stories
-(adq.3, adq.5/adq.7). Covered by
+completion banner instead of a daily-limit hero for that goal. Dismissing the
+banner sets `dismissedAt`, which permanently excludes the goal from both
+"active" and "completed."
+
+The empty-state "no active goal" prompt only renders when there are truly no
+goals at all — no active *and* no completed-undismissed goal. A
+completed-undismissed goal (banner showing, no active goal) is a distinct
+state from true emptiness, and shows its own compact "Spent today" card
+instead: today's spend is still surfaced even with no active goal to attach a
+daily limit to. Orphaned transactions (`savingsGoal == nil`) always count
+toward spent/remaining, as does spend attributed to a completed-undismissed
+goal — a goal's spend doesn't disappear from tracking the instant
+`targetDate` passes, only once the user actually dismisses its banner.
+
+"Add transaction", goal creation from the empty state, and Settings all
+share one parameterized `StubSheet` (`Features/Today/TodayStubSheets.swift`)
+for now — their real flows are separate stories (adq.3, adq.5/adq.7, and the
+Settings tab respectively). Covered by
 `ReservoirTests/TodayScreenCalculatorTests.swift` and
 `ReservoirUITests/TodayScreenUITests.swift`.
 
