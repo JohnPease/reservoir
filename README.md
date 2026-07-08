@@ -79,8 +79,8 @@ ReservoirUITests/  — XCUITest
 
 | Entity | Key fields |
 |---|---|
-| `SavingsGoal` | `targetAmount`, `targetDate`, `startDate`, `startingBalance`, `dailyBase` (fixed at creation/edit) |
-| `SpendTransaction` | `amount`, `date`, `merchantName`, `type` (variable/fixed), `entryMethod` (manual/imported), `plaidTransactionID`, `isManualOverride` |
+| `SavingsGoal` | `targetAmount`, `targetDate`, `startDate`, `startingBalance`, `dailyBase` (fixed at creation/edit), `dismissedAt` (set when the user dismisses the Today screen's completion banner — see below) |
+| `SpendTransaction` | `amount`, `date`, `merchantName`, `type` (variable/fixed), `entryMethod` (manual/imported), `plaidTransactionID`, `isManualOverride`, `createdAt` (record-creation time, distinct from the user-facing `date`; breaks ties when ordering same-day transactions) |
 | `MerchantRule` | `merchantName` (exact, case-insensitive match), `type` |
 
 `SavingsGoal.currentBalance` (per `docs/PROJECT_SPEC.md`'s data model) is
@@ -103,6 +103,24 @@ are never pooled. Covered by `ReservoirTests/DailyLimitCalculatorTests.swift`.
 No `User` entity — single-user, single-device, no auth. App-wide settings
 live outside SwiftData (`UserDefaults`/a settings singleton).
 
+**Today screen**: `Features/Today/TodayView.swift` is the app's launch tab
+(see `docs/PROJECT_SPEC.md` "UX design — Today screen"). All calculation —
+which goals are "active" (`targetDate >= today`), which have completed but
+not been dismissed, the `SavingsGoal`/`SpendTransaction` ->
+`GoalCarryForwardInput` mapping, and the spent/remaining summary — lives in
+`Services/TodayScreenCalculator.swift`, not the view, so it's unit-testable
+without driving the UI. A goal stays active through `targetDate` inclusive;
+the day after, if `dismissedAt` is still nil, the Today screen shows a
+completion banner. Dismissing the banner sets `dismissedAt`, which
+permanently excludes the goal from both "active" and "completed" — the
+screen falls back to its "no active goal" empty state until a new goal is
+created. Orphaned transactions (`savingsGoal == nil`) still count toward
+spent/remaining. "Add transaction" and goal creation from the empty state
+are minimal stub sheets for now — their real flows are separate stories
+(adq.3, adq.5/adq.7). Covered by
+`ReservoirTests/TodayScreenCalculatorTests.swift` and
+`ReservoirUITests/TodayScreenUITests.swift`.
+
 ## Technical details
 
 - **Minimum iOS version**: 17.0 (required for SwiftData and `@Observable`)
@@ -119,9 +137,16 @@ live outside SwiftData (`UserDefaults`/a settings singleton).
 
 ## Product features
 
-- 🚧 In progress — no user-facing features shipped yet. Current state: the
-  SwiftData data model (`SavingsGoal`, `Transaction`, `MerchantRule`) and a
-  placeholder four-tab shell (Today / Goals / Transactions / Settings).
+- **Today screen** (implemented): date header, hero daily-limit number
+  (`$base + $carried forward`), spent-today/remaining stat row, last-3
+  recent transactions (fixed expenses shown muted, "excluded from limit"),
+  and a single "Add transaction" action. Empty state prompts goal creation
+  when there's no active goal; a completion banner appears once a goal's
+  `targetDate` passes, and dismissing it resets to the empty state. See
+  "Today screen" under Architecture above.
+- 🚧 Everything else is still in progress. Current state beyond the Today
+  screen: the SwiftData data model (`SavingsGoal`, `SpendTransaction`,
+  `MerchantRule`) and placeholder Goals/Transactions/Settings tabs.
 - Planned MVP scope and build order are tracked in
   [`docs/PROJECT_SPEC.md`](docs/PROJECT_SPEC.md) and as beads under the
   `reservoir-adq` epic (`bd show reservoir-adq`).

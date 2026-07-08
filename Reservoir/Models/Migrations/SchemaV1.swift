@@ -32,6 +32,13 @@ enum SchemaV1: VersionedSchema {
         /// .effectiveStartDate` as `lastEditedDate ?? startDate` — an edit resets where
         /// carry-forward starts accumulating from, per PROJECT_SPEC "Core mechanic".
         var lastEditedDate: Date?
+        /// Set when the user dismisses the Today screen's completion banner after
+        /// `targetDate` has passed. A goal is "active" only while this is nil — see
+        /// `TodayScreenCalculator.isActive`. Added for the Today screen story (adq.2):
+        /// completion can't be derived from `targetDate` alone because the banner must
+        /// keep showing (undismissed) across app launches until the user acts on it,
+        /// then never show again once they have.
+        var dismissedAt: Date?
 
         @Relationship(deleteRule: .nullify, inverse: \SpendTransaction.savingsGoal)
         var transactions: [SpendTransaction] = []
@@ -42,7 +49,8 @@ enum SchemaV1: VersionedSchema {
             startDate: Date,
             startingBalance: Decimal,
             dailyBase: Decimal,
-            lastEditedDate: Date? = nil
+            lastEditedDate: Date? = nil,
+            dismissedAt: Date? = nil
         ) {
             self.targetAmount = targetAmount
             self.targetDate = targetDate
@@ -50,6 +58,7 @@ enum SchemaV1: VersionedSchema {
             self.startingBalance = startingBalance
             self.dailyBase = dailyBase
             self.lastEditedDate = lastEditedDate
+            self.dismissedAt = dismissedAt
         }
     }
 
@@ -68,6 +77,11 @@ enum SchemaV1: VersionedSchema {
         /// True when a user explicitly set/changed `type` on this transaction.
         /// MerchantRule re-application must not overwrite a manual override.
         var isManualOverride: Bool
+        /// When this record was created (distinct from `date`, the user-facing
+        /// transaction date, which can be backdated/edited). Added for the Today screen
+        /// story (adq.2) as the tiebreaker for "recent transactions, sorted by date then
+        /// creation order" — `date` alone doesn't disambiguate same-day entries.
+        var createdAt: Date
 
         var savingsGoal: SavingsGoal?
 
@@ -79,7 +93,8 @@ enum SchemaV1: VersionedSchema {
             entryMethod: EntryMethod,
             plaidTransactionID: String? = nil,
             isManualOverride: Bool = false,
-            savingsGoal: SavingsGoal? = nil
+            savingsGoal: SavingsGoal? = nil,
+            createdAt: Date = .now
         ) {
             self.amount = amount
             self.date = date
@@ -89,6 +104,7 @@ enum SchemaV1: VersionedSchema {
             self.plaidTransactionID = plaidTransactionID
             self.isManualOverride = isManualOverride
             self.savingsGoal = savingsGoal
+            self.createdAt = createdAt
         }
     }
 
