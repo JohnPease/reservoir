@@ -19,6 +19,10 @@ enum UITestScenario: String {
     /// be visible even though there's no active goal, and the empty-state prompt must
     /// not render underneath the completion banner.
     case completedGoalBannerWithOrphanedSpend
+    /// A goal whose `targetDate` has already passed and hasn't been dismissed yet, but
+    /// whose cumulative carry-forward balance is negative through `targetDate` — the
+    /// "not met" completion banner variant (reservoir-4za).
+    case completedGoalBannerNotMet
 
     static var current: UITestScenario? {
         ProcessInfo.processInfo.environment["UITEST_SCENARIO"].flatMap(UITestScenario.init(rawValue:))
@@ -57,6 +61,9 @@ enum UITestScenario: String {
             ))
 
         case .completedGoalBanner:
+            // No spend entries recorded at all, so cumulative carry-forward through
+            // targetDate is a full 30 days' worth of dailyBase — comfortably >= 0, i.e.
+            // the "met" banner variant (reservoir-4za).
             let goal = SavingsGoal(
                 targetAmount: 500,
                 targetDate: Calendar.current.date(byAdding: .day, value: -1, to: .now)!,
@@ -65,6 +72,27 @@ enum UITestScenario: String {
                 dailyBase: 20
             )
             context.insert(goal)
+
+        case .completedGoalBannerNotMet:
+            // A single, large overspend entry that dwarfs the rest of the goal's
+            // lifetime underspend, leaving cumulative carry-forward negative through
+            // targetDate — the "not met" banner variant (reservoir-4za).
+            let goal = SavingsGoal(
+                targetAmount: 500,
+                targetDate: Calendar.current.date(byAdding: .day, value: -1, to: .now)!,
+                startDate: Calendar.current.date(byAdding: .day, value: -30, to: .now)!,
+                startingBalance: 0,
+                dailyBase: 20
+            )
+            context.insert(goal)
+            context.insert(SpendTransaction(
+                amount: 5000,
+                date: Calendar.current.date(byAdding: .day, value: -29, to: .now)!,
+                merchantName: "Big Overspend",
+                type: .variable,
+                entryMethod: .manual,
+                savingsGoal: goal
+            ))
 
         case .completedGoalBannerWithOrphanedSpend:
             let goal = SavingsGoal(

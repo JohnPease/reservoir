@@ -85,4 +85,36 @@ final class TodayScreenUITests: XCTestCase {
         XCTAssertTrue(app.otherElements["today.emptyGoalState"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.otherElements["today.completionBanner"].exists)
     }
+
+    // MARK: - Goal-met verification (reservoir-4za)
+
+    func testCompletedGoalMetShowsCelebratoryCopy() {
+        // "completedGoalBanner" has no spend recorded, so cumulative carry-forward
+        // through targetDate is a full lifetime of underspend — the "met" case.
+        let app = launchedApp(scenario: "completedGoalBanner")
+
+        XCTAssertTrue(app.otherElements["today.completionBanner"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["You reached your goal — nice work!"].exists)
+        XCTAssertFalse(app.staticTexts["Your target date has arrived"].exists)
+    }
+
+    func testCompletedGoalNotMetShowsFactualNonPunitiveCopy() {
+        let app = launchedApp(scenario: "completedGoalBannerNotMet")
+
+        XCTAssertTrue(app.otherElements["today.completionBanner"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Your target date has arrived"].exists)
+        XCTAssertTrue(app.staticTexts["You spent more than planned along the way."].exists)
+        XCTAssertFalse(app.staticTexts["You reached your goal — nice work!"].exists)
+    }
+
+    func testDismissingNotMetBannerResetsToEmptyGoalState() {
+        // Dismiss behavior must be unchanged for the "not met" variant too.
+        let app = launchedApp(scenario: "completedGoalBannerNotMet")
+
+        XCTAssertTrue(app.buttons["today.dismissBanner"].waitForExistence(timeout: 5))
+        app.buttons["today.dismissBanner"].tap()
+
+        XCTAssertTrue(app.otherElements["today.emptyGoalState"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.otherElements["today.completionBanner"].exists)
+    }
 }
