@@ -10,7 +10,18 @@ struct ReservoirApp: App {
     /// try once more against a fresh store file before falling back to an
     /// in-memory container (data loss, but the app stays usable).
     private static func makeModelContainer() -> ModelContainer {
-        let schema = Schema(versionedSchema: SchemaV1.self)
+        let schema = Schema(versionedSchema: SchemaV2.self)
+
+        #if DEBUG
+        if let scenario = UITestScenario.current {
+            let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+            guard let container = try? ModelContainer(for: schema, configurations: [configuration]) else {
+                fatalError("Failed to create in-memory ModelContainer for UI test scenario \(scenario).")
+            }
+            scenario.seed(into: ModelContext(container))
+            return container
+        }
+        #endif
 
         if let container = try? ModelContainer(for: schema, migrationPlan: ReservoirMigrationPlan.self) {
             return container

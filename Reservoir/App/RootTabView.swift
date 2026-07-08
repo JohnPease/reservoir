@@ -3,7 +3,7 @@ import SwiftUI
 struct RootTabView: View {
     var body: some View {
         TabView {
-            Text("Today")
+            TodayView()
                 .tabItem { Label("Today", systemImage: "sun.max") }
 
             Text("Goals")
