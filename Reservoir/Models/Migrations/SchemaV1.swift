@@ -27,6 +27,11 @@ enum SchemaV1: VersionedSchema {
         /// Fixed at creation/edit — see docs/PROJECT_SPEC.md "Core mechanic".
         /// Computed by the daily-limit calculator, not by this model.
         var dailyBase: Decimal
+        /// Date of the most recent edit to `targetAmount`/`targetDate` (nil if never
+        /// edited since creation). Maps to `DailyLimitCalculator.GoalCarryForwardInput
+        /// .effectiveStartDate` as `lastEditedDate ?? startDate` — an edit resets where
+        /// carry-forward starts accumulating from, per PROJECT_SPEC "Core mechanic".
+        var lastEditedDate: Date?
 
         @Relationship(deleteRule: .nullify, inverse: \SpendTransaction.savingsGoal)
         var transactions: [SpendTransaction] = []
@@ -36,13 +41,15 @@ enum SchemaV1: VersionedSchema {
             targetDate: Date,
             startDate: Date,
             startingBalance: Decimal,
-            dailyBase: Decimal
+            dailyBase: Decimal,
+            lastEditedDate: Date? = nil
         ) {
             self.targetAmount = targetAmount
             self.targetDate = targetDate
             self.startDate = startDate
             self.startingBalance = startingBalance
             self.dailyBase = dailyBase
+            self.lastEditedDate = lastEditedDate
         }
     }
 

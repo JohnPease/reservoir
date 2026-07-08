@@ -88,6 +88,18 @@ intentionally **not** a stored field — it's derived from `startingBalance`
 and the goal's transactions, so it's computed on demand by the daily-limit
 calculator (`Services/`) rather than persisted and kept in sync.
 
+**Daily limit / carry-forward**: `Services/DailyLimitCalculator.swift`
+implements the core mechanic (see `docs/PROJECT_SPEC.md` "Core mechanic") as
+plain Swift — no `SwiftUI`/`SwiftData` imports, so it's unit-testable without
+a `ModelContainer` or the simulator. `SavingsGoal`/`SpendTransaction` are
+mapped into its `GoalCarryForwardInput` value type by the calling layer.
+Carry-forward is summed per complete calendar day (device-local midnight)
+from each goal's `effectiveStartDate` (creation, or its most recent edit —
+an edit resets carry-forward rather than drifting silently) forward; only
+`.variable`-kind spend counts, `.fixed` is excluded. `totalDailyLimit(for
+goals:)` sums each active goal's independent base + carry-forward — goals
+are never pooled. Covered by `ReservoirTests/DailyLimitCalculatorTests.swift`.
+
 No `User` entity — single-user, single-device, no auth. App-wide settings
 live outside SwiftData (`UserDefaults`/a settings singleton).
 
