@@ -267,4 +267,115 @@ final class DailyLimitCalculatorTests: XCTestCase {
         let total = DailyLimitCalculator.totalDailyLimit(for: [], asOf: referenceStart, calendar: calendar)
         XCTAssertEqual(total, 0)
     }
+
+    // MARK: - isGoalMet
+
+    func testIsGoalMetTrueForCleanUnderspendEveryDay() {
+        let start = referenceStart
+        let target = day(4, from: start)
+        let goal = GoalCarryForwardInput(
+            id: "goal",
+            dailyBase: 10,
+            effectiveStartDate: start,
+            spendEntries: [
+                .init(date: day(0, from: start), amount: 5, kind: .variable),
+                .init(date: day(1, from: start), amount: 5, kind: .variable),
+                .init(date: day(2, from: start), amount: 5, kind: .variable),
+                .init(date: day(3, from: start), amount: 5, kind: .variable),
+                .init(date: day(4, from: start), amount: 5, kind: .variable)
+            ]
+        )
+
+        XCTAssertTrue(DailyLimitCalculator.isGoalMet(for: goal, targetDate: target, calendar: calendar))
+    }
+
+    func testIsGoalMetTrueWhenMidLifetimeDipRecoversByTargetDate() {
+        // Overspends heavily on day 0 but recovers well before targetDate — a bad day
+        // alone must not disqualify "met" status; only the final cumulative position
+        // matters.
+        let start = referenceStart
+        let target = day(4, from: start)
+        let goal = GoalCarryForwardInput(
+            id: "goal",
+            dailyBase: 10,
+            effectiveStartDate: start,
+            spendEntries: [
+                .init(date: day(0, from: start), amount: 50, kind: .variable), // -40
+                .init(date: day(1, from: start), amount: 0, kind: .variable),  // +10
+                .init(date: day(2, from: start), amount: 0, kind: .variable),  // +10
+                .init(date: day(3, from: start), amount: 0, kind: .variable),  // +10
+                .init(date: day(4, from: start), amount: 0, kind: .variable)   // +10, net = 0
+            ]
+        )
+
+        XCTAssertTrue(DailyLimitCalculator.isGoalMet(for: goal, targetDate: target, calendar: calendar))
+    }
+
+    func testIsGoalMetFalseWhenCumulativeEndStateNegativeDespiteRecentGoodDays() {
+        // The final days are well under budget, but the early overspend is deep enough
+        // that the cumulative balance is still negative at targetDate — proves it's the
+        // end state, not the most recent day(s), that decides.
+        let start = referenceStart
+        let target = day(4, from: start)
+        let goal = GoalCarryForwardInput(
+            id: "goal",
+            dailyBase: 10,
+            effectiveStartDate: start,
+            spendEntries: [
+                .init(date: day(0, from: start), amount: 100, kind: .variable), // -90
+                .init(date: day(1, from: start), amount: 0, kind: .variable),   // +10
+                .init(date: day(2, from: start), amount: 0, kind: .variable),   // +10
+                .init(date: day(3, from: start), amount: 0, kind: .variable),   // +10
+                .init(date: day(4, from: start), amount: 0, kind: .variable)    // +10, net = -50
+            ]
+        )
+
+        XCTAssertFalse(DailyLimitCalculator.isGoalMet(for: goal, targetDate: target, calendar: calendar))
+    }
+
+    func testIsGoalMetFalseWhenFinalDayTipsPreviouslyPositiveBalanceNegative() {
+        let start = referenceStart
+        let target = day(2, from: start)
+        let goal = GoalCarryForwardInput(
+            id: "goal",
+            dailyBase: 10,
+            effectiveStartDate: start,
+            spendEntries: [
+                .init(date: day(0, from: start), amount: 0, kind: .variable),  // +10
+                .init(date: day(1, from: start), amount: 0, kind: .variable),  // +10
+                .init(date: day(2, from: start), amount: 100, kind: .variable) // -90, net = -70
+            ]
+        )
+
+        XCTAssertFalse(DailyLimitCalculator.isGoalMet(for: goal, targetDate: target, calendar: calendar))
+    }
+
+    func testIsGoalMetTrueWithNoSpendEntriesAtAll() {
+        let start = referenceStart
+        let target = day(4, from: start)
+        let goal = GoalCarryForwardInput(
+            id: "goal",
+            dailyBase: 10,
+            effectiveStartDate: start,
+            spendEntries: []
+        )
+
+        XCTAssertTrue(DailyLimitCalculator.isGoalMet(for: goal, targetDate: target, calendar: calendar))
+    }
+
+    func testIsGoalMetTrueAtExactZeroBoundary() {
+        let start = referenceStart
+        let target = day(1, from: start)
+        let goal = GoalCarryForwardInput(
+            id: "goal",
+            dailyBase: 10,
+            effectiveStartDate: start,
+            spendEntries: [
+                .init(date: day(0, from: start), amount: 10, kind: .variable), // exactly 0
+                .init(date: day(1, from: start), amount: 10, kind: .variable)  // exactly 0
+            ]
+        )
+
+        XCTAssertTrue(DailyLimitCalculator.isGoalMet(for: goal, targetDate: target, calendar: calendar))
+    }
 }
