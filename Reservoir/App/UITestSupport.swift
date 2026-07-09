@@ -23,6 +23,10 @@ enum UITestScenario: String {
     /// whose cumulative carry-forward balance is negative through `targetDate` — the
     /// "not met" completion banner variant (reservoir-4za).
     case completedGoalBannerNotMet
+    /// One active goal (no spend at all, so Pace reads "on pace" and Simulation reads
+    /// "ahead of target") plus one completed-undismissed goal simultaneously — the
+    /// Goals tab's (adq.5) "both sections render together" state.
+    case goalsScreenMixed
 
     static var current: UITestScenario? {
         ProcessInfo.processInfo.environment["UITEST_SCENARIO"].flatMap(UITestScenario.init(rawValue:))
@@ -105,6 +109,29 @@ enum UITestScenario: String {
                 entryMethod: .manual,
                 savingsGoal: goal
             ))
+
+        case .goalsScreenMixed:
+            let activeStartDate = Calendar.current.date(byAdding: .day, value: -10, to: .now)!
+            let activeGoal = SavingsGoal(
+                targetAmount: 1000,
+                targetDate: Calendar.current.date(byAdding: .day, value: 20, to: .now)!,
+                startDate: activeStartDate,
+                startingBalance: 0,
+                dailyBase: 20,
+                createdAt: activeStartDate
+            )
+            context.insert(activeGoal)
+
+            let completedStartDate = Calendar.current.date(byAdding: .day, value: -30, to: .now)!
+            let completedGoal = SavingsGoal(
+                targetAmount: 500,
+                targetDate: Calendar.current.date(byAdding: .day, value: -1, to: .now)!,
+                startDate: completedStartDate,
+                startingBalance: 0,
+                dailyBase: 20,
+                createdAt: completedStartDate
+            )
+            context.insert(completedGoal)
 
         case .completedGoalBannerWithOrphanedSpend:
             let startDate = Calendar.current.date(byAdding: .day, value: -30, to: .now)!

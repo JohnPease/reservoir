@@ -5,16 +5,15 @@ import OSLog
 
 /// Direct coverage for the shared save/rollback pattern (STANDARDS.md §3) extracted
 /// from `TodayView.dismiss(_:)` and reused by goal create/edit/delete/dismiss. Uses a
-/// real in-memory `ModelContainer` so `modelContext.save()` genuinely succeeds rather
-/// than being mocked.
+/// real in-memory `ModelContainer` so `modelContext.save()` genuinely succeeds or fails
+/// rather than being mocked.
 ///
-/// The failure/rollback branch isn't exercised here: forcing a genuine, deterministic
-/// `ModelContext.save()` failure in an in-memory SwiftData store (short of tearing down
-/// the container mid-call) isn't practical, and this mirrors the original
-/// `TodayView.dismiss(_:)` implementation this helper was extracted from, which was
-/// likewise only manually verified for its failure path, not unit-tested — this
-/// extraction doesn't change that. The branch itself is a single trivial `catch` (call
-/// `rollback`, log, return `failureMessage`), reviewed by inspection.
+/// The failure/rollback branch (previously unexercised — see git history) is covered
+/// below by genuinely tripping a `ModelContext.save()` failure via
+/// `SpendTransaction.plaidTransactionID`'s `@Attribute(.unique)` constraint: inserting a
+/// second transaction with a `plaidTransactionID` already present in the store makes
+/// `save()` throw deterministically, without needing to tear down the container
+/// mid-call or mock anything.
 final class PersistenceSaveHelperTests: XCTestCase {
     private var container: ModelContainer!
     private var context: ModelContext!
@@ -77,6 +76,87 @@ final class PersistenceSaveHelperTests: XCTestCase {
 
         XCTAssertEqual(mutateCallCount, 1)
         XCTAssertEqual(rollbackCallCount, 0)
+    }
+
+    /// Opens a fresh on-disk store, writes a schema into it with a normal (writable)
+    /// container, then reopens the *same* file with `allowsSave: false`. Any
+    /// `modelContext.save()` against the resulting read-only context genuinely throws,
+    /// giving deterministic coverage of `PersistenceSaveHelper`'s `catch` branch without
+    /// mocking anything or tearing down a container mid-call.
+    private func makeReadOnlyContext() throws -> ModelContext {
+        let schema = Schema(versionedSchema: SchemaV3.self)
+        let storeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PersistenceSaveHelperTests-\(UUID().uuidString)")
+            .appendingPathExtension("store")
+
+        // First pass: create and initialize the store file with a normal, writable
+        // container so it exists on disk before being reopened read-only.
+        let seedConfiguration = ModelConfiguration(schema: schema, url: storeURL)
+        let seedContainer = try ModelContainer(
+            for: schema,
+            migrationPlan: ReservoirMigrationPlan.self,
+            configurations: [seedConfiguration]
+        )
+        try ModelContext(seedContainer).save()
+
+        let readOnlyConfiguration = ModelConfiguration(schema: schema, url: storeURL, allowsSave: false)
+        let readOnlyContainer = try ModelContainer(
+            for: schema,
+            migrationPlan: ReservoirMigrationPlan.self,
+            configurations: [readOnlyConfiguration]
+        )
+        return ModelContext(readOnlyContainer)
+    }
+
+    func testSaveOrRollbackCallsRollbackAndReturnsFailureMessageWhenSaveIsDisallowed() throws {
+        let readOnlyContext = try makeReadOnlyContext()
+
+        let goal = SavingsGoal(
+            targetAmount: 1000,
+            targetDate: Calendar.current.date(byAdding: .day, value: 30, to: .now)!,
+            startDate: .now,
+            startingBalance: 0,
+            dailyBase: 30
+        )
+        readOnlyContext.insert(goal)
+
+        var rollbackCallCount = 0
+        let error = PersistenceSaveHelper.saveOrRollback(
+            modelContext: readOnlyContext,
+            mutate: { goal.dismissedAt = .now },
+            rollback: {
+                rollbackCallCount += 1
+                goal.dismissedAt = nil
+            },
+            logger: logger
+        )
+
+        XCTAssertEqual(error, "Your change couldn't be saved. Please try again.")
+        XCTAssertEqual(rollbackCallCount, 1)
+        XCTAssertNil(goal.dismissedAt, "Rollback should have reverted the mutation.")
+    }
+
+    func testSaveOrRollbackReturnsCustomFailureMessageWhenSaveIsDisallowed() throws {
+        let readOnlyContext = try makeReadOnlyContext()
+
+        let goal = SavingsGoal(
+            targetAmount: 1000,
+            targetDate: Calendar.current.date(byAdding: .day, value: 30, to: .now)!,
+            startDate: .now,
+            startingBalance: 0,
+            dailyBase: 30
+        )
+        readOnlyContext.insert(goal)
+
+        let error = PersistenceSaveHelper.saveOrRollback(
+            modelContext: readOnlyContext,
+            mutate: { goal.dismissedAt = .now },
+            rollback: { goal.dismissedAt = nil },
+            logger: logger,
+            failureMessage: "Custom failure message."
+        )
+
+        XCTAssertEqual(error, "Custom failure message.")
     }
 
     func testSaveOrRollbackPersistsMutationAcrossFetch() throws {
