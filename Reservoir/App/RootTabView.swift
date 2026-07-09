@@ -6,7 +6,7 @@ struct RootTabView: View {
             TodayView()
                 .tabItem { Label("Today", systemImage: "sun.max") }
 
-            Text("Goals")
+            GoalsView()
                 .tabItem { Label("Goals", systemImage: "target") }
 
             Text("Transactions")
