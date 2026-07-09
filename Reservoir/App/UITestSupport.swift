@@ -35,12 +35,18 @@ enum UITestScenario: String {
             break
 
         case .normal:
+            let startDate = Calendar.current.date(byAdding: .day, value: -5, to: .now)!
             let goal = SavingsGoal(
                 targetAmount: 1000,
                 targetDate: Calendar.current.date(byAdding: .day, value: 10, to: .now)!,
-                startDate: Calendar.current.date(byAdding: .day, value: -5, to: .now)!,
+                startDate: startDate,
                 startingBalance: 100,
-                dailyBase: 30
+                dailyBase: 30,
+                // createdAt == startDate (not the default `.now`) so the createdAt floor
+                // (adq.5) doesn't collapse this scenario's carry-forward history — these
+                // fixtures simulate a goal that has genuinely existed since startDate, not
+                // one created moments ago. See TodayScreenCalculator.carryForwardInput.
+                createdAt: startDate
             )
             context.insert(goal)
             context.insert(SpendTransaction(
@@ -64,12 +70,16 @@ enum UITestScenario: String {
             // No spend entries recorded at all, so cumulative carry-forward through
             // targetDate is a full 30 days' worth of dailyBase — comfortably >= 0, i.e.
             // the "met" banner variant (reservoir-4za).
+            let startDate = Calendar.current.date(byAdding: .day, value: -30, to: .now)!
             let goal = SavingsGoal(
                 targetAmount: 500,
                 targetDate: Calendar.current.date(byAdding: .day, value: -1, to: .now)!,
-                startDate: Calendar.current.date(byAdding: .day, value: -30, to: .now)!,
+                startDate: startDate,
                 startingBalance: 0,
-                dailyBase: 20
+                dailyBase: 20,
+                // See .normal above — createdAt == startDate preserves this scenario's
+                // full 30-day carry-forward history under the adq.5 createdAt floor.
+                createdAt: startDate
             )
             context.insert(goal)
 
@@ -77,12 +87,14 @@ enum UITestScenario: String {
             // A single, large overspend entry that dwarfs the rest of the goal's
             // lifetime underspend, leaving cumulative carry-forward negative through
             // targetDate — the "not met" banner variant (reservoir-4za).
+            let startDate = Calendar.current.date(byAdding: .day, value: -30, to: .now)!
             let goal = SavingsGoal(
                 targetAmount: 500,
                 targetDate: Calendar.current.date(byAdding: .day, value: -1, to: .now)!,
-                startDate: Calendar.current.date(byAdding: .day, value: -30, to: .now)!,
+                startDate: startDate,
                 startingBalance: 0,
-                dailyBase: 20
+                dailyBase: 20,
+                createdAt: startDate
             )
             context.insert(goal)
             context.insert(SpendTransaction(
@@ -95,12 +107,14 @@ enum UITestScenario: String {
             ))
 
         case .completedGoalBannerWithOrphanedSpend:
+            let startDate = Calendar.current.date(byAdding: .day, value: -30, to: .now)!
             let goal = SavingsGoal(
                 targetAmount: 500,
                 targetDate: Calendar.current.date(byAdding: .day, value: -1, to: .now)!,
-                startDate: Calendar.current.date(byAdding: .day, value: -30, to: .now)!,
+                startDate: startDate,
                 startingBalance: 0,
-                dailyBase: 20
+                dailyBase: 20,
+                createdAt: startDate
             )
             context.insert(goal)
             context.insert(SpendTransaction(

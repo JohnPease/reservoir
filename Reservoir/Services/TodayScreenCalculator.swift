@@ -60,13 +60,23 @@ enum TodayScreenCalculator {
     /// Maps one `SavingsGoal` and its transactions into the plain value type
     /// `DailyLimitCalculator` operates on. This is the sole place `SavingsGoal`/
     /// `SpendTransaction` meet the pure calculator, per this story's acceptance
-    /// criteria — callers (namely `TodayView`) never build a `GoalCarryForwardInput`
-    /// themselves.
-    static func carryForwardInput(for goal: SavingsGoal) -> GoalCarryForwardInput {
+    /// criteria — callers (namely `TodayView`, `GoalsScreenCalculator`) never build a
+    /// `GoalCarryForwardInput` themselves.
+    ///
+    /// `effectiveStartDate` is `lastEditedDate ?? max(startDate, createdAt)` (adq.5) —
+    /// not `lastEditedDate ?? startDate` alone (the pre-adq.5 formula). `startDate` is
+    /// now user-backdatable (see `GoalFormValidator`), but `SpendTransaction.savingsGoal`
+    /// is only ever set at transaction-entry time — there's no retroactive-attribution
+    /// UI — so days before the goal's real `createdAt` genuinely have zero attributable
+    /// transactions, not zero real spend. Flooring at `createdAt` stops a backdated
+    /// `startDate` from crediting carry-forward for days that predate the goal's actual
+    /// existence in the app (which would fabricate banked surplus from nothing). An
+    /// edited goal (`lastEditedDate` set) still wins outright, unaffected by this floor.
+    static func carryForwardInput(for goal: SavingsGoal, calendar: Calendar = .current) -> GoalCarryForwardInput {
         GoalCarryForwardInput(
             id: goal.persistentModelID,
             dailyBase: goal.dailyBase,
-            effectiveStartDate: goal.lastEditedDate ?? goal.startDate,
+            effectiveStartDate: goal.lastEditedDate ?? effectiveStartDateFloor(startDate: goal.startDate, createdAt: goal.createdAt, calendar: calendar),
             spendEntries: goal.transactions.map { transaction in
                 GoalCarryForwardInput.SpendEntry(
                     date: transaction.date,
@@ -77,6 +87,15 @@ enum TodayScreenCalculator {
         )
     }
 
+    /// `max(startDate, createdAt)`, compared as whole calendar days (mirrors every other
+    /// date comparison in this mapping/`DailyLimitCalculator`, which all operate at
+    /// day granularity, not exact `Date` instants).
+    private static func effectiveStartDateFloor(startDate: Date, createdAt: Date, calendar: Calendar) -> Date {
+        let startDay = calendar.startOfDay(for: startDate)
+        let createdDay = calendar.startOfDay(for: createdAt)
+        return max(startDay, createdDay)
+    }
+
     /// Whether `goal` was actually met — an end-state check on the goal's cumulative
     /// carry-forward balance through `goal.targetDate` inclusive, not merely that
     /// `targetDate` has passed. Mirrors `carryForwardInput(for:)`'s mapping pattern;
@@ -85,7 +104,7 @@ enum TodayScreenCalculator {
     /// full end-state-vs-day-by-day reasoning.
     static func isGoalMet(_ goal: SavingsGoal, calendar: Calendar = .current) -> Bool {
         DailyLimitCalculator.isGoalMet(
-            for: carryForwardInput(for: goal),
+            for: carryForwardInput(for: goal, calendar: calendar),
             targetDate: goal.targetDate,
             calendar: calendar
         )
@@ -131,7 +150,7 @@ enum TodayScreenCalculator {
         guard !activeGoals.isEmpty else { return nil }
 
         let goalLimits = activeGoals.map {
-            DailyLimitCalculator.dailyLimit(for: carryForwardInput(for: $0), asOf: referenceDate, calendar: calendar)
+            DailyLimitCalculator.dailyLimit(for: carryForwardInput(for: $0, calendar: calendar), asOf: referenceDate, calendar: calendar)
         }
         let dailyBase = goalLimits.reduce(Decimal(0)) { $0 + $1.dailyBase }
         let carriedForward = goalLimits.reduce(Decimal(0)) { $0 + $1.carryForward }
