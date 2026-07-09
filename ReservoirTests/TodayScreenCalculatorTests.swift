@@ -165,6 +165,29 @@ final class TodayScreenCalculatorTests: XCTestCase {
         XCTAssertTrue(input.spendEntries.contains { $0.amount == 40 && $0.kind == .fixed })
     }
 
+    // MARK: - isGoalMet
+
+    func testIsGoalMetTrueWhenCumulativeCarryForwardIsNonNegativeAtTargetDate() throws {
+        let start = day(-2)
+        let target = day(-1)
+        let goal = makeGoal(startDate: start, targetDate: target, dailyBase: 10)
+        makeTransaction(amount: 5, date: start, type: .variable, savingsGoal: goal) // +5
+        makeTransaction(amount: 5, date: target, type: .variable, savingsGoal: goal) // +5
+        try context.save()
+
+        XCTAssertTrue(TodayScreenCalculator.isGoalMet(goal, calendar: calendar))
+    }
+
+    func testIsGoalMetFalseWhenCumulativeCarryForwardIsNegativeAtTargetDate() throws {
+        let start = day(-2)
+        let target = day(-1)
+        let goal = makeGoal(startDate: start, targetDate: target, dailyBase: 10)
+        makeTransaction(amount: 100, date: start, type: .variable, savingsGoal: goal) // -90
+        try context.save()
+
+        XCTAssertFalse(TodayScreenCalculator.isGoalMet(goal, calendar: calendar))
+    }
+
     // MARK: - summary
 
     func testSummaryReturnsNilWithNoActiveGoals() {

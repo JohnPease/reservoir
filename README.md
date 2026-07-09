@@ -132,6 +132,17 @@ completion banner instead of a daily-limit hero for that goal. Dismissing the
 banner sets `dismissedAt`, which permanently excludes the goal from both
 "active" and "completed."
 
+The completion banner's copy is keyed off `DailyLimitCalculator.isGoalMet`
+(wrapped for SwiftData by `TodayScreenCalculator.isGoalMet`), not merely
+whether `targetDate` has passed: it's an end-state check on the goal's
+cumulative carry-forward balance through `targetDate` inclusive
+(`carryForward(asOf: targetDate + 1 day) >= 0`), so a day where the user
+overspent but recovered later still counts as met — carry-forward is
+designed to absorb exactly that. The banner shows celebratory copy ("You
+reached your goal — nice work!") when met, or factual, non-punitive copy
+("Your target date has arrived" / "You spent more than planned along the
+way.") when not — no shortfall amount is shown in either case.
+
 The empty-state "no active goal" prompt only renders when there are truly no
 goals at all — no active *and* no completed-undismissed goal. A
 completed-undismissed goal (banner showing, no active goal) is a distinct

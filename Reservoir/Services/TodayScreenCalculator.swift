@@ -77,6 +77,20 @@ enum TodayScreenCalculator {
         )
     }
 
+    /// Whether `goal` was actually met — an end-state check on the goal's cumulative
+    /// carry-forward balance through `goal.targetDate` inclusive, not merely that
+    /// `targetDate` has passed. Mirrors `carryForwardInput(for:)`'s mapping pattern;
+    /// callers (namely `TodayView.CompletionBannerView`) never build a
+    /// `GoalCarryForwardInput` themselves. See `DailyLimitCalculator.isGoalMet` for the
+    /// full end-state-vs-day-by-day reasoning.
+    static func isGoalMet(_ goal: SavingsGoal, calendar: Calendar = .current) -> Bool {
+        DailyLimitCalculator.isGoalMet(
+            for: carryForwardInput(for: goal),
+            targetDate: goal.targetDate,
+            calendar: calendar
+        )
+    }
+
     // MARK: - Today summary
 
     /// The hero number + two-stat row's underlying figures.

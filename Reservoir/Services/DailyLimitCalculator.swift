@@ -96,6 +96,28 @@ public enum DailyLimitCalculator {
         goals.reduce(Decimal(0)) { $0 + dailyLimit(for: $1, asOf: referenceDate, calendar: calendar).limit }
     }
 
+    // MARK: - Goal-met verification
+
+    /// Whether the goal's cumulative carry-forward balance was >= 0 across its full
+    /// lifetime (`effectiveStartDate` through `targetDate` inclusive) — i.e. the user
+    /// never net-overspent once the whole plan is taken into account. A day where the
+    /// user went over their daily limit but recovered later does NOT disqualify — only
+    /// the final cumulative position at `targetDate` matters (carry-forward is designed
+    /// to absorb exactly this kind of fluctuation; see PROJECT_SPEC "Core mechanic").
+    ///
+    /// Implemented by calling `carryForward` with `referenceDate = targetDate + 1 day`,
+    /// which sums every day through `targetDate` inclusive (entries dated after
+    /// `targetDate` are naturally excluded since the day-loop only visits offsets within
+    /// that window) — no new day-by-day logic needed.
+    public static func isGoalMet(
+        for goal: GoalCarryForwardInput,
+        targetDate: Date,
+        calendar: Calendar = .current
+    ) -> Bool {
+        let dayAfterTarget = calendar.date(byAdding: .day, value: 1, to: targetDate)!
+        return carryForward(for: goal, asOf: dayAfterTarget, calendar: calendar) >= 0
+    }
+
     // MARK: - Private helpers
 
     /// Sums spend entries per calendar day, counting only `.variable`-kind entries.
