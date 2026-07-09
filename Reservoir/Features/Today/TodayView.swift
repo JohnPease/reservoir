@@ -116,7 +116,7 @@ struct TodayView: View {
                         HeroSection(summary: summary)
                         TwoStatRow(summary: summary)
                     } else if hasNoGoalsAtAll {
-                        NoActiveGoalPrompt {
+                        NoActiveGoalPromptView {
                             isShowingCreateGoal = true
                         }
                     } else {
@@ -166,12 +166,7 @@ struct TodayView: View {
             )
         }
         .sheet(isPresented: $isShowingCreateGoal) {
-            StubSheet(
-                title: "Create a Goal",
-                icon: "target",
-                description: "Goal creation is coming in a future story.",
-                accessibilityIdentifier: "today.createGoalSheet"
-            )
+            GoalFormView(mode: .create, accessibilityIdentifier: "today.createGoalSheet")
         }
         .sheet(isPresented: $isShowingSettings) {
             StubSheet(
@@ -207,14 +202,12 @@ struct TodayView: View {
     /// both logged and surfaced via an alert so a persistent failure (e.g. a full disk)
     /// doesn't fail silently.
     private func dismiss(_ goal: SavingsGoal) {
-        goal.dismissedAt = .now
-        do {
-            try modelContext.save()
-        } catch {
-            goal.dismissedAt = nil
-            logger.error("Failed to save goal dismissal: \(error.localizedDescription, privacy: .public)")
-            dismissError = "Your change couldn't be saved. Please try again."
-        }
+        dismissError = PersistenceSaveHelper.saveOrRollback(
+            modelContext: modelContext,
+            mutate: { goal.dismissedAt = .now },
+            rollback: { goal.dismissedAt = nil },
+            logger: logger
+        )
     }
 
     /// Recomputes `referenceDate` at every midnight boundary while the view is alive,
@@ -318,87 +311,7 @@ private struct StatCard: View {
     }
 }
 
-// MARK: - Empty state
-
-private struct NoActiveGoalPrompt: View {
-    let onCreateGoal: () -> Void
-
-    var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "target")
-                .font(.largeTitle)
-                .foregroundStyle(.secondary)
-            Text("No active goal yet")
-                .font(.headline)
-            Text("Create a savings goal to see your daily limit.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            Button("Create a goal", action: onCreateGoal)
-                .buttonStyle(.borderedProminent)
-                .accessibilityIdentifier("today.createGoal")
-        }
-        .frame(maxWidth: .infinity)
-        .padding()
-        // .contain keeps "today.createGoal" queryable on the Button itself instead of
-        // the whole group collapsing into one element under the container's identifier.
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("today.emptyGoalState")
-    }
-}
-
 // MARK: - Completion banner
-
-private struct CompletionBannerView: View {
-    let goal: SavingsGoal
-    let onDismiss: () -> Void
-
-    /// End-state check (cumulative carry-forward >= 0 through `targetDate`), not merely
-    /// that `targetDate` has passed — see `DailyLimitCalculator.isGoalMet` and
-    /// reservoir-4za. A day where the user overspent but recovered by the target date
-    /// still counts as met.
-    private var isGoalMet: Bool {
-        TodayScreenCalculator.isGoalMet(goal)
-    }
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: isGoalMet ? "checkmark.circle.fill" : "calendar.badge.clock")
-                .foregroundStyle(.blue)
-            VStack(alignment: .leading, spacing: 4) {
-                if isGoalMet {
-                    // Celebratory framing: the goal's cumulative carry-forward balance
-                    // never went negative through the target date.
-                    Text("You reached your goal — nice work!")
-                        .font(.headline)
-                    Text("Target: \(goal.targetAmount, format: .currency(code: "USD")) by \(goal.targetDate, format: .dateTime.month(.wide).day()).")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                } else {
-                    // Factual, non-punitive framing — no shortfall dollar amount, no
-                    // guilt language. This is a past event being reported, not an active
-                    // warning (see reservoir-4za "UX" section).
-                    Text("Your target date has arrived")
-                        .font(.headline)
-                    Text("You spent more than planned along the way.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-            Button {
-                onDismiss()
-            } label: {
-                Image(systemName: "xmark")
-            }
-            .accessibilityIdentifier("today.dismissBanner")
-        }
-        .padding()
-        .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("today.completionBanner")
-    }
-}
 
 // MARK: - Recent transactions
 
