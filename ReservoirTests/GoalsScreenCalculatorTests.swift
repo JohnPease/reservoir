@@ -357,6 +357,37 @@ final class GoalsScreenCalculatorTests: XCTestCase {
         XCTAssertEqual(date, targetDate)
     }
 
+    func testSimulationLateCompletionWhenTargetDateIsTodayAndBehindPace() throws {
+        // Companion to the on-schedule/ahead-of-pace regression above: a goal due today
+        // that's already behind pace. daysRemaining == 0 makes
+        // projectedSurplusShortfall == avgDailyNet * 0 == 0 regardless of avgDailyNet's
+        // magnitude, so lateDays == ceil(abs(0)/dailyBase) == 0 and completionDate ==
+        // targetDate + 0 days == targetDate itself — "0 days late, due today" is a sane,
+        // non-contradictory read (unlike the ahead-of-pace case, this branch was never
+        // floored past targetDate, so it needed no code change — this test just locks
+        // down that the untouched .late branch stays correct at this edge).
+        let targetDate = today
+        let goal = makeGoal(targetAmount: 1000, startDate: day(-10), targetDate: targetDate, dailyBase: 10, createdAt: day(-10))
+        // 9 days of no spend (+10 each = 90) plus one $200 day (10 - 200 = -190) over the
+        // 10-day window nets to (90 - 190) / 10 == -10 average daily net.
+        makeTransaction(amount: 200, date: day(-5), type: .variable, savingsGoal: goal)
+        try context.save()
+
+        guard case .computed(let projection) = GoalsScreenCalculator.simulationStatus(
+            for: goal, referenceDate: today, calendar: calendar
+        ) else {
+            return XCTFail("Expected .computed")
+        }
+        XCTAssertLessThan(projection.avgDailyNet, 0)
+        XCTAssertEqual(projection.daysRemaining, 0)
+
+        guard case .late(let days, let date) = projection.completionOutcome else {
+            return XCTFail("Expected .late outcome, got \(projection.completionOutcome)")
+        }
+        XCTAssertEqual(days, 0)
+        XCTAssertEqual(date, targetDate)
+    }
+
     func testSimulationOnScheduleWhenAvgDailyNetIsExactlyZero() throws {
         let targetDate = day(10)
         let goal = makeGoal(targetAmount: 1000, startDate: day(-10), targetDate: targetDate, dailyBase: 10, createdAt: day(-10))
