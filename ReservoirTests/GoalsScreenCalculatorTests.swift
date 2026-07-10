@@ -329,6 +329,34 @@ final class GoalsScreenCalculatorTests: XCTestCase {
         XCTAssertEqual(days, calendar.dateComponents([.day], from: tomorrow, to: targetDate).day)
     }
 
+    func testSimulationOnScheduleNotEarlyWhenTargetDateIsTodayAndAheadOfPace() throws {
+        // Regression for the bug where daysRemaining == 0 (targetDate == today) with
+        // avgDailyNet > 0 produced a completion date one day *after* targetDate: with no
+        // remaining runway, projectedSurplusShortfall is always 0 regardless of
+        // avgDailyNet's sign, so earlyDaysRaw floored to 0, leaving the naive completion
+        // date at targetDate itself (today) — which then got floored *up* to tomorrow by
+        // the "no earlier than tomorrow" guard, landing after targetDate. There's no
+        // meaningful "early" with zero days of runway, so this should read as on-schedule
+        // at targetDate, not early-but-later-than-target.
+        let targetDate = today
+        let goal = makeGoal(targetAmount: 1000, startDate: day(-10), targetDate: targetDate, dailyBase: 10, createdAt: day(-10))
+        try context.save()
+
+        guard case .computed(let projection) = GoalsScreenCalculator.simulationStatus(
+            for: goal, referenceDate: today, calendar: calendar
+        ) else {
+            return XCTFail("Expected .computed")
+        }
+        XCTAssertGreaterThan(projection.avgDailyNet, 0)
+        XCTAssertEqual(projection.daysRemaining, 0)
+
+        guard case .onSchedule(let date) = projection.completionOutcome else {
+            return XCTFail("Expected .onSchedule outcome, got \(projection.completionOutcome)")
+        }
+        XCTAssertLessThanOrEqual(date, targetDate)
+        XCTAssertEqual(date, targetDate)
+    }
+
     func testSimulationOnScheduleWhenAvgDailyNetIsExactlyZero() throws {
         let targetDate = day(10)
         let goal = makeGoal(targetAmount: 1000, startDate: day(-10), targetDate: targetDate, dailyBase: 10, createdAt: day(-10))

@@ -262,7 +262,11 @@ enum GoalsScreenCalculator {
     /// `avgDailyNet < 0`: `targetDate + ceil(abs(projectedSurplusShortfall) / dailyBase)`
     /// days. `avgDailyNet >= 0`: `targetDate - floor(projectedSurplusShortfall /
     /// dailyBase)` days, floored at not going earlier than tomorrow. `avgDailyNet == 0`
-    /// exactly: no date arithmetic, on schedule at `targetDate` itself.
+    /// exactly: no date arithmetic, on schedule at `targetDate` itself. `avgDailyNet > 0`
+    /// with `targetDate == today` (zero days of remaining runway): also on schedule
+    /// rather than "early" — `projectedSurplusShortfall` is always 0 with no runway, so
+    /// there's no meaningful "early" — and without this guard the tomorrow-floor would
+    /// push the reported completion date to one day *after* `targetDate`.
     private static func completionOutcome(
         avgDailyNet: Decimal,
         projectedSurplusShortfall: Decimal,
@@ -279,6 +283,10 @@ enum GoalsScreenCalculator {
             let lateDays = decimalCeil(abs(projectedSurplusShortfall) / dailyBase)
             let completionDate = calendar.date(byAdding: .day, value: lateDays, to: targetDate)!
             return .late(days: lateDays, date: completionDate)
+        }
+
+        if targetDate == today {
+            return .onSchedule(date: targetDate)
         }
 
         let earlyDaysRaw = decimalFloor(projectedSurplusShortfall / dailyBase)
