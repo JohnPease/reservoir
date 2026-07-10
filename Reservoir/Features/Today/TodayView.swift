@@ -13,7 +13,6 @@ import OSLog
 /// state changes (STANDARDS.md §3).
 struct TodayView: View {
     @Environment(\.modelContext) private var modelContext
-    @Environment(\.scenePhase) private var scenePhase
 
     @Query(sort: \SavingsGoal.targetDate) private var goals: [SavingsGoal]
     /// Sorted so `spentToday`'s filtering doesn't have to fault/sort the whole table on
@@ -40,10 +39,10 @@ struct TodayView: View {
         return descriptor
     }
 
-    /// "Now," recomputed on foreground resume and at the next midnight rollover so the
-    /// hero number, active-goal set, and completion banners stay correct without
-    /// requiring the user to relaunch. Not itself business logic — just the clock input
-    /// to `TodayScreenCalculator`.
+    /// "Now," kept current by `ReferenceDateKeeper` (foreground resume + midnight
+    /// rollover) so the hero number, active-goal set, and completion banners stay correct
+    /// without requiring the user to relaunch. Not itself business logic — just the clock
+    /// input to `TodayScreenCalculator`.
     @State private var referenceDate: Date = .now
 
     @State private var isShowingAddTransaction = false
@@ -76,9 +75,10 @@ struct TodayView: View {
     /// completed-but-undismissed goal either. Distinct from `summary == nil`, which is
     /// also true whenever there's no active goal even if a completion banner is showing;
     /// using that alone to gate the empty-state prompt made the prompt render underneath
-    /// a completion banner, which is a real (fixed) bug — see `TodayScreenCalculator`.
+    /// a completion banner, which is a real (fixed) bug. Shared with `GoalsView` via
+    /// `TodayScreenCalculator.hasNoGoalsAtAll` (STANDARDS.md §3).
     private var hasNoGoalsAtAll: Bool {
-        activeGoals.isEmpty && completedGoals.isEmpty
+        TodayScreenCalculator.hasNoGoalsAtAll(activeGoals: activeGoals, completedUndismissedGoals: completedGoals)
     }
 
     /// Today's spend attributable to a completed-but-undismissed goal or unattributed
@@ -152,11 +152,7 @@ struct TodayView: View {
                 }
             }
         }
-        .onAppear { referenceDate = .now }
-        .onChange(of: scenePhase) { _, newPhase in
-            if newPhase == .active { referenceDate = .now }
-        }
-        .task { await scheduleMidnightRefresh() }
+        .keepingReferenceDateCurrent($referenceDate, calendar: calendar)
         .sheet(isPresented: $isShowingAddTransaction) {
             StubSheet(
                 title: "Add Transaction",
@@ -210,25 +206,6 @@ struct TodayView: View {
         )
     }
 
-    /// Recomputes `referenceDate` at every midnight boundary while the view is alive,
-    /// so a long-lived foreground session (app left open overnight) still rolls the
-    /// daily limit over without needing a foreground-resume event.
-    private func scheduleMidnightRefresh() async {
-        while !Task.isCancelled {
-            let now = Date()
-            let nextMidnight = calendar.nextDate(
-                after: now,
-                matching: DateComponents(hour: 0, minute: 0, second: 0),
-                matchingPolicy: .nextTime
-            ) ?? now.addingTimeInterval(86_400)
-
-            let nanoseconds = UInt64(max(nextMidnight.timeIntervalSince(now), 1)) * 1_000_000_000
-            try? await Task.sleep(nanoseconds: nanoseconds)
-
-            guard !Task.isCancelled else { return }
-            referenceDate = .now
-        }
-    }
 }
 
 // MARK: - Hero

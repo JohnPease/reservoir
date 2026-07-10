@@ -142,6 +142,22 @@ final class TodayScreenCalculatorTests: XCTestCase {
         XCTAssertTrue(result.isEmpty)
     }
 
+    // MARK: - hasNoGoalsAtAll (shared by TodayView and GoalsView)
+
+    func testHasNoGoalsAtAllIsTrueWhenBothListsAreEmpty() {
+        XCTAssertTrue(TodayScreenCalculator.hasNoGoalsAtAll(activeGoals: [], completedUndismissedGoals: []))
+    }
+
+    func testHasNoGoalsAtAllIsFalseWhenThereIsAnActiveGoal() {
+        let active = makeGoal(targetDate: day(1))
+        XCTAssertFalse(TodayScreenCalculator.hasNoGoalsAtAll(activeGoals: [active], completedUndismissedGoals: []))
+    }
+
+    func testHasNoGoalsAtAllIsFalseWhenThereIsOnlyACompletedUndismissedGoal() {
+        let completed = makeGoal(targetDate: day(-1))
+        XCTAssertFalse(TodayScreenCalculator.hasNoGoalsAtAll(activeGoals: [], completedUndismissedGoals: [completed]))
+    }
+
     // MARK: - carryForwardInput mapping
 
     func testCarryForwardInputUsesLastEditedDateWhenPresent() {

@@ -55,18 +55,6 @@ final class GoalFormValidatorTests: XCTestCase {
         XCTAssertNotNil(result.targetAmountError)
     }
 
-    func testCreationMissingTargetAmountFails() {
-        let result = GoalFormValidator.validateCreation(
-            targetAmount: nil,
-            targetDate: day(30),
-            startingBalance: 100,
-            startDate: today,
-            referenceDate: today,
-            calendar: calendar
-        )
-        XCTAssertNotNil(result.targetAmountError)
-    }
-
     // MARK: - Creation: targetDate
 
     func testCreationTargetDateAfterTodayPasses() {
@@ -124,18 +112,6 @@ final class GoalFormValidatorTests: XCTestCase {
             targetAmount: 1000,
             targetDate: day(30),
             startingBalance: -1,
-            startDate: today,
-            referenceDate: today,
-            calendar: calendar
-        )
-        XCTAssertNotNil(result.startingBalanceError)
-    }
-
-    func testCreationMissingStartingBalanceFails() {
-        let result = GoalFormValidator.validateCreation(
-            targetAmount: 1000,
-            targetDate: day(30),
-            startingBalance: nil,
             startDate: today,
             referenceDate: today,
             calendar: calendar

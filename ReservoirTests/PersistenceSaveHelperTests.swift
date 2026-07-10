@@ -159,6 +159,81 @@ final class PersistenceSaveHelperTests: XCTestCase {
         XCTAssertEqual(error, "Custom failure message.")
     }
 
+    /// Regression coverage for `GoalsView.delete(_:)`'s rollback closure (code-review
+    /// finding on PR #5): `modelContext.delete(goal)` applies the `.nullify` relationship
+    /// side effect to the goal's attributed transactions immediately, in-memory — not
+    /// only once `save()` succeeds. A rollback that only re-inserts the goal (without
+    /// also re-linking `transaction.savingsGoal`) leaves those transactions permanently
+    /// orphaned even though the deletion was "undone." This exercises the exact
+    /// mutate/rollback closure shape `GoalsView.delete(_:)` now uses — capturing
+    /// `goal.transactions` before `mutate()` runs and restoring `savingsGoal` on each in
+    /// `rollback()` — against a genuinely failing `save()` (read-only store), matching
+    /// this file's existing read-only-container pattern.
+    func testSaveOrRollbackRestoresTransactionGoalLinkAfterFailedDelete() throws {
+        let schema = Schema(versionedSchema: SchemaV3.self)
+        let storeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PersistenceSaveHelperTests-deleteRollback-\(UUID().uuidString)")
+            .appendingPathExtension("store")
+
+        let seedConfiguration = ModelConfiguration(schema: schema, url: storeURL)
+        let seedContainer = try ModelContainer(
+            for: schema,
+            migrationPlan: ReservoirMigrationPlan.self,
+            configurations: [seedConfiguration]
+        )
+        let seedContext = ModelContext(seedContainer)
+
+        let goal = SavingsGoal(
+            targetAmount: 1000,
+            targetDate: Calendar.current.date(byAdding: .day, value: 30, to: .now)!,
+            startDate: .now,
+            startingBalance: 0,
+            dailyBase: 30
+        )
+        seedContext.insert(goal)
+        let transaction = SpendTransaction(
+            amount: 25,
+            date: .now,
+            merchantName: "Merchant",
+            type: .variable,
+            entryMethod: .manual,
+            savingsGoal: goal
+        )
+        seedContext.insert(transaction)
+        try seedContext.save()
+
+        let readOnlyConfiguration = ModelConfiguration(schema: schema, url: storeURL, allowsSave: false)
+        let readOnlyContainer = try ModelContainer(
+            for: schema,
+            migrationPlan: ReservoirMigrationPlan.self,
+            configurations: [readOnlyConfiguration]
+        )
+        let readOnlyContext = ModelContext(readOnlyContainer)
+        let fetchedGoal = try XCTUnwrap(try readOnlyContext.fetch(FetchDescriptor<SavingsGoal>()).first)
+        let fetchedTransaction = try XCTUnwrap(try readOnlyContext.fetch(FetchDescriptor<SpendTransaction>()).first)
+        XCTAssertEqual(fetchedTransaction.savingsGoal?.persistentModelID, fetchedGoal.persistentModelID)
+
+        let affectedTransactions = fetchedGoal.transactions
+        let error = PersistenceSaveHelper.saveOrRollback(
+            modelContext: readOnlyContext,
+            mutate: { readOnlyContext.delete(fetchedGoal) },
+            rollback: {
+                readOnlyContext.insert(fetchedGoal)
+                for transaction in affectedTransactions {
+                    transaction.savingsGoal = fetchedGoal
+                }
+            },
+            logger: logger
+        )
+
+        XCTAssertNotNil(error, "save() against the read-only store should have failed.")
+        XCTAssertEqual(
+            fetchedTransaction.savingsGoal?.persistentModelID,
+            fetchedGoal.persistentModelID,
+            "The transaction should still point back to the goal after a failed delete+rollback."
+        )
+    }
+
     func testSaveOrRollbackPersistsMutationAcrossFetch() throws {
         let goal = SavingsGoal(
             targetAmount: 500,

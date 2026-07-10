@@ -12,6 +12,8 @@ struct GoalsView: View {
 
     @Query(sort: \SavingsGoal.targetDate) private var goals: [SavingsGoal]
 
+    /// "Now," kept current by `ReferenceDateKeeper` (foreground resume + midnight
+    /// rollover), matching `TodayView`'s clock input (STANDARDS.md §3).
     @State private var referenceDate: Date = .now
     @State private var isShowingCreateGoal = false
     @State private var goalPendingEdit: SavingsGoal?
@@ -31,8 +33,10 @@ struct GoalsView: View {
         TodayScreenCalculator.completedUndismissedGoals(goals, referenceDate: referenceDate, calendar: calendar)
     }
 
+    /// Shared with `TodayView` via `TodayScreenCalculator.hasNoGoalsAtAll` — previously a
+    /// verbatim copy of `TodayView`'s identical private property (STANDARDS.md §3).
     private var hasNoGoalsAtAll: Bool {
-        activeGoals.isEmpty && completedGoals.isEmpty
+        TodayScreenCalculator.hasNoGoalsAtAll(activeGoals: activeGoals, completedUndismissedGoals: completedGoals)
     }
 
     var body: some View {
@@ -88,7 +92,7 @@ struct GoalsView: View {
                 }
             }
         }
-        .onAppear { referenceDate = .now }
+        .keepingReferenceDateCurrent($referenceDate, calendar: calendar)
         .sheet(isPresented: $isShowingCreateGoal) {
             GoalFormView(mode: .create, accessibilityIdentifier: "goals.createGoalSheet")
         }
@@ -164,11 +168,25 @@ struct GoalsView: View {
     /// Attributed `SpendTransaction`s are nullified, not deleted, by the existing
     /// `SchemaV1`/V2/V3 `.nullify` delete rule on `SavingsGoal.transactions` — no new
     /// calculator logic needed, only this action + save/rollback.
+    ///
+    /// SwiftData applies that `.nullify` relationship side effect to the affected
+    /// transactions in-memory as soon as `modelContext.delete(goal)` runs, not only once
+    /// `save()` actually succeeds. If `save()` then throws, re-inserting the goal alone
+    /// (the old rollback) left those transactions permanently orphaned even though the
+    /// deletion was "undone" — the goal came back but nothing pointed to it anymore.
+    /// Capturing `affectedTransactions` before `mutate()` runs and re-linking each one's
+    /// `savingsGoal` in `rollback()` restores both halves of the pre-delete state.
     private func delete(_ goal: SavingsGoal) {
+        let affectedTransactions = goal.transactions
         actionError = PersistenceSaveHelper.saveOrRollback(
             modelContext: modelContext,
             mutate: { modelContext.delete(goal) },
-            rollback: { modelContext.insert(goal) },
+            rollback: {
+                modelContext.insert(goal)
+                for transaction in affectedTransactions {
+                    transaction.savingsGoal = goal
+                }
+            },
             logger: logger
         )
     }

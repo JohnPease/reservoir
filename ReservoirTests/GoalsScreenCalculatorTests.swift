@@ -134,6 +134,36 @@ final class GoalsScreenCalculatorTests: XCTestCase {
         XCTAssertEqual(GoalsScreenCalculator.clampedProgressFraction(for: goal), 0)
     }
 
+    // MARK: - progressPercentRounded (code-review: nearest-rounding, not truncation)
+
+    func testProgressPercentRoundedRoundsFractionalPercentUpToNearestWholeNumber() throws {
+        // 669/1000 = 66.9% — must round to the *nearest* whole percent (67), not
+        // truncate toward zero (66), which `NSDecimalNumber.intValue` alone would do.
+        let goal = makeGoal(targetAmount: 1000, startingBalance: 0)
+        makeTransaction(amount: 669, date: today, type: .variable, savingsGoal: goal)
+        try context.save()
+
+        XCTAssertEqual(GoalsScreenCalculator.progressPercentRounded(for: goal), 67)
+    }
+
+    func testProgressPercentRoundedRoundsFractionalPercentDownToNearestWholeNumber() throws {
+        // 661/1000 = 66.1% — must round down to 66, not up to 67, confirming this is
+        // true nearest-rounding and not always-round-up.
+        let goal = makeGoal(targetAmount: 1000, startingBalance: 0)
+        makeTransaction(amount: 661, date: today, type: .variable, savingsGoal: goal)
+        try context.save()
+
+        XCTAssertEqual(GoalsScreenCalculator.progressPercentRounded(for: goal), 66)
+    }
+
+    func testProgressPercentRoundedHandlesExactWholeNumberPercent() throws {
+        let goal = makeGoal(targetAmount: 1000, startingBalance: 0)
+        makeTransaction(amount: 250, date: today, type: .variable, savingsGoal: goal)
+        try context.save()
+
+        XCTAssertEqual(GoalsScreenCalculator.progressPercentRounded(for: goal), 25)
+    }
+
     // MARK: - Pace segment
 
     func testPaceStatusUnavailableWhenDailyBaseIsZero() {

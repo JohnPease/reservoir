@@ -197,7 +197,17 @@ source of truth for goal lifecycle; no second lifecycle model. The
 zero-goals empty state and the completed-goal card both reuse shared views
 (`Shared/NoActiveGoalPromptView.swift`, `Shared/CompletionBannerView.swift`)
 extracted out of `TodayView` so the Goals tab's second entry point to the
-same states doesn't duplicate copy or logic (STANDARDS.md §3).
+same states doesn't duplicate copy or logic (STANDARDS.md §3), as does the
+`hasNoGoalsAtAll` predicate itself, now on `TodayScreenCalculator`.
+
+Both `TodayView` and `GoalsView` keep their `referenceDate` current via the
+shared `Shared/ReferenceDateKeeper.swift` view modifier
+(`.keepingReferenceDateCurrent(_:calendar:)`): refreshed on first appearance,
+on foreground resume (`scenePhase == .active`), and at each midnight boundary
+via a long-lived `.task`, so a goal's active/completed status and the
+Today screen's daily limit both roll over without requiring a relaunch. This
+was previously `TodayView`-only logic (`scheduleMidnightRefresh()`); `GoalsView`
+now shares the one implementation rather than a second copy.
 
 Goal-specific math — `currentBalance`, progress percentage, and the two
 pace-projection reads — lives in `Services/GoalsScreenCalculator.swift`, a
@@ -235,7 +245,9 @@ tab's own "+" button) and `GoalsView.swift`'s delete confirmation, validated
 by `Services/GoalFormValidator.swift` (pure, unit-tested — targetAmount >
 startingBalance, targetDate after today/startDate, startingBalance >= 0, and
 `startDate` bounded to `[today - 90 days, today]`, both bounds with exact
-inline error copy). `startDate` is now user-backdatable at creation — see the
+inline error copy). `targetAmount`/`startingBalance` are non-optional
+`Decimal` (matching `GoalFormView`'s bound `@State`, which is never actually
+empty/unparsable) — there is no "field is required" case to validate. `startDate` is now user-backdatable at creation — see the
 `createdAt` floor above. Editing is limited to `targetAmount`/`targetDate`
 (`startingBalance`/`startDate`/`createdAt` are shown read-only) and requires
 an explicit confirmation dialog before saving, since it resets the

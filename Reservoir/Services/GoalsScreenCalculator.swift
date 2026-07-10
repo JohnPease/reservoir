@@ -41,18 +41,48 @@ enum GoalsScreenCalculator {
     /// unclamped — can be negative or exceed 1.0. Returns 0 if the denominator is <= 0
     /// (defensive; creation/edit validation requires `targetAmount > startingBalance`
     /// strictly, so this shouldn't be reachable via the validated UI flow).
-    static func progressFraction(for goal: SavingsGoal) -> Decimal {
+    ///
+    /// Takes `currentBalance` as a parameter rather than recomputing it from
+    /// `goal.transactions` so callers that need multiple derived values in the same pass
+    /// (e.g. `ActiveGoalCardView`'s single render) can compute `currentBalance` once and
+    /// thread it through, instead of each sub-computation independently re-deriving it —
+    /// see the `for goal:` overload below for the single-call convenience form.
+    static func progressFraction(currentBalance: Decimal, goal: SavingsGoal) -> Decimal {
         let denominator = goal.targetAmount - goal.startingBalance
         guard denominator > 0 else { return 0 }
-        return (currentBalance(for: goal) - goal.startingBalance) / denominator
+        return (currentBalance - goal.startingBalance) / denominator
+    }
+
+    /// Convenience overload that derives `currentBalance` itself — for call sites that
+    /// only need this one value and aren't already holding a precomputed
+    /// `currentBalance`.
+    static func progressFraction(for goal: SavingsGoal) -> Decimal {
+        progressFraction(currentBalance: currentBalance(for: goal), goal: goal)
     }
 
     /// `progressFraction`, clamped to `[0, 1]` for progress-bar fill. The percentage
     /// *text* shown alongside the bar uses the unclamped value so a negative or
     /// over-100% goal is still shown truthfully (PROJECT_SPEC trust principle) even
     /// though the bar itself visually clamps.
+    static func clampedProgressFraction(currentBalance: Decimal, goal: SavingsGoal) -> Decimal {
+        min(max(progressFraction(currentBalance: currentBalance, goal: goal), 0), 1)
+    }
+
+    /// Convenience overload — see `progressFraction(for:)`.
     static func clampedProgressFraction(for goal: SavingsGoal) -> Decimal {
-        min(max(progressFraction(for: goal), 0), 1)
+        clampedProgressFraction(currentBalance: currentBalance(for: goal), goal: goal)
+    }
+
+    /// `progressFraction * 100`, rounded to the nearest whole percent (ties away from
+    /// zero) for the "N% to goal" caption. Takes `currentBalance` for the same
+    /// single-computation-per-render reason as `progressFraction(currentBalance:goal:)`.
+    static func progressPercentRounded(currentBalance: Decimal, goal: SavingsGoal) -> Int {
+        decimalRound(progressFraction(currentBalance: currentBalance, goal: goal) * 100)
+    }
+
+    /// Convenience overload — see `progressFraction(for:)`.
+    static func progressPercentRounded(for goal: SavingsGoal) -> Int {
+        progressPercentRounded(currentBalance: currentBalance(for: goal), goal: goal)
     }
 
     // MARK: - Pace segment
@@ -67,12 +97,16 @@ enum GoalsScreenCalculator {
         case behindPace(daysBehind: Int)
     }
 
+    /// Takes the already-mapped `GoalCarryForwardInput` rather than re-deriving it from
+    /// `goal.transactions` — see the `for goal:` overload below for the single-call
+    /// convenience form, and `progressFraction(currentBalance:goal:)`'s doc comment for
+    /// why this split exists.
     static func paceStatus(
-        for goal: SavingsGoal,
+        input: GoalCarryForwardInput,
+        targetDate: Date,
         referenceDate: Date,
         calendar: Calendar = .current
     ) -> PaceStatus {
-        let input = TodayScreenCalculator.carryForwardInput(for: goal, calendar: calendar)
         guard input.dailyBase != 0 else { return .unavailable }
 
         let limit = DailyLimitCalculator.dailyLimit(for: input, asOf: referenceDate, calendar: calendar)
@@ -80,7 +114,23 @@ enum GoalsScreenCalculator {
             let daysBehind = daysBehindCount(carryForward: limit.carryForward, dailyBase: input.dailyBase)
             return .behindPace(daysBehind: daysBehind)
         }
-        return .onPace(targetDate: goal.targetDate)
+        return .onPace(targetDate: targetDate)
+    }
+
+    /// Convenience overload that derives the `GoalCarryForwardInput` itself — for call
+    /// sites that only need this one value and aren't already holding a precomputed
+    /// input.
+    static func paceStatus(
+        for goal: SavingsGoal,
+        referenceDate: Date,
+        calendar: Calendar = .current
+    ) -> PaceStatus {
+        paceStatus(
+            input: TodayScreenCalculator.carryForwardInput(for: goal, calendar: calendar),
+            targetDate: goal.targetDate,
+            referenceDate: referenceDate,
+            calendar: calendar
+        )
     }
 
     /// `N = ceil(abs(carryForward) / dailyBase)`.
@@ -120,12 +170,15 @@ enum GoalsScreenCalculator {
         case late(days: Int, date: Date)
     }
 
+    /// Takes the already-mapped `GoalCarryForwardInput` rather than re-deriving it from
+    /// `goal.transactions` — see `paceStatus(input:targetDate:referenceDate:calendar:)`'s
+    /// doc comment for why this split exists.
     static func simulationStatus(
-        for goal: SavingsGoal,
+        input: GoalCarryForwardInput,
+        targetDate: Date,
         referenceDate: Date,
         calendar: Calendar = .current
     ) -> SimulationStatus {
-        let input = TodayScreenCalculator.carryForwardInput(for: goal, calendar: calendar)
         guard input.dailyBase != 0 else { return .unavailable }
 
         let today = calendar.startOfDay(for: referenceDate)
@@ -142,7 +195,7 @@ enum GoalsScreenCalculator {
             calendar: calendar
         )
 
-        let targetDay = calendar.startOfDay(for: goal.targetDate)
+        let targetDay = calendar.startOfDay(for: targetDate)
         let daysRemaining = calendar.dateComponents([.day], from: today, to: targetDay).day ?? 0
         let projectedSurplusShortfall = avgDailyNet * Decimal(daysRemaining)
 
@@ -161,6 +214,22 @@ enum GoalsScreenCalculator {
             daysRemaining: daysRemaining,
             completionOutcome: completionOutcome
         ))
+    }
+
+    /// Convenience overload that derives the `GoalCarryForwardInput` itself — for call
+    /// sites that only need this one value and aren't already holding a precomputed
+    /// input.
+    static func simulationStatus(
+        for goal: SavingsGoal,
+        referenceDate: Date,
+        calendar: Calendar = .current
+    ) -> SimulationStatus {
+        simulationStatus(
+            input: TodayScreenCalculator.carryForwardInput(for: goal, calendar: calendar),
+            targetDate: goal.targetDate,
+            referenceDate: referenceDate,
+            calendar: calendar
+        )
     }
 
     /// Sum of `dailyBase - variableSpendThatDay` over the trailing `windowLength` days
@@ -242,6 +311,20 @@ enum GoalsScreenCalculator {
         var result = Decimal()
         var mutableValue = value
         NSDecimalRound(&result, &mutableValue, 0, .down)
+        return (result as NSDecimalNumber).intValue
+    }
+
+    /// Rounds to the nearest integer, ties away from zero (`.plain`) — unlike
+    /// `decimalCeil`/`decimalFloor`, `progressPercentRounded`'s input can be negative (an
+    /// over/under-target goal's unclamped percentage), so this uses `NSDecimalRound`'s
+    /// true nearest-rounding mode rather than `.up`/`.down`, which are only equivalent to
+    /// ceiling/floor for non-negative inputs. Replaces the previous
+    /// `NSDecimalNumber(decimal:).intValue`, which truncates toward zero instead of
+    /// rounding (code-review finding — 66.9% rendered as "66%", not "67%").
+    private static func decimalRound(_ value: Decimal) -> Int {
+        var result = Decimal()
+        var mutableValue = value
+        NSDecimalRound(&result, &mutableValue, 0, .plain)
         return (result as NSDecimalNumber).intValue
     }
 }

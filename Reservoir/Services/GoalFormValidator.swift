@@ -26,25 +26,22 @@ enum GoalFormValidator {
     /// "Start date" section for the full reasoning.
     static let maxBackdateDays = 90
 
-    /// Validates all four creation fields. `targetAmount`/`targetDate` are `nil` when
-    /// the corresponding text field is empty/unparsable — a `DatePicker`-backed
-    /// `startDate`/`targetDate` value is never actually `nil` in the view (it always has
-    /// a current selection), but the validator accepts optionals so it can also flag a
-    /// currency field the user hasn't typed a valid number into yet.
+    /// Validates all four creation fields. `targetAmount`/`startingBalance` are
+    /// non-optional `Decimal` — `GoalFormView`'s bound `@State` properties are always a
+    /// concrete `Decimal` (defaulting to `0`), never an unparsable/empty state, so there
+    /// is no "field is empty" case to represent here.
     static func validateCreation(
-        targetAmount: Decimal?,
+        targetAmount: Decimal,
         targetDate: Date,
-        startingBalance: Decimal?,
+        startingBalance: Decimal,
         startDate: Date,
         referenceDate: Date,
         calendar: Calendar = .current
     ) -> ValidationResult {
-        let startingBalanceError = validateStartingBalance(startingBalance)
-        let resolvedStartingBalance = startingBalance ?? 0
-        return ValidationResult(
-            targetAmountError: validateTargetAmount(targetAmount, startingBalance: resolvedStartingBalance),
+        ValidationResult(
+            targetAmountError: validateTargetAmount(targetAmount, startingBalance: startingBalance),
             targetDateError: validateTargetDate(targetDate, mustBeAfter: referenceDate, calendar: calendar),
-            startingBalanceError: startingBalanceError,
+            startingBalanceError: validateStartingBalance(startingBalance),
             startDateError: validateStartDate(startDate, referenceDate: referenceDate, calendar: calendar)
         )
     }
@@ -54,7 +51,7 @@ enum GoalFormValidator {
     /// creation, so they're passed in as fixed context, not re-validated. `targetDate`
     /// must be after both today-at-edit-time and the goal's (unchanged) `startDate`.
     static func validateEdit(
-        targetAmount: Decimal?,
+        targetAmount: Decimal,
         targetDate: Date,
         startingBalance: Decimal,
         startDate: Date,
@@ -72,8 +69,7 @@ enum GoalFormValidator {
 
     // MARK: - Per-field rules
 
-    private static func validateTargetAmount(_ targetAmount: Decimal?, startingBalance: Decimal) -> String? {
-        guard let targetAmount else { return "Target amount is required." }
+    private static func validateTargetAmount(_ targetAmount: Decimal, startingBalance: Decimal) -> String? {
         guard targetAmount > startingBalance else {
             return "Target amount must be greater than your starting balance."
         }
@@ -89,8 +85,7 @@ enum GoalFormValidator {
         return nil
     }
 
-    private static func validateStartingBalance(_ startingBalance: Decimal?) -> String? {
-        guard let startingBalance else { return "Starting balance is required." }
+    private static func validateStartingBalance(_ startingBalance: Decimal) -> String? {
         guard startingBalance >= 0 else {
             return "Starting balance can't be negative."
         }

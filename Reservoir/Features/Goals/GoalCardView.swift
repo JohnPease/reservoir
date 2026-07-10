@@ -25,17 +25,34 @@ struct ActiveGoalCardView: View {
         var id: String { rawValue }
     }
 
-    private var clampedProgress: Double {
-        NSDecimalNumber(decimal: GoalsScreenCalculator.clampedProgressFraction(for: goal)).doubleValue
+    /// `goal.transactions`-derived work each of `clampedProgress`/`progressPercentText`/
+    /// `paceText`/`simulationContent` needs, computed once per `body` evaluation instead
+    /// of each independently re-deriving it (code-review finding — up to ~4x redundant
+    /// O(n) work per goal per render). Threaded into the four sub-computations below via
+    /// their `currentBalance:`/`input:` parameters.
+    private var currentBalance: Decimal {
+        GoalsScreenCalculator.currentBalance(for: goal)
     }
 
-    private var progressPercentText: String {
-        let percent = GoalsScreenCalculator.progressFraction(for: goal) * 100
-        let rounded = NSDecimalNumber(decimal: percent).intValue
-        return "\(rounded)% to goal"
+    private var carryForwardInput: GoalCarryForwardInput {
+        TodayScreenCalculator.carryForwardInput(for: goal, calendar: calendar)
+    }
+
+    private func clampedProgress(currentBalance: Decimal) -> Double {
+        NSDecimalNumber(decimal: GoalsScreenCalculator.clampedProgressFraction(currentBalance: currentBalance, goal: goal)).doubleValue
+    }
+
+    private func progressPercentText(currentBalance: Decimal) -> String {
+        "\(GoalsScreenCalculator.progressPercentRounded(currentBalance: currentBalance, goal: goal))% to goal"
     }
 
     var body: some View {
+        // Computed once here (not as accessed-per-use computed properties) so this
+        // render's O(n) `goal.transactions` walk happens exactly once each, not once per
+        // sub-computation that needs it.
+        let currentBalance = currentBalance
+        let carryForwardInput = carryForwardInput
+
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -57,9 +74,9 @@ struct ActiveGoalCardView: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                ProgressView(value: clampedProgress)
+                ProgressView(value: clampedProgress(currentBalance: currentBalance))
                     .accessibilityIdentifier("goals.card.progressBar")
-                Text(progressPercentText)
+                Text(progressPercentText(currentBalance: currentBalance))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("goals.card.progressText")
@@ -76,9 +93,9 @@ struct ActiveGoalCardView: View {
             Group {
                 switch selectedSegment {
                 case .pace:
-                    Text(paceText)
+                    Text(paceText(input: carryForwardInput))
                 case .simulation:
-                    simulationContent
+                    simulationContent(input: carryForwardInput)
                 }
             }
             .font(.subheadline)
@@ -92,8 +109,8 @@ struct ActiveGoalCardView: View {
 
     // MARK: - Pace segment copy
 
-    private var paceText: String {
-        switch GoalsScreenCalculator.paceStatus(for: goal, referenceDate: referenceDate, calendar: calendar) {
+    private func paceText(input: GoalCarryForwardInput) -> String {
+        switch GoalsScreenCalculator.paceStatus(input: input, targetDate: goal.targetDate, referenceDate: referenceDate, calendar: calendar) {
         case .unavailable:
             return "Pace unavailable"
         case .onPace(let targetDate):
@@ -106,8 +123,8 @@ struct ActiveGoalCardView: View {
     // MARK: - Simulation segment copy
 
     @ViewBuilder
-    private var simulationContent: some View {
-        switch GoalsScreenCalculator.simulationStatus(for: goal, referenceDate: referenceDate, calendar: calendar) {
+    private func simulationContent(input: GoalCarryForwardInput) -> some View {
+        switch GoalsScreenCalculator.simulationStatus(input: input, targetDate: goal.targetDate, referenceDate: referenceDate, calendar: calendar) {
         case .unavailable:
             Text("Pace unavailable")
         case .notEnoughHistory:

@@ -55,6 +55,19 @@ enum TodayScreenCalculator {
         }
     }
 
+    /// True only when there is truly nothing to show for goals — no active goal and no
+    /// completed-but-undismissed goal either. Distinct from an active-goal-only emptiness
+    /// check, which would render an empty-state prompt underneath a still-showing
+    /// completion banner (a real, previously-fixed bug — see `TodayView`). Shared by
+    /// `TodayView` and `GoalsView`, which both gate the same empty-state prompt on this
+    /// exact rule (STANDARDS.md §3 — no copy-paste of the same one-line predicate).
+    static func hasNoGoalsAtAll(
+        activeGoals: [SavingsGoal],
+        completedUndismissedGoals: [SavingsGoal]
+    ) -> Bool {
+        activeGoals.isEmpty && completedUndismissedGoals.isEmpty
+    }
+
     // MARK: - DailyLimitCalculator mapping
 
     /// Maps one `SavingsGoal` and its transactions into the plain value type
