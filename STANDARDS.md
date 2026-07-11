@@ -167,6 +167,18 @@ TODO/BACKLOG files or ad hoc notes. This is the system of record:
 - Check real state before starting or reporting on work: `bd ready`,
   `bd list --json`, `bd show <id>`. Don't rely on memory of prior sessions.
 
+**Cross-clone sync**: beads' live database (Dolt) is local to each machine
+and not shared automatically. `.beads/issues.jsonl` is the git-tracked
+source of truth — a pre-commit hook exports the current database to it and
+stages it on every commit, so it travels with the code. Consequences:
+- A fresh clone gets current issue status immediately via
+  `bd init --from-jsonl`.
+- After pulling changes that touch `.beads/issues.jsonl` on an existing
+  clone, refresh the local database with
+  `bd init --force --from-jsonl --quiet` (safe — rebuilds the local cache
+  from the file you just pulled; note this command itself creates a commit,
+  so run it deliberately, not as an automatic hook).
+
 ## 8. Definition of done
 
 A change is done when all of the following are true:

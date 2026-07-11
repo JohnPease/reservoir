@@ -1,4 +1,12 @@
 #!/usr/bin/env sh
+# --- CUSTOM: export issues.jsonl for git-based cross-clone sync ---
+# Keeps .beads/issues.jsonl (committed to git) in sync with the local
+# Dolt database on every commit, so cloning the repo elsewhere always
+# shows current issue status. See STANDARDS.md §7.
+if command -v bd >/dev/null 2>&1; then
+  bd export --all -o .beads/issues.jsonl >/dev/null 2>&1 && git add .beads/issues.jsonl
+fi
+# --- END CUSTOM ---
 # --- BEGIN BEADS INTEGRATION v0.59.0 ---
 # This section is managed by beads. Do not remove these markers.
 if command -v bd >/dev/null 2>&1; then
