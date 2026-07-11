@@ -72,11 +72,27 @@ A flatter `Models/ Views/ Services/` split is acceptable while the app is
 small — pick one layout and stay consistent as it grows.
 
 **Naming**: suffix by role, not by pattern dogma — `*View` for SwiftUI
-views, `*Model` for SwiftData entities, `*Calculator`/`*Projector` for pure
-business logic with no SwiftUI/SwiftData import, `*Service` for
-I/O/third-party SDK wrappers. Only use `*ViewModel` where a screen has
+views, `*Calculator`/`*Projector` for pure business logic with no
+SwiftUI/SwiftData import, `*Service` for I/O/third-party SDK wrappers.
+Exception: a `*Calculator` may import SwiftData (never SwiftUI) when its whole
+job is mapping `@Model` types into the plain value types a lower-level pure
+calculator consumes (e.g. `TodayScreenCalculator` reading `SavingsGoal`/
+`SpendTransaction` to build `DailyLimitCalculator.GoalCarryForwardInput`) —
+that mapping still needs to live somewhere, doesn't belong in a view, and
+splitting it into a separate file buys nothing when the `*Calculator` type
+already has no SwiftUI dependency and is unit-testable via an in-memory
+`ModelContainer`. The bar stays: never import SwiftUI, and never let
+view-layer concerns leak in alongside the model mapping.
+`@Model` SwiftData entities are named as plain domain nouns (`SavingsGoal`,
+not `SavingsGoalModel`) — the `@Model` macro already marks them as entities,
+so a redundant suffix doesn't earn its keep; match whatever name the
+project's spec doc locks in. Only use `*ViewModel` where a screen has
 enough transient UI state to justify MVVM for that screen specifically.
-Test files are named `<TypeName>Tests.swift`.
+Where a domain name collides with a framework type (e.g. SwiftUI's own
+`Transaction`), rename to disambiguate rather than force the collision.
+Test files are named `<TypeName>Tests.swift`; a file covering several
+closely-related types (e.g. persistence tests for a whole schema version)
+may use a descriptive name instead.
 
 **SwiftData models**: wrap schemas in a `VersionedSchema` from the start
 (`SchemaV1` even for the first release) so later migrations don't require
