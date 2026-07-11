@@ -1,17 +1,16 @@
 # Development standards — finance app
 
-## 1. Branching strategy: Git Flow
+## 1. Branching strategy: prefixed branches into main
 
 - `main` — always production-ready / sideloadable. No direct commits.
-- `develop` — integration branch. Feature branches merge here.
-- `feature/<short-name>` — one per story/bead. Branch from `develop`, merge back
-  via PR into `develop`. Delete after merge.
-- `release/<version>` — cut from `develop` when preparing a sideload build.
-  Only bugfixes and doc updates land here. Merges into both `main` and `develop`.
-- `hotfix/<short-name>` — branch from `main` for urgent fixes to a shipped build.
-  Merges into both `main` and `develop`.
+- One branch per story/bead. Branch from `main`, merge back via PR directly
+  into `main`. Delete after merge. Prefix by the kind of change:
+  - `feat/<short-name>` — new functionality
+  - `fix/<short-name>` — bug fixes
+  - `chore/<short-name>` — docs, hygiene, tooling, other non-functional changes
 
-Branch naming: `feature/daily-limit-carry-forward`, `hotfix/negative-balance-crash`.
+Branch naming: `feat/daily-limit-carry-forward`, `fix/negative-balance-crash`,
+`chore/update-readme`.
 
 ## 2. Commit standards: Conventional Commits
 
@@ -176,6 +175,6 @@ A change is done when all of the following are true:
 - [ ] Relevant UI flow covered by XCUITest, or manually verified and noted
 - [ ] Commit(s) follow Conventional Commits format
 - [ ] README updated if architecture, data model, features, or setup changed
-- [ ] Merged via PR from `feature/*` into `develop` (or `hotfix/*` into `main`
-      + `develop`), not committed directly
+- [ ] Merged via PR from `feat/*`, `fix/*`, or `chore/*` directly into `main`,
+      not committed directly
 - [ ] Corresponding bead closed via `bd close <id>` (see §7)
