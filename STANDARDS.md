@@ -1,17 +1,12 @@
 # Development standards — finance app
 
-## 1. Branching strategy: Git Flow
+## 1. Branching strategy: feature branches
 
 - `main` — always production-ready / sideloadable. No direct commits.
-- `develop` — integration branch. Feature branches merge here.
-- `feature/<short-name>` — one per story/bead. Branch from `develop`, merge back
-  via PR into `develop`. Delete after merge.
-- `release/<version>` — cut from `develop` when preparing a sideload build.
-  Only bugfixes and doc updates land here. Merges into both `main` and `develop`.
-- `hotfix/<short-name>` — branch from `main` for urgent fixes to a shipped build.
-  Merges into both `main` and `develop`.
+- `feature/<short-name>` — one per story/bead. Branch from `main`, merge back
+  via PR directly into `main`. Delete after merge.
 
-Branch naming: `feature/daily-limit-carry-forward`, `hotfix/negative-balance-crash`.
+Branch naming: `feature/daily-limit-carry-forward`, `feature/negative-balance-crash-fix`.
 
 ## 2. Commit standards: Conventional Commits
 
@@ -176,6 +171,5 @@ A change is done when all of the following are true:
 - [ ] Relevant UI flow covered by XCUITest, or manually verified and noted
 - [ ] Commit(s) follow Conventional Commits format
 - [ ] README updated if architecture, data model, features, or setup changed
-- [ ] Merged via PR from `feature/*` into `develop` (or `hotfix/*` into `main`
-      + `develop`), not committed directly
+- [ ] Merged via PR from `feature/*` directly into `main`, not committed directly
 - [ ] Corresponding bead closed via `bd close <id>` (see §7)
