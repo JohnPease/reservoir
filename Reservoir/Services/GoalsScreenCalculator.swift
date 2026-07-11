@@ -17,24 +17,47 @@ enum GoalsScreenCalculator {
 
     // MARK: - Progress
 
-    /// `startingBalance + sum(all transactions attributed to this goal)` — per the
-    /// bead's exact spec. `currentBalance` for a goal without a linked account
-    /// (pre-Plaid, MVP) has no other ground truth to derive from; this mirrors how the
-    /// daily limit already treats transactions as the source of truth rather than a
-    /// separately persisted running balance.
+    /// `startingBalance + carryForward` — the same banked-surplus carry-forward the
+    /// daily limit and Today screen already use, evaluated `asOf: referenceDate`
+    /// (reservoir-1et; confirmed product decision, JP 2026-07-10, replacing the earlier
+    /// `startingBalance + sum(transactions)` formula that made *more spending* move the
+    /// goal progress bar *up* — the opposite of the "underspend banks savings"
+    /// carry-forward mechanic used everywhere else).
     ///
-    /// NOTE (engineer flag, not a silent reinterpretation): `SpendTransaction.amount` is
-    /// always a positive spend magnitude (see `DailyLimitCalculator`, which subtracts it
-    /// from `dailyBase`), and this app has no "deposit" transaction kind. Summing it here
-    /// with a `+` means *more spending* is why `currentBalance` rises toward
-    /// `targetAmount` — i.e. spending against this goal reads as progress, the opposite
-    /// of the "underspend banks savings" carry-forward mechanic the rest of the app is
-    /// built on. Implemented exactly as specified rather than silently changed to a
-    /// carry-forward-based formula, since the bead states this formula explicitly and
-    /// engineer isn't authorized to unilaterally reinterpret a stated product decision —
-    /// flagged for product-lead confirmation before this ships.
-    static func currentBalance(for goal: SavingsGoal) -> Decimal {
-        goal.startingBalance + goal.transactions.reduce(Decimal(0)) { $0 + $1.amount }
+    /// Walkthrough this formula satisfies: spending $0/day banks the full `dailyBase`
+    /// every day, so `currentBalance == targetAmount` (100%) by `targetDate`. Spending
+    /// exactly today's displayed daily limit (`dailyBase + carryForward`) nets zero
+    /// progress change that day. Overspending drives `carryForward` negative, so
+    /// `currentBalance` can drop below `startingBalance`. Fixed-kind transactions don't
+    /// erode progress because `DailyLimitCalculator.carryForward` already excludes them
+    /// from its per-day sum (see its `variableSpendByDay` helper) — `currentBalance`
+    /// inherits that exclusion for free by building on `carryForward` rather than
+    /// re-deriving from `goal.transactions` itself.
+    ///
+    /// Takes the already-mapped `GoalCarryForwardInput` rather than re-deriving it from
+    /// `goal.transactions` — see the `for goal:` overload below for the single-call
+    /// convenience form, and `paceStatus(input:targetDate:referenceDate:calendar:)`'s
+    /// doc comment for why this split exists.
+    static func currentBalance(
+        input: GoalCarryForwardInput,
+        goal: SavingsGoal,
+        referenceDate: Date,
+        calendar: Calendar = .current
+    ) -> Decimal {
+        let limit = DailyLimitCalculator.dailyLimit(for: input, asOf: referenceDate, calendar: calendar)
+        return goal.startingBalance + limit.carryForward
+    }
+
+    /// Convenience overload that derives the `GoalCarryForwardInput` itself — for call
+    /// sites that only need this one value and aren't already holding a precomputed
+    /// input.
+    static func currentBalance(for goal: SavingsGoal, referenceDate: Date, calendar: Calendar = .current) -> Decimal {
+        currentBalance(
+            input: TodayScreenCalculator.carryForwardInput(for: goal, calendar: calendar),
+            goal: goal,
+            referenceDate: referenceDate,
+            calendar: calendar
+        )
     }
 
     /// `(currentBalance - startingBalance) / (targetAmount - startingBalance)`,
@@ -46,7 +69,9 @@ enum GoalsScreenCalculator {
     /// `goal.transactions` so callers that need multiple derived values in the same pass
     /// (e.g. `ActiveGoalCardView`'s single render) can compute `currentBalance` once and
     /// thread it through, instead of each sub-computation independently re-deriving it —
-    /// see the `for goal:` overload below for the single-call convenience form.
+    /// see the `for goal:` overload below for the single-call convenience form. No
+    /// `referenceDate` needed here directly — it's already baked into the
+    /// `currentBalance` value passed in.
     static func progressFraction(currentBalance: Decimal, goal: SavingsGoal) -> Decimal {
         let denominator = goal.targetAmount - goal.startingBalance
         guard denominator > 0 else { return 0 }
@@ -56,8 +81,8 @@ enum GoalsScreenCalculator {
     /// Convenience overload that derives `currentBalance` itself — for call sites that
     /// only need this one value and aren't already holding a precomputed
     /// `currentBalance`.
-    static func progressFraction(for goal: SavingsGoal) -> Decimal {
-        progressFraction(currentBalance: currentBalance(for: goal), goal: goal)
+    static func progressFraction(for goal: SavingsGoal, referenceDate: Date, calendar: Calendar = .current) -> Decimal {
+        progressFraction(currentBalance: currentBalance(for: goal, referenceDate: referenceDate, calendar: calendar), goal: goal)
     }
 
     /// `progressFraction`, clamped to `[0, 1]` for progress-bar fill. The percentage
@@ -68,9 +93,9 @@ enum GoalsScreenCalculator {
         min(max(progressFraction(currentBalance: currentBalance, goal: goal), 0), 1)
     }
 
-    /// Convenience overload — see `progressFraction(for:)`.
-    static func clampedProgressFraction(for goal: SavingsGoal) -> Decimal {
-        clampedProgressFraction(currentBalance: currentBalance(for: goal), goal: goal)
+    /// Convenience overload — see `progressFraction(for:referenceDate:calendar:)`.
+    static func clampedProgressFraction(for goal: SavingsGoal, referenceDate: Date, calendar: Calendar = .current) -> Decimal {
+        clampedProgressFraction(currentBalance: currentBalance(for: goal, referenceDate: referenceDate, calendar: calendar), goal: goal)
     }
 
     /// `progressFraction * 100`, rounded to the nearest whole percent (ties away from
@@ -80,9 +105,9 @@ enum GoalsScreenCalculator {
         decimalRound(progressFraction(currentBalance: currentBalance, goal: goal) * 100)
     }
 
-    /// Convenience overload — see `progressFraction(for:)`.
-    static func progressPercentRounded(for goal: SavingsGoal) -> Int {
-        progressPercentRounded(currentBalance: currentBalance(for: goal), goal: goal)
+    /// Convenience overload — see `progressFraction(for:referenceDate:calendar:)`.
+    static func progressPercentRounded(for goal: SavingsGoal, referenceDate: Date, calendar: Calendar = .current) -> Int {
+        progressPercentRounded(currentBalance: currentBalance(for: goal, referenceDate: referenceDate, calendar: calendar), goal: goal)
     }
 
     // MARK: - Pace segment

@@ -80,88 +80,151 @@ final class GoalsScreenCalculatorTests: XCTestCase {
         return transaction
     }
 
-    // MARK: - currentBalance / progress
+    // MARK: - currentBalance / progress (reservoir-1et: banked-surplus carry-forward)
 
-    func testCurrentBalanceIsStartingBalancePlusSumOfAllAttributedTransactions() throws {
-        let goal = makeGoal(startingBalance: 100)
-        makeTransaction(amount: 20, date: today, type: .variable, savingsGoal: goal)
-        makeTransaction(amount: 5, date: today, type: .fixed, savingsGoal: goal)
+    func testCurrentBalanceIsStartingBalancePlusCarryForward() throws {
+        // dailyBase 10, 5 elapsed days (day(-5)..<today) with no spend => carryForward
+        // == 5 * 10 == 50. currentBalance == startingBalance + carryForward == 150.
+        let goal = makeGoal(startDate: day(-5), startingBalance: 100, dailyBase: 10, createdAt: day(-5))
         try context.save()
 
-        // Per the bead's literal formula: startingBalance + sum(all transactions),
-        // fixed and variable alike, both counted with a `+` regardless of kind.
-        XCTAssertEqual(GoalsScreenCalculator.currentBalance(for: goal), 125)
+        XCTAssertEqual(GoalsScreenCalculator.currentBalance(for: goal, referenceDate: today, calendar: calendar), 150)
+    }
+
+    func testCurrentBalanceReachesTargetAmountAtTargetDateWithZeroSpendThroughout() throws {
+        // The exact confirmed walkthrough: spending $0/day for the goal's full duration
+        // banks the full dailyBase every day, so as of targetDate, currentBalance ==
+        // targetAmount exactly (100%). `carryForward` excludes its `asOf` day's own spend
+        // (same convention the Today screen's "remaining today" uses), so referenceDate
+        // == targetDate itself sums exactly `totalDaysFromStart` (20) days — matching the
+        // same divisor `dailyBase` was computed from, landing exactly on `targetAmount`
+        // with no off-by-one.
+        let targetDate = day(10)
+        let goal = makeGoal(targetAmount: 1000, startDate: day(-10), targetDate: targetDate, startingBalance: 0, dailyBase: 50, createdAt: day(-10))
+        try context.save()
+
+        XCTAssertEqual(GoalsScreenCalculator.currentBalance(for: goal, referenceDate: targetDate, calendar: calendar), 1000)
+        XCTAssertEqual(GoalsScreenCalculator.progressPercentRounded(for: goal, referenceDate: targetDate, calendar: calendar), 100)
+    }
+
+    func testCurrentBalanceUnchangedWhenSpendingExactlyTodaysDisplayedDailyLimit() throws {
+        // Goal starts exactly today (effectiveStartDate == today), so carryForward as of
+        // today is 0 and today's displayed daily limit is exactly dailyBase. Spending
+        // exactly that limit nets ZERO progress change: currentBalance as of tomorrow
+        // (after today's exact-limit spend) equals currentBalance as of today (before it)
+        // — both sit at startingBalance, confirming a day of exact-limit spending is
+        // truly neutral, not a gain or a loss.
+        let goal = makeGoal(startDate: today, startingBalance: 100, dailyBase: 10, createdAt: today)
+        try context.save()
+
+        let balanceBeforeTodaysSpend = GoalsScreenCalculator.currentBalance(for: goal, referenceDate: today, calendar: calendar)
+
+        let input = TodayScreenCalculator.carryForwardInput(for: goal, calendar: calendar)
+        let todaysLimit = DailyLimitCalculator.dailyLimit(for: input, asOf: today, calendar: calendar).limit
+        XCTAssertEqual(todaysLimit, 10) // dailyBase + 0 carryForward, confirming the setup.
+        makeTransaction(amount: todaysLimit, date: today, type: .variable, savingsGoal: goal)
+        try context.save()
+
+        let balanceAfterTodaysSpend = GoalsScreenCalculator.currentBalance(for: goal, referenceDate: day(1), calendar: calendar)
+        XCTAssertEqual(balanceAfterTodaysSpend, balanceBeforeTodaysSpend)
+        XCTAssertEqual(balanceAfterTodaysSpend, goal.startingBalance)
+    }
+
+    func testCurrentBalanceErodesBelowStartingBalanceWhenOverspending() throws {
+        // Overspending drives carryForward negative, so currentBalance can drop below
+        // startingBalance — the opposite of the old (buggy) "more spending == more
+        // progress" formula.
+        let goal = makeGoal(startDate: day(-1), startingBalance: 100, dailyBase: 10, createdAt: day(-1))
+        makeTransaction(amount: 500, date: day(-1), type: .variable, savingsGoal: goal)
+        try context.save()
+
+        // 1 elapsed day: carryForward == 10 - 500 == -490.
+        XCTAssertEqual(GoalsScreenCalculator.currentBalance(for: goal, referenceDate: today, calendar: calendar), -390)
+        XCTAssertLessThan(GoalsScreenCalculator.currentBalance(for: goal, referenceDate: today, calendar: calendar), goal.startingBalance)
+    }
+
+    func testCurrentBalanceUnaffectedByFixedTransactions() throws {
+        // A fixed-kind transaction attributed to the goal does NOT erode progress,
+        // consistent with DailyLimitCalculator.carryForward's existing exclusion of
+        // fixed-kind entries from its per-day sum.
+        let goal = makeGoal(startDate: day(-5), startingBalance: 100, dailyBase: 10, createdAt: day(-5))
+        makeTransaction(amount: 500, date: day(-2), type: .fixed, savingsGoal: goal)
+        try context.save()
+
+        // No variable spend => carryForward == 5 * 10 == 50, unaffected by the $500 fixed
+        // transaction.
+        XCTAssertEqual(GoalsScreenCalculator.currentBalance(for: goal, referenceDate: today, calendar: calendar), 150)
     }
 
     func testProgressFractionComputesRatioOfCurrentGainToTargetGain() throws {
-        let goal = makeGoal(targetAmount: 1000, startingBalance: 0)
-        makeTransaction(amount: 250, date: today, type: .variable, savingsGoal: goal)
+        // dailyBase == (1000-0)/20 == 50; 5 elapsed days with no spend => carryForward ==
+        // 250 => currentBalance == 250 => progressFraction == 250/1000 == 0.25.
+        let goal = makeGoal(targetAmount: 1000, startDate: day(-5), targetDate: day(15), startingBalance: 0, dailyBase: 50, createdAt: day(-5))
         try context.save()
 
-        XCTAssertEqual(GoalsScreenCalculator.progressFraction(for: goal), 0.25)
+        XCTAssertEqual(GoalsScreenCalculator.progressFraction(for: goal, referenceDate: today, calendar: calendar), 0.25)
     }
 
     func testProgressFractionCanExceedOneHundredPercent() throws {
-        let goal = makeGoal(targetAmount: 100, startingBalance: 0)
-        makeTransaction(amount: 150, date: today, type: .variable, savingsGoal: goal)
+        // dailyBase == 100/2 == 50; 3 elapsed days with no spend => carryForward == 150
+        // => progressFraction == 150/100 == 1.5.
+        let goal = makeGoal(targetAmount: 100, startDate: day(-3), targetDate: day(2), startingBalance: 0, dailyBase: 50, createdAt: day(-3))
         try context.save()
 
-        XCTAssertEqual(GoalsScreenCalculator.progressFraction(for: goal), 1.5)
+        XCTAssertEqual(GoalsScreenCalculator.progressFraction(for: goal, referenceDate: today, calendar: calendar), 1.5)
     }
 
     func testProgressFractionCanBeNegative() throws {
-        // No transactions at all and a positive starting balance below target still
-        // yields 0, not negative, since currentBalance == startingBalance with no
-        // transactions; negative requires... actually per the literal formula, negative
-        // progress isn't reachable without negative transaction amounts (which the model
-        // doesn't produce), so this test documents the floor case instead.
-        let goal = makeGoal(targetAmount: 1000, startingBalance: 100)
-        XCTAssertEqual(GoalsScreenCalculator.progressFraction(for: goal), 0)
+        // Overspending on an elapsed day drives carryForward, and therefore
+        // progressFraction, negative.
+        let goal = makeGoal(targetAmount: 1000, startDate: day(-1), startingBalance: 100, dailyBase: 10, createdAt: day(-1))
+        makeTransaction(amount: 100, date: day(-1), type: .variable, savingsGoal: goal)
+        try context.save()
+
+        XCTAssertLessThan(GoalsScreenCalculator.progressFraction(for: goal, referenceDate: today, calendar: calendar), 0)
     }
 
     func testClampedProgressFractionClampsAboveOneToOne() throws {
-        let goal = makeGoal(targetAmount: 100, startingBalance: 0)
-        makeTransaction(amount: 300, date: today, type: .variable, savingsGoal: goal)
+        let goal = makeGoal(targetAmount: 100, startDate: day(-30), targetDate: day(-10), startingBalance: 0, dailyBase: 10, createdAt: day(-30))
         try context.save()
 
-        XCTAssertEqual(GoalsScreenCalculator.clampedProgressFraction(for: goal), 1)
+        XCTAssertEqual(GoalsScreenCalculator.clampedProgressFraction(for: goal, referenceDate: today, calendar: calendar), 1)
     }
 
     func testClampedProgressFractionClampsBelowZeroToZero() throws {
         // denominator <= 0 guard: targetAmount == startingBalance shouldn't be reachable
         // via validated UI, but the calculator must not divide by zero if it occurs.
         let goal = makeGoal(targetAmount: 100, startingBalance: 100)
-        XCTAssertEqual(GoalsScreenCalculator.clampedProgressFraction(for: goal), 0)
+        XCTAssertEqual(GoalsScreenCalculator.clampedProgressFraction(for: goal, referenceDate: today, calendar: calendar), 0)
     }
 
     // MARK: - progressPercentRounded (code-review: nearest-rounding, not truncation)
 
     func testProgressPercentRoundedRoundsFractionalPercentUpToNearestWholeNumber() throws {
-        // 669/1000 = 66.9% — must round to the *nearest* whole percent (67), not
-        // truncate toward zero (66), which `NSDecimalNumber.intValue` alone would do.
-        let goal = makeGoal(targetAmount: 1000, startingBalance: 0)
-        makeTransaction(amount: 669, date: today, type: .variable, savingsGoal: goal)
+        // dailyBase == 1000/1000 == 1; 669 elapsed days with no spend => carryForward ==
+        // 669 => 66.9% — must round to the *nearest* whole percent (67), not truncate
+        // toward zero (66), which `NSDecimalNumber.intValue` alone would do.
+        let goal = makeGoal(targetAmount: 1000, startDate: day(-669), targetDate: day(331), startingBalance: 0, dailyBase: 1, createdAt: day(-669))
         try context.save()
 
-        XCTAssertEqual(GoalsScreenCalculator.progressPercentRounded(for: goal), 67)
+        XCTAssertEqual(GoalsScreenCalculator.progressPercentRounded(for: goal, referenceDate: today, calendar: calendar), 67)
     }
 
     func testProgressPercentRoundedRoundsFractionalPercentDownToNearestWholeNumber() throws {
-        // 661/1000 = 66.1% — must round down to 66, not up to 67, confirming this is
-        // true nearest-rounding and not always-round-up.
-        let goal = makeGoal(targetAmount: 1000, startingBalance: 0)
-        makeTransaction(amount: 661, date: today, type: .variable, savingsGoal: goal)
+        // 661 elapsed days with no spend, dailyBase 1 => carryForward == 661 => 66.1% —
+        // must round down to 66, not up to 67, confirming this is true nearest-rounding
+        // and not always-round-up.
+        let goal = makeGoal(targetAmount: 1000, startDate: day(-661), targetDate: day(339), startingBalance: 0, dailyBase: 1, createdAt: day(-661))
         try context.save()
 
-        XCTAssertEqual(GoalsScreenCalculator.progressPercentRounded(for: goal), 66)
+        XCTAssertEqual(GoalsScreenCalculator.progressPercentRounded(for: goal, referenceDate: today, calendar: calendar), 66)
     }
 
     func testProgressPercentRoundedHandlesExactWholeNumberPercent() throws {
-        let goal = makeGoal(targetAmount: 1000, startingBalance: 0)
-        makeTransaction(amount: 250, date: today, type: .variable, savingsGoal: goal)
+        let goal = makeGoal(targetAmount: 1000, startDate: day(-250), targetDate: day(750), startingBalance: 0, dailyBase: 1, createdAt: day(-250))
         try context.save()
 
-        XCTAssertEqual(GoalsScreenCalculator.progressPercentRounded(for: goal), 25)
+        XCTAssertEqual(GoalsScreenCalculator.progressPercentRounded(for: goal, referenceDate: today, calendar: calendar), 25)
     }
 
     // MARK: - Pace segment

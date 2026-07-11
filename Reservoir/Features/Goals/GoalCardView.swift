@@ -30,8 +30,13 @@ struct ActiveGoalCardView: View {
     /// of each independently re-deriving it (code-review finding — up to ~4x redundant
     /// O(n) work per goal per render). Threaded into the four sub-computations below via
     /// their `currentBalance:`/`input:` parameters.
-    private var currentBalance: Decimal {
-        GoalsScreenCalculator.currentBalance(for: goal)
+    ///
+    /// `currentBalance` is now (reservoir-1et) itself derived from `carryForward`, so it
+    /// takes the same precomputed `carryForwardInput` rather than re-deriving its own
+    /// copy — one `TodayScreenCalculator.carryForwardInput(for:calendar:)` call per
+    /// render, shared by progress, pace, and simulation alike.
+    private func currentBalance(input: GoalCarryForwardInput) -> Decimal {
+        GoalsScreenCalculator.currentBalance(input: input, goal: goal, referenceDate: referenceDate, calendar: calendar)
     }
 
     private var carryForwardInput: GoalCarryForwardInput {
@@ -50,8 +55,8 @@ struct ActiveGoalCardView: View {
         // Computed once here (not as accessed-per-use computed properties) so this
         // render's O(n) `goal.transactions` walk happens exactly once each, not once per
         // sub-computation that needs it.
-        let currentBalance = currentBalance
         let carryForwardInput = carryForwardInput
+        let currentBalance = currentBalance(input: carryForwardInput)
 
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top) {
