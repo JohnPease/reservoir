@@ -15,6 +15,24 @@ final class GoalsScreenUITests: XCTestCase {
         return app
     }
 
+    /// Computes the `(monthOffset, day)` pair `selectDate` needs to land on
+    /// `dayOffset` calendar days from "today" (the live device clock, matching what
+    /// `selectDate`'s own `.now`-based month/day lookup uses) — e.g. `dayOffset: 1` for
+    /// "tomorrow". Handles month (and year) rollover so callers don't have to hardcode a
+    /// day-of-month tied to whatever day the suite happened to run on (reservoir-4w8).
+    private func calendarOffset(forDaysFromToday dayOffset: Int) -> (monthOffset: Int, day: Int) {
+        let calendar = Calendar.current
+        let today = Date()
+        let target = calendar.date(byAdding: .day, value: dayOffset, to: today)!
+
+        let todayMonthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: today))!
+        let targetMonthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: target))!
+        let monthOffset = calendar.dateComponents([.month], from: todayMonthStart, to: targetMonthStart).month ?? 0
+        let day = calendar.component(.day, from: target)
+
+        return (monthOffset, day)
+    }
+
     /// Taps a `DatePicker`'s compact button to open its calendar popover, navigates
     /// `monthOffset` calendar months from the current month (negative = back, positive =
     /// forward), and taps the day cell matching `day` in that displayed month. Matches
@@ -135,8 +153,13 @@ final class GoalsScreenUITests: XCTestCase {
 
         setCurrencyField(app.textFields["goalForm.targetAmount"], to: "1000")
 
-        // One day after "today" (July 8) in the currently-displayed month.
-        selectDate(in: app, datePickerIdentifier: "goalForm.startDate", monthOffset: 0, day: 9)
+        // One day after "today" — computed relative to Date() at test-run time (not a
+        // hardcoded day-of-month) so this doesn't flake as the wall clock advances
+        // (reservoir-4w8: flaked when "today" moved from July 8 to July 9, then again to
+        // July 10, because the picker's DatePicker overlay and the app's own validation
+        // both use the live device clock, not an injected reference date).
+        let (monthOffset, day) = calendarOffset(forDaysFromToday: 1)
+        selectDate(in: app, datePickerIdentifier: "goalForm.startDate", monthOffset: monthOffset, day: day)
 
         let error = app.staticTexts["goalForm.error.Start date"]
         XCTAssertTrue(error.waitForExistence(timeout: 5))
