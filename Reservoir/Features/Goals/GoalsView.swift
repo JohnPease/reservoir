@@ -10,11 +10,13 @@ import OSLog
 struct GoalsView: View {
     @Environment(\.modelContext) private var modelContext
 
+    /// The app's single shared "now," owned by `RootTabView` and kept current by the one
+    /// `ReferenceDateKeeper` applied there — see `TodayClock`'s doc comment. Matches
+    /// `TodayView`'s clock input (STANDARDS.md §3).
+    @Environment(TodayClock.self) private var todayClock
+
     @Query(sort: \SavingsGoal.targetDate) private var goals: [SavingsGoal]
 
-    /// "Now," kept current by `ReferenceDateKeeper` (foreground resume + midnight
-    /// rollover), matching `TodayView`'s clock input (STANDARDS.md §3).
-    @State private var referenceDate: Date = .now
     @State private var isShowingCreateGoal = false
     @State private var goalPendingEdit: SavingsGoal?
     @State private var goalPendingDelete: SavingsGoal?
@@ -26,11 +28,11 @@ struct GoalsView: View {
     /// Sorted by `targetDate` ascending (soonest first) — matches the Today screen's
     /// `@Query` sort convention, one sort convention across the app.
     private var activeGoals: [SavingsGoal] {
-        TodayScreenCalculator.activeGoals(goals, referenceDate: referenceDate, calendar: calendar)
+        TodayScreenCalculator.activeGoals(goals, referenceDate: todayClock.referenceDate, calendar: calendar)
     }
 
     private var completedGoals: [SavingsGoal] {
-        TodayScreenCalculator.completedUndismissedGoals(goals, referenceDate: referenceDate, calendar: calendar)
+        TodayScreenCalculator.completedUndismissedGoals(goals, referenceDate: todayClock.referenceDate, calendar: calendar)
     }
 
     /// Shared with `TodayView` via `TodayScreenCalculator.hasNoGoalsAtAll` — previously a
@@ -40,6 +42,18 @@ struct GoalsView: View {
     }
 
     var body: some View {
+        // Computed once here (not as accessed-per-use computed properties) so this
+        // render's goal-list filtering (each an O(n) walk over `goals`) happens exactly
+        // once each, not once per branch/`.isEmpty` check/`ForEach` that needs it — same
+        // rationale as `ActiveGoalCardView.body`'s hoisted `carryForwardInput`/
+        // `currentBalance` (code-review finding on PR #5).
+        let activeGoals = activeGoals
+        let completedGoals = completedGoals
+        let hasNoGoalsAtAll = TodayScreenCalculator.hasNoGoalsAtAll(
+            activeGoals: activeGoals,
+            completedUndismissedGoals: completedGoals
+        )
+
         NavigationStack {
             ScrollView {
                 VStack(spacing: 20) {
@@ -55,7 +69,7 @@ struct GoalsView: View {
                             ForEach(activeGoals, id: \.persistentModelID) { goal in
                                 ActiveGoalCardView(
                                     goal: goal,
-                                    referenceDate: referenceDate,
+                                    referenceDate: todayClock.referenceDate,
                                     calendar: calendar,
                                     onEdit: { goalPendingEdit = goal },
                                     onDelete: { goalPendingDelete = goal }
@@ -92,7 +106,6 @@ struct GoalsView: View {
                 }
             }
         }
-        .keepingReferenceDateCurrent($referenceDate, calendar: calendar)
         .sheet(isPresented: $isShowingCreateGoal) {
             GoalFormView(mode: .create, accessibilityIdentifier: "goals.createGoalSheet")
         }

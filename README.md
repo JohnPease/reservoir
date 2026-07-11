@@ -200,14 +200,21 @@ extracted out of `TodayView` so the Goals tab's second entry point to the
 same states doesn't duplicate copy or logic (STANDARDS.md §3), as does the
 `hasNoGoalsAtAll` predicate itself, now on `TodayScreenCalculator`.
 
-Both `TodayView` and `GoalsView` keep their `referenceDate` current via the
-shared `Shared/ReferenceDateKeeper.swift` view modifier
-(`.keepingReferenceDateCurrent(_:calendar:)`): refreshed on first appearance,
-on foreground resume (`scenePhase == .active`), and at each midnight boundary
-via a long-lived `.task`, so a goal's active/completed status and the
-Today screen's daily limit both roll over without requiring a relaunch. This
-was previously `TodayView`-only logic (`scheduleMidnightRefresh()`); `GoalsView`
-now shares the one implementation rather than a second copy.
+`TodayView` and `GoalsView` both read the app's single "now" from
+`Shared/TodayClock.swift`, an `@Observable` holder injected into the
+environment once by `RootTabView` (`.environment(todayClock)`) and kept
+current there by the one shared `Shared/ReferenceDateKeeper.swift` view
+modifier (`.keepingReferenceDateCurrent(_:calendar:)`): refreshed on first
+appearance, on foreground resume (`scenePhase == .active`), and at each
+midnight boundary via a long-lived `.task`, so a goal's active/completed
+status and the Today screen's daily limit both roll over without requiring a
+relaunch. This used to be two independent per-tab clocks — `TodayView` and
+`GoalsView` each held their own `@State private var referenceDate` and each
+applied `.keepingReferenceDateCurrent(...)` themselves, meaning two
+concurrent midnight-sleep `Task`s and two `scenePhase` observers running for
+the app's lifetime (since `TabView` keeps both tabs' content mounted once
+visited). Consolidating to one `TodayClock` owned by `RootTabView` collapses
+that to a single `Task`/observer pair with identical refresh behavior.
 
 Goal-specific math — `currentBalance`, progress percentage, and the two
 pace-projection reads — lives in `Services/GoalsScreenCalculator.swift`, a

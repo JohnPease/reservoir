@@ -14,6 +14,12 @@ import OSLog
 struct TodayView: View {
     @Environment(\.modelContext) private var modelContext
 
+    /// The app's single shared "now," owned by `RootTabView` and kept current by the one
+    /// `ReferenceDateKeeper` applied there — see `TodayClock`'s doc comment for why this
+    /// replaced a local `@State` + per-view `.keepingReferenceDateCurrent(...)`. Not
+    /// itself business logic — just the clock input to `TodayScreenCalculator`.
+    @Environment(TodayClock.self) private var todayClock
+
     @Query(sort: \SavingsGoal.targetDate) private var goals: [SavingsGoal]
     /// Sorted so `spentToday`'s filtering doesn't have to fault/sort the whole table on
     /// every body re-evaluation to find today's entries; still unlimited because
@@ -39,12 +45,6 @@ struct TodayView: View {
         return descriptor
     }
 
-    /// "Now," kept current by `ReferenceDateKeeper` (foreground resume + midnight
-    /// rollover) so the hero number, active-goal set, and completion banners stay correct
-    /// without requiring the user to relaunch. Not itself business logic — just the clock
-    /// input to `TodayScreenCalculator`.
-    @State private var referenceDate: Date = .now
-
     @State private var isShowingAddTransaction = false
     @State private var isShowingCreateGoal = false
     @State private var isShowingSettings = false
@@ -54,11 +54,11 @@ struct TodayView: View {
     private let logger = Logger(subsystem: "com.reservoir.app", category: "TodayView")
 
     private var activeGoals: [SavingsGoal] {
-        TodayScreenCalculator.activeGoals(goals, referenceDate: referenceDate, calendar: calendar)
+        TodayScreenCalculator.activeGoals(goals, referenceDate: todayClock.referenceDate, calendar: calendar)
     }
 
     private var completedGoals: [SavingsGoal] {
-        TodayScreenCalculator.completedUndismissedGoals(goals, referenceDate: referenceDate, calendar: calendar)
+        TodayScreenCalculator.completedUndismissedGoals(goals, referenceDate: todayClock.referenceDate, calendar: calendar)
     }
 
     private var summary: TodayScreenCalculator.Summary? {
@@ -66,7 +66,7 @@ struct TodayView: View {
             activeGoals: activeGoals,
             completedUndismissedGoals: completedGoals,
             allTransactions: transactions,
-            referenceDate: referenceDate,
+            referenceDate: todayClock.referenceDate,
             calendar: calendar
         )
     }
@@ -89,7 +89,7 @@ struct TodayView: View {
         TodayScreenCalculator.spentToday(
             allTransactions: transactions,
             attributedGoals: completedGoals,
-            referenceDate: referenceDate,
+            referenceDate: todayClock.referenceDate,
             calendar: calendar
         )
     }
@@ -99,7 +99,7 @@ struct TodayView: View {
     }
 
     private var dateHeaderText: String {
-        referenceDate.formatted(.dateTime.weekday(.wide).month(.wide).day())
+        todayClock.referenceDate.formatted(.dateTime.weekday(.wide).month(.wide).day())
     }
 
     var body: some View {
@@ -152,7 +152,6 @@ struct TodayView: View {
                 }
             }
         }
-        .keepingReferenceDateCurrent($referenceDate, calendar: calendar)
         .sheet(isPresented: $isShowingAddTransaction) {
             StubSheet(
                 title: "Add Transaction",
