@@ -1,12 +1,16 @@
 # Development standards — finance app
 
-## 1. Branching strategy: feature branches
+## 1. Branching strategy: prefixed branches into main
 
 - `main` — always production-ready / sideloadable. No direct commits.
-- `feature/<short-name>` — one per story/bead. Branch from `main`, merge back
-  via PR directly into `main`. Delete after merge.
+- One branch per story/bead. Branch from `main`, merge back via PR directly
+  into `main`. Delete after merge. Prefix by the kind of change:
+  - `feat/<short-name>` — new functionality
+  - `fix/<short-name>` — bug fixes
+  - `chore/<short-name>` — docs, hygiene, tooling, other non-functional changes
 
-Branch naming: `feature/daily-limit-carry-forward`, `feature/negative-balance-crash-fix`.
+Branch naming: `feat/daily-limit-carry-forward`, `fix/negative-balance-crash`,
+`chore/update-readme`.
 
 ## 2. Commit standards: Conventional Commits
 
@@ -171,5 +175,6 @@ A change is done when all of the following are true:
 - [ ] Relevant UI flow covered by XCUITest, or manually verified and noted
 - [ ] Commit(s) follow Conventional Commits format
 - [ ] README updated if architecture, data model, features, or setup changed
-- [ ] Merged via PR from `feature/*` directly into `main`, not committed directly
+- [ ] Merged via PR from `feat/*`, `fix/*`, or `chore/*` directly into `main`,
+      not committed directly
 - [ ] Corresponding bead closed via `bd close <id>` (see §7)
