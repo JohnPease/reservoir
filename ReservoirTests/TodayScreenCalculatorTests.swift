@@ -19,7 +19,7 @@ final class TodayScreenCalculatorTests: XCTestCase {
     private var context: ModelContext!
 
     override func setUpWithError() throws {
-        let schema = Schema(versionedSchema: SchemaV2.self)
+        let schema = Schema(versionedSchema: SchemaV3.self)
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         container = try ModelContainer(for: schema, migrationPlan: ReservoirMigrationPlan.self, configurations: [configuration])
         context = ModelContext(container)
@@ -46,16 +46,24 @@ final class TodayScreenCalculatorTests: XCTestCase {
         startingBalance: Decimal = 0,
         dailyBase: Decimal = 10,
         lastEditedDate: Date? = nil,
-        dismissedAt: Date? = nil
+        dismissedAt: Date? = nil,
+        createdAt: Date? = nil
     ) -> SavingsGoal {
+        let resolvedStartDate = startDate ?? day(-10)
         let goal = SavingsGoal(
             targetAmount: targetAmount,
             targetDate: targetDate ?? day(10),
-            startDate: startDate ?? day(-10),
+            startDate: resolvedStartDate,
             startingBalance: startingBalance,
             dailyBase: dailyBase,
             lastEditedDate: lastEditedDate,
-            dismissedAt: dismissedAt
+            dismissedAt: dismissedAt,
+            // Defaults to the goal's own startDate (not the real "now" a bare `.now`
+            // default would give), so existing tests exercising `startDate`-anchored
+            // carry-forward behavior aren't silently broken by the createdAt floor —
+            // see effectiveStartDate's `max(startDate, createdAt)` formula. Tests that
+            // specifically cover backdating pass a later `createdAt` explicitly.
+            createdAt: createdAt ?? resolvedStartDate
         )
         context.insert(goal)
         return goal
@@ -134,6 +142,22 @@ final class TodayScreenCalculatorTests: XCTestCase {
         XCTAssertTrue(result.isEmpty)
     }
 
+    // MARK: - hasNoGoalsAtAll (shared by TodayView and GoalsView)
+
+    func testHasNoGoalsAtAllIsTrueWhenBothListsAreEmpty() {
+        XCTAssertTrue(TodayScreenCalculator.hasNoGoalsAtAll(activeGoals: [], completedUndismissedGoals: []))
+    }
+
+    func testHasNoGoalsAtAllIsFalseWhenThereIsAnActiveGoal() {
+        let active = makeGoal(targetDate: day(1))
+        XCTAssertFalse(TodayScreenCalculator.hasNoGoalsAtAll(activeGoals: [active], completedUndismissedGoals: []))
+    }
+
+    func testHasNoGoalsAtAllIsFalseWhenThereIsOnlyACompletedUndismissedGoal() {
+        let completed = makeGoal(targetDate: day(-1))
+        XCTAssertFalse(TodayScreenCalculator.hasNoGoalsAtAll(activeGoals: [], completedUndismissedGoals: [completed]))
+    }
+
     // MARK: - carryForwardInput mapping
 
     func testCarryForwardInputUsesLastEditedDateWhenPresent() {
@@ -144,12 +168,84 @@ final class TodayScreenCalculatorTests: XCTestCase {
         XCTAssertEqual(input.effectiveStartDate, edited)
     }
 
-    func testCarryForwardInputFallsBackToStartDateWhenNeverEdited() {
+    func testCarryForwardInputFallsBackToStartDateWhenNeverEditedAndNotBackdated() {
+        // createdAt == startDate (the "goal created today, startDate defaults to today"
+        // common case) — max(startDate, createdAt) resolves to startDate either way.
         let start = day(-10)
-        let goal = makeGoal(startDate: start, lastEditedDate: nil)
+        let goal = makeGoal(startDate: start, lastEditedDate: nil, createdAt: start)
 
-        let input = TodayScreenCalculator.carryForwardInput(for: goal)
+        let input = TodayScreenCalculator.carryForwardInput(for: goal, calendar: calendar)
         XCTAssertEqual(input.effectiveStartDate, start)
+    }
+
+    // MARK: - carryForwardInput mapping (createdAt floor / backdating, adq.5)
+
+    func testCarryForwardInputFloorsAtCreatedAtWhenStartDateIsBackdated() {
+        // startDate backdated 14 days before the goal was actually created — createdAt
+        // (today) must win, not the backdated startDate, so carry-forward never accrues
+        // for days that predate the goal's real existence.
+        let backdatedStart = day(-14)
+        let createdToday = today
+        let goal = makeGoal(startDate: backdatedStart, lastEditedDate: nil, createdAt: createdToday)
+
+        let input = TodayScreenCalculator.carryForwardInput(for: goal, calendar: calendar)
+        XCTAssertEqual(input.effectiveStartDate, createdToday)
+    }
+
+    func testCarryForwardInputUsesStartDateWhenItIsAfterCreatedAt() {
+        // Defensive/shouldn't normally occur via the validated UI flow (startDate is
+        // bounded to <= today at creation time, so it can't be after createdAt in
+        // practice), but the mapping should still take the max correctly either way.
+        let createdEarlier = day(-5)
+        let laterStart = day(-2)
+        let goal = makeGoal(startDate: laterStart, lastEditedDate: nil, createdAt: createdEarlier)
+
+        let input = TodayScreenCalculator.carryForwardInput(for: goal, calendar: calendar)
+        XCTAssertEqual(input.effectiveStartDate, laterStart)
+    }
+
+    func testCarryForwardInputLastEditedDateWinsOverCreatedAtFloor() {
+        // An edit resets carry-forward outright — lastEditedDate wins even over a
+        // createdAt that's later than it, since editing is itself a "goal recreated"
+        // event per PROJECT_SPEC "Core mechanic".
+        let edited = day(-1)
+        let goal = makeGoal(startDate: day(-14), lastEditedDate: edited, createdAt: day(-14))
+
+        let input = TodayScreenCalculator.carryForwardInput(for: goal, calendar: calendar)
+        XCTAssertEqual(input.effectiveStartDate, edited)
+    }
+
+    func testBackdatedGoalWithZeroTransactionsShowsNoCarryForwardOnCreationDay() throws {
+        // A goal backdated 14 days with zero attributed transactions must show
+        // carryForward == 0 on creation day (today) — no fabricated windfall from days
+        // that predate the goal's real existence, per adq.5's core createdAt rationale.
+        let backdatedStart = day(-14)
+        let goal = makeGoal(startDate: backdatedStart, dailyBase: 10, createdAt: today)
+        try context.save()
+
+        let input = TodayScreenCalculator.carryForwardInput(for: goal, calendar: calendar)
+        let carryForward = DailyLimitCalculator.carryForward(for: input, asOf: today, calendar: calendar)
+        XCTAssertEqual(carryForward, 0)
+
+        // dailyBase itself still reflects the full backdated-to-target day count (20 days
+        // from day(-14) to day(10)) — softer than an equivalent same-day-start goal with
+        // the same target/amount, since totalDaysFromStart uses the raw startDate, not
+        // the createdAt-floored effectiveStartDate.
+        let softerDailyBase = DailyLimitCalculator.dailyBase(
+            targetAmount: 1000,
+            startingBalance: 0,
+            startDate: backdatedStart,
+            targetDate: day(10),
+            calendar: calendar
+        )
+        let sameDayDailyBase = DailyLimitCalculator.dailyBase(
+            targetAmount: 1000,
+            startingBalance: 0,
+            startDate: today,
+            targetDate: day(10),
+            calendar: calendar
+        )
+        XCTAssertLessThan(softerDailyBase, sameDayDailyBase)
     }
 
     func testCarryForwardInputMapsSpendEntryKindsAndFields() throws {

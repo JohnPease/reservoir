@@ -13,7 +13,12 @@ import OSLog
 /// state changes (STANDARDS.md §3).
 struct TodayView: View {
     @Environment(\.modelContext) private var modelContext
-    @Environment(\.scenePhase) private var scenePhase
+
+    /// The app's single shared "now," owned by `RootTabView` and kept current by the one
+    /// `ReferenceDateKeeper` applied there — see `TodayClock`'s doc comment for why this
+    /// replaced a local `@State` + per-view `.keepingReferenceDateCurrent(...)`. Not
+    /// itself business logic — just the clock input to `TodayScreenCalculator`.
+    @Environment(TodayClock.self) private var todayClock
 
     @Query(sort: \SavingsGoal.targetDate) private var goals: [SavingsGoal]
     /// Sorted so `spentToday`'s filtering doesn't have to fault/sort the whole table on
@@ -40,12 +45,6 @@ struct TodayView: View {
         return descriptor
     }
 
-    /// "Now," recomputed on foreground resume and at the next midnight rollover so the
-    /// hero number, active-goal set, and completion banners stay correct without
-    /// requiring the user to relaunch. Not itself business logic — just the clock input
-    /// to `TodayScreenCalculator`.
-    @State private var referenceDate: Date = .now
-
     @State private var isShowingAddTransaction = false
     @State private var isShowingCreateGoal = false
     @State private var isShowingSettings = false
@@ -55,11 +54,11 @@ struct TodayView: View {
     private let logger = Logger(subsystem: "com.reservoir.app", category: "TodayView")
 
     private var activeGoals: [SavingsGoal] {
-        TodayScreenCalculator.activeGoals(goals, referenceDate: referenceDate, calendar: calendar)
+        TodayScreenCalculator.activeGoals(goals, referenceDate: todayClock.referenceDate, calendar: calendar)
     }
 
     private var completedGoals: [SavingsGoal] {
-        TodayScreenCalculator.completedUndismissedGoals(goals, referenceDate: referenceDate, calendar: calendar)
+        TodayScreenCalculator.completedUndismissedGoals(goals, referenceDate: todayClock.referenceDate, calendar: calendar)
     }
 
     private var summary: TodayScreenCalculator.Summary? {
@@ -67,7 +66,7 @@ struct TodayView: View {
             activeGoals: activeGoals,
             completedUndismissedGoals: completedGoals,
             allTransactions: transactions,
-            referenceDate: referenceDate,
+            referenceDate: todayClock.referenceDate,
             calendar: calendar
         )
     }
@@ -76,9 +75,10 @@ struct TodayView: View {
     /// completed-but-undismissed goal either. Distinct from `summary == nil`, which is
     /// also true whenever there's no active goal even if a completion banner is showing;
     /// using that alone to gate the empty-state prompt made the prompt render underneath
-    /// a completion banner, which is a real (fixed) bug — see `TodayScreenCalculator`.
+    /// a completion banner, which is a real (fixed) bug. Shared with `GoalsView` via
+    /// `TodayScreenCalculator.hasNoGoalsAtAll` (STANDARDS.md §3).
     private var hasNoGoalsAtAll: Bool {
-        activeGoals.isEmpty && completedGoals.isEmpty
+        TodayScreenCalculator.hasNoGoalsAtAll(activeGoals: activeGoals, completedUndismissedGoals: completedGoals)
     }
 
     /// Today's spend attributable to a completed-but-undismissed goal or unattributed
@@ -89,7 +89,7 @@ struct TodayView: View {
         TodayScreenCalculator.spentToday(
             allTransactions: transactions,
             attributedGoals: completedGoals,
-            referenceDate: referenceDate,
+            referenceDate: todayClock.referenceDate,
             calendar: calendar
         )
     }
@@ -99,7 +99,7 @@ struct TodayView: View {
     }
 
     private var dateHeaderText: String {
-        referenceDate.formatted(.dateTime.weekday(.wide).month(.wide).day())
+        todayClock.referenceDate.formatted(.dateTime.weekday(.wide).month(.wide).day())
     }
 
     var body: some View {
@@ -116,7 +116,7 @@ struct TodayView: View {
                         HeroSection(summary: summary)
                         TwoStatRow(summary: summary)
                     } else if hasNoGoalsAtAll {
-                        NoActiveGoalPrompt {
+                        NoActiveGoalPromptView {
                             isShowingCreateGoal = true
                         }
                     } else {
@@ -152,11 +152,6 @@ struct TodayView: View {
                 }
             }
         }
-        .onAppear { referenceDate = .now }
-        .onChange(of: scenePhase) { _, newPhase in
-            if newPhase == .active { referenceDate = .now }
-        }
-        .task { await scheduleMidnightRefresh() }
         .sheet(isPresented: $isShowingAddTransaction) {
             StubSheet(
                 title: "Add Transaction",
@@ -166,12 +161,7 @@ struct TodayView: View {
             )
         }
         .sheet(isPresented: $isShowingCreateGoal) {
-            StubSheet(
-                title: "Create a Goal",
-                icon: "target",
-                description: "Goal creation is coming in a future story.",
-                accessibilityIdentifier: "today.createGoalSheet"
-            )
+            GoalFormView(mode: .create, accessibilityIdentifier: "today.createGoalSheet")
         }
         .sheet(isPresented: $isShowingSettings) {
             StubSheet(
@@ -207,35 +197,14 @@ struct TodayView: View {
     /// both logged and surfaced via an alert so a persistent failure (e.g. a full disk)
     /// doesn't fail silently.
     private func dismiss(_ goal: SavingsGoal) {
-        goal.dismissedAt = .now
-        do {
-            try modelContext.save()
-        } catch {
-            goal.dismissedAt = nil
-            logger.error("Failed to save goal dismissal: \(error.localizedDescription, privacy: .public)")
-            dismissError = "Your change couldn't be saved. Please try again."
-        }
+        dismissError = PersistenceSaveHelper.saveOrRollback(
+            modelContext: modelContext,
+            mutate: { goal.dismissedAt = .now },
+            rollback: { goal.dismissedAt = nil },
+            logger: logger
+        )
     }
 
-    /// Recomputes `referenceDate` at every midnight boundary while the view is alive,
-    /// so a long-lived foreground session (app left open overnight) still rolls the
-    /// daily limit over without needing a foreground-resume event.
-    private func scheduleMidnightRefresh() async {
-        while !Task.isCancelled {
-            let now = Date()
-            let nextMidnight = calendar.nextDate(
-                after: now,
-                matching: DateComponents(hour: 0, minute: 0, second: 0),
-                matchingPolicy: .nextTime
-            ) ?? now.addingTimeInterval(86_400)
-
-            let nanoseconds = UInt64(max(nextMidnight.timeIntervalSince(now), 1)) * 1_000_000_000
-            try? await Task.sleep(nanoseconds: nanoseconds)
-
-            guard !Task.isCancelled else { return }
-            referenceDate = .now
-        }
-    }
 }
 
 // MARK: - Hero
@@ -318,87 +287,7 @@ private struct StatCard: View {
     }
 }
 
-// MARK: - Empty state
-
-private struct NoActiveGoalPrompt: View {
-    let onCreateGoal: () -> Void
-
-    var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "target")
-                .font(.largeTitle)
-                .foregroundStyle(.secondary)
-            Text("No active goal yet")
-                .font(.headline)
-            Text("Create a savings goal to see your daily limit.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            Button("Create a goal", action: onCreateGoal)
-                .buttonStyle(.borderedProminent)
-                .accessibilityIdentifier("today.createGoal")
-        }
-        .frame(maxWidth: .infinity)
-        .padding()
-        // .contain keeps "today.createGoal" queryable on the Button itself instead of
-        // the whole group collapsing into one element under the container's identifier.
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("today.emptyGoalState")
-    }
-}
-
 // MARK: - Completion banner
-
-private struct CompletionBannerView: View {
-    let goal: SavingsGoal
-    let onDismiss: () -> Void
-
-    /// End-state check (cumulative carry-forward >= 0 through `targetDate`), not merely
-    /// that `targetDate` has passed — see `DailyLimitCalculator.isGoalMet` and
-    /// reservoir-4za. A day where the user overspent but recovered by the target date
-    /// still counts as met.
-    private var isGoalMet: Bool {
-        TodayScreenCalculator.isGoalMet(goal)
-    }
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: isGoalMet ? "checkmark.circle.fill" : "calendar.badge.clock")
-                .foregroundStyle(.blue)
-            VStack(alignment: .leading, spacing: 4) {
-                if isGoalMet {
-                    // Celebratory framing: the goal's cumulative carry-forward balance
-                    // never went negative through the target date.
-                    Text("You reached your goal — nice work!")
-                        .font(.headline)
-                    Text("Target: \(goal.targetAmount, format: .currency(code: "USD")) by \(goal.targetDate, format: .dateTime.month(.wide).day()).")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                } else {
-                    // Factual, non-punitive framing — no shortfall dollar amount, no
-                    // guilt language. This is a past event being reported, not an active
-                    // warning (see reservoir-4za "UX" section).
-                    Text("Your target date has arrived")
-                        .font(.headline)
-                    Text("You spent more than planned along the way.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-            Button {
-                onDismiss()
-            } label: {
-                Image(systemName: "xmark")
-            }
-            .accessibilityIdentifier("today.dismissBanner")
-        }
-        .padding()
-        .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("today.completionBanner")
-    }
-}
 
 // MARK: - Recent transactions
 

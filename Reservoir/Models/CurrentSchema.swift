@@ -1,7 +1,7 @@
 /// Convenience aliases to the current schema version's model types,
-/// so the rest of the app doesn't reference SchemaV2 directly.
-typealias SavingsGoal = SchemaV2.SavingsGoal
-typealias SpendTransaction = SchemaV2.SpendTransaction
-typealias MerchantRule = SchemaV2.MerchantRule
-typealias TransactionType = SchemaV2.TransactionType
-typealias EntryMethod = SchemaV2.EntryMethod
+/// so the rest of the app doesn't reference SchemaV3 directly.
+typealias SavingsGoal = SchemaV3.SavingsGoal
+typealias SpendTransaction = SchemaV3.SpendTransaction
+typealias MerchantRule = SchemaV3.MerchantRule
+typealias TransactionType = SchemaV3.TransactionType
+typealias EntryMethod = SchemaV3.EntryMethod

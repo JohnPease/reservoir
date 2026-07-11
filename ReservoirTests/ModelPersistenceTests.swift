@@ -6,7 +6,7 @@ final class ModelPersistenceTests: XCTestCase {
     private var container: ModelContainer!
 
     override func setUpWithError() throws {
-        let schema = Schema(versionedSchema: SchemaV2.self)
+        let schema = Schema(versionedSchema: SchemaV3.self)
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         container = try ModelContainer(for: schema, migrationPlan: ReservoirMigrationPlan.self, configurations: [configuration])
     }
@@ -107,5 +107,41 @@ final class ModelPersistenceTests: XCTestCase {
         let fetched = try context.fetch(FetchDescriptor<MerchantRule>())
         XCTAssertEqual(fetched.count, 1)
         XCTAssertEqual(fetched.first?.type, .fixed)
+    }
+
+    /// `GoalsView.delete(_:)` (adq.5) relies on `SavingsGoal.transactions`'s
+    /// `@Relationship(deleteRule: .nullify, ...)` (declared identically across
+    /// `SchemaV1`/`V2`/`V3`) to orphan attributed transactions rather than delete them —
+    /// "Its N attributed transactions will no longer count toward any daily limit, but
+    /// will not be deleted" is the confirmation copy's exact promise. This is a
+    /// framework-level guarantee, not new adq.5 calculator logic, but it's the load-
+    /// bearing behavior the new delete flow depends on, so it's covered directly rather
+    /// than only implicitly relied upon.
+    func testDeletingGoalNullifiesAttributedTransactionsInsteadOfDeletingThem() throws {
+        let context = ModelContext(container)
+        let goal = makeGoal()
+        context.insert(goal)
+
+        let transaction = SpendTransaction(
+            amount: 12.50,
+            date: .now,
+            merchantName: "Coffee Shop",
+            type: .variable,
+            entryMethod: .manual,
+            savingsGoal: goal
+        )
+        context.insert(transaction)
+        try context.save()
+
+        context.delete(goal)
+        try context.save()
+
+        let remainingGoals = try context.fetch(FetchDescriptor<SavingsGoal>())
+        XCTAssertTrue(remainingGoals.isEmpty)
+
+        let remainingTransactions = try context.fetch(FetchDescriptor<SpendTransaction>())
+        XCTAssertEqual(remainingTransactions.count, 1, "The transaction must survive goal deletion, orphaned rather than deleted.")
+        XCTAssertNil(remainingTransactions.first?.savingsGoal, "The deleted goal's relationship must be nullified on the surviving transaction.")
+        XCTAssertEqual(remainingTransactions.first?.merchantName, "Coffee Shop")
     }
 }
