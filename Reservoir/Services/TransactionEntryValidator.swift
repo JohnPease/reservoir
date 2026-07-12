@@ -60,14 +60,48 @@ enum TransactionEntryValidator {
         return .explicitChoiceRequired
     }
 
-    /// Whether the chosen `type` counts as a manual override of a `MerchantRule`'s
-    /// suggestion. `nil` `suggestedType` (no matching rule) always yields `false` — there
-    /// is no auto-suggestion to override in that case, so the entry form's default
-    /// (`variable`, `isManualOverride = false`) always stands regardless of what the user
-    /// picks.
-    static func isManualOverride(suggestedType: TransactionType?, chosenType: TransactionType) -> Bool {
-        guard let suggestedType else { return false }
-        return chosenType != suggestedType
+    /// Resolves the `isManualOverride` flag to persist when saving from the entry form.
+    ///
+    /// Invariant (see `SpendTransaction.isManualOverride`'s doc comment in
+    /// `SchemaV3.swift`): this flag records *sticky user intent* — "did a person
+    /// deliberately set/change `type` on this transaction" — not a live comparison
+    /// against whatever `MerchantRule` happens to match right now. A `MerchantRule`
+    /// added or edited after the fact must never flip this retroactively (that's what
+    /// `MerchantRuleRetagCalculator` relies on to know which transactions are safe to
+    /// retag).
+    ///
+    /// That means the answer depends on whether the user actually touched the type
+    /// control *during this entry/edit session*:
+    /// - If they didn't touch it, their intent didn't change this session, so whatever
+    ///   was already true stands: `false` for a brand-new transaction (nothing to
+    ///   override yet), or the transaction's existing `isManualOverride` when editing
+    ///   (preserved exactly, not recomputed from current rule state).
+    /// - If they did touch it, compare their final choice to what the default would be
+    ///   absent any explicit interaction — the matching rule's suggestion, or `.variable`
+    ///   if no rule matches. A choice that lands back on the default isn't an override
+    ///   (e.g. re-confirming the auto-suggested type); a choice that diverges is.
+    ///
+    /// - Parameters:
+    ///   - suggestedType: the currently-matching `MerchantRule`'s suggested type, if any.
+    ///   - chosenType: the type currently selected in the form.
+    ///   - hasUserInteractedWithTypeControl: true once the user has directly tapped the
+    ///     type segmented control during this entry/edit session (as opposed to the type
+    ///     merely being pre-filled or auto-suggested) — see
+    ///     `TransactionEntryView.typeBinding`.
+    ///   - existingIsManualOverride: the value to fall back to when the control wasn't
+    ///     touched this session — pass `false` for create mode, or the transaction's
+    ///     current `isManualOverride` for edit mode.
+    static func isManualOverride(
+        suggestedType: TransactionType?,
+        chosenType: TransactionType,
+        hasUserInteractedWithTypeControl: Bool,
+        existingIsManualOverride: Bool
+    ) -> Bool {
+        guard hasUserInteractedWithTypeControl else {
+            return existingIsManualOverride
+        }
+        let defaultType = suggestedType ?? .variable
+        return chosenType != defaultType
     }
 
     static func validate(

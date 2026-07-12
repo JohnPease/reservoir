@@ -152,16 +152,72 @@ final class TransactionEntryValidatorTests: XCTestCase {
 
     // MARK: - isManualOverride
 
-    func testNoSuggestionMeansNeverManualOverride() {
-        XCTAssertFalse(TransactionEntryValidator.isManualOverride(suggestedType: nil, chosenType: .variable))
-        XCTAssertFalse(TransactionEntryValidator.isManualOverride(suggestedType: nil, chosenType: .fixed))
+    /// (a) Create mode, no rule match, user actively picks a non-default type — that's a
+    /// deliberate override even though there was nothing to "suggest" against.
+    func testCreateNoMatchUserPicksNonDefaultIsOverride() {
+        XCTAssertTrue(TransactionEntryValidator.isManualOverride(
+            suggestedType: nil,
+            chosenType: .fixed,
+            hasUserInteractedWithTypeControl: true,
+            existingIsManualOverride: false
+        ))
     }
 
-    func testChosenTypeMatchingSuggestionIsNotOverride() {
-        XCTAssertFalse(TransactionEntryValidator.isManualOverride(suggestedType: .fixed, chosenType: .fixed))
+    /// (b) Create mode, no rule match, user never touches the control — the default
+    /// (`variable`) stands, not an override.
+    func testCreateNoMatchUntouchedIsNotOverride() {
+        XCTAssertFalse(TransactionEntryValidator.isManualOverride(
+            suggestedType: nil,
+            chosenType: .variable,
+            hasUserInteractedWithTypeControl: false,
+            existingIsManualOverride: false
+        ))
     }
 
-    func testChosenTypeDivergingFromSuggestionIsOverride() {
-        XCTAssertTrue(TransactionEntryValidator.isManualOverride(suggestedType: .fixed, chosenType: .variable))
+    /// (c) A rule matches and the user's final choice agrees with it (whether by leaving
+    /// it untouched or by touching the control and landing back on the same value) — not
+    /// an override.
+    func testMatchingRuleAcceptedIsNotOverride() {
+        XCTAssertFalse(TransactionEntryValidator.isManualOverride(
+            suggestedType: .fixed,
+            chosenType: .fixed,
+            hasUserInteractedWithTypeControl: false,
+            existingIsManualOverride: false
+        ))
+        XCTAssertFalse(TransactionEntryValidator.isManualOverride(
+            suggestedType: .fixed,
+            chosenType: .fixed,
+            hasUserInteractedWithTypeControl: true,
+            existingIsManualOverride: false
+        ))
+    }
+
+    /// (d) A rule matches and the user actively picks something different — an override.
+    func testMatchingRuleDivergedFromIsOverride() {
+        XCTAssertTrue(TransactionEntryValidator.isManualOverride(
+            suggestedType: .fixed,
+            chosenType: .variable,
+            hasUserInteractedWithTypeControl: true,
+            existingIsManualOverride: false
+        ))
+    }
+
+    /// (e) Edit mode, user doesn't touch the type field at all this session — whatever
+    /// the transaction's existing `isManualOverride` was must be preserved exactly, even
+    /// if a rule now matches (or no longer matches) differently than before. This is the
+    /// core fix: a later `MerchantRule` change must never silently flip this.
+    func testEditModeUntouchedPreservesExistingValueRegardlessOfRuleState() {
+        XCTAssertTrue(TransactionEntryValidator.isManualOverride(
+            suggestedType: .variable,
+            chosenType: .fixed,
+            hasUserInteractedWithTypeControl: false,
+            existingIsManualOverride: true
+        ))
+        XCTAssertFalse(TransactionEntryValidator.isManualOverride(
+            suggestedType: .fixed,
+            chosenType: .variable,
+            hasUserInteractedWithTypeControl: false,
+            existingIsManualOverride: false
+        ))
     }
 }

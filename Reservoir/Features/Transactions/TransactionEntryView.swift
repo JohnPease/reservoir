@@ -12,15 +12,7 @@ import OSLog
 /// only wires its `@State` into those and renders the resulting field errors. Save/
 /// rollback plumbing goes through the shared `PersistenceSaveHelper`.
 struct TransactionEntryView: View {
-    enum Mode {
-        case create
-        case edit(SpendTransaction)
-
-        var isEdit: Bool {
-            if case .edit = self { return true }
-            return false
-        }
-    }
+    typealias Mode = EntryMode<SpendTransaction>
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
@@ -38,8 +30,16 @@ struct TransactionEntryView: View {
     @State private var type: TransactionType = .variable
     /// Once the user directly taps the type segmented control, auto-suggestion (driven by
     /// `merchantName` changes) stops overwriting their explicit choice — see
-    /// `typeBinding`/`applyAutoSuggestedTypeIfNeeded()`.
+    /// `typeBinding`/`applyAutoSuggestedTypeIfNeeded()`. Always `true` from the start in
+    /// edit mode (an existing type is never silently reassigned by a merchant-name
+    /// edit), which makes this unsuitable on its own for deciding `isManualOverride` —
+    /// see `hasUserInteractedWithTypeControl` for that.
     @State private var hasUserEditedType: Bool
+    /// True once the user has directly tapped the type segmented control during *this*
+    /// entry/edit session — unlike `hasUserEditedType`, this starts `false` in edit mode
+    /// too, so `TransactionEntryValidator.isManualOverride` can tell "user actively chose
+    /// a type this session" apart from "type field untouched, preserve existing intent."
+    @State private var hasUserInteractedWithTypeControl = false
     @State private var selectedGoal: SavingsGoal?
     @State private var hasConfirmedGoalAttribution: Bool
     @State private var hasInitializedGoalAttribution: Bool
@@ -104,8 +104,25 @@ struct TransactionEntryView: View {
             set: { newValue in
                 type = newValue
                 hasUserEditedType = true
+                hasUserInteractedWithTypeControl = true
             }
         )
+    }
+
+    /// The Goal picker's option list: `activeGoals` plus the transaction's currently
+    /// attributed goal, if editing one that's since gone inactive (completed/dismissed)
+    /// and so dropped out of `activeGoals`. Without this, editing such a transaction
+    /// shows the picker with no visible selection even though `selectedGoal`/the
+    /// underlying data is intact — the picker must always be able to render the
+    /// selection it's initialized with.
+    private var pickerGoals: [SavingsGoal] {
+        guard case .edit(let transaction) = mode,
+              let currentGoal = transaction.savingsGoal,
+              !activeGoals.contains(where: { $0.persistentModelID == currentGoal.persistentModelID })
+        else {
+            return activeGoals
+        }
+        return activeGoals + [currentGoal]
     }
 
     private var goalBinding: Binding<SavingsGoal?> {
@@ -152,7 +169,7 @@ struct TransactionEntryView: View {
                 Section("Goal") {
                     Picker("Goal", selection: goalBinding) {
                         Text("Unattributed").tag(SavingsGoal?.none)
-                        ForEach(activeGoals, id: \.persistentModelID) { goal in
+                        ForEach(pickerGoals, id: \.persistentModelID) { goal in
                             Text(goal.displayName).tag(SavingsGoal?.some(goal))
                         }
                     }
@@ -177,18 +194,7 @@ struct TransactionEntryView: View {
                         .accessibilityIdentifier("transactionEntry.submit")
                 }
             }
-            .alert(
-                "Couldn't save",
-                isPresented: Binding(
-                    get: { saveError != nil },
-                    set: { isPresented in if !isPresented { saveError = nil } }
-                ),
-                presenting: saveError
-            ) { _ in
-                Button("OK") { saveError = nil }
-            } message: { message in
-                Text(message)
-            }
+            .saveErrorAlert($saveError)
         }
         .accessibilityIdentifier(accessibilityIdentifier)
         .task { initializeGoalAttributionIfNeeded() }
@@ -226,12 +232,23 @@ struct TransactionEntryView: View {
 
     private func save() {
         let trimmedMerchantName = merchantName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedIsManualOverride = TransactionEntryValidator.isManualOverride(suggestedType: suggestedType, chosenType: type)
 
         switch mode {
         case .create:
+            let resolvedIsManualOverride = TransactionEntryValidator.isManualOverride(
+                suggestedType: suggestedType,
+                chosenType: type,
+                hasUserInteractedWithTypeControl: hasUserInteractedWithTypeControl,
+                existingIsManualOverride: false
+            )
             saveCreate(merchantName: trimmedMerchantName, isManualOverride: resolvedIsManualOverride)
         case .edit(let transaction):
+            let resolvedIsManualOverride = TransactionEntryValidator.isManualOverride(
+                suggestedType: suggestedType,
+                chosenType: type,
+                hasUserInteractedWithTypeControl: hasUserInteractedWithTypeControl,
+                existingIsManualOverride: transaction.isManualOverride
+            )
             saveEdit(transaction, merchantName: trimmedMerchantName, isManualOverride: resolvedIsManualOverride)
         }
     }
