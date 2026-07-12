@@ -56,7 +56,11 @@ struct TransactionsView: View {
                                     Button {
                                         transactionPendingEdit = transaction
                                     } label: {
-                                        TransactionListRow(transaction: transaction)
+                                        TransactionRowView(
+                                            transaction: transaction,
+                                            showGoalLabel: true,
+                                            accessibilityIdentifier: "transactions.row"
+                                        )
                                     }
                                     .buttonStyle(.plain)
                                     .swipeActions {
@@ -115,32 +119,12 @@ struct TransactionsView: View {
                 TransactionEntryView(mode: .edit(transaction), accessibilityIdentifier: "transactions.editTransactionSheet")
             }
         }
-        .confirmationDialog(
-            "Delete this transaction? This can't be undone.",
-            isPresented: Binding(
-                get: { transactionPendingDelete != nil },
-                set: { isPresented in if !isPresented { transactionPendingDelete = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Delete", role: .destructive) {
-                if let transaction = transactionPendingDelete { delete(transaction) }
-                transactionPendingDelete = nil
-            }
-            Button("Cancel", role: .cancel) { transactionPendingDelete = nil }
-        }
-        .alert(
-            "Couldn't save",
-            isPresented: Binding(
-                get: { actionError != nil },
-                set: { isPresented in if !isPresented { actionError = nil } }
-            ),
-            presenting: actionError
-        ) { _ in
-            Button("OK") { actionError = nil }
-        } message: { message in
-            Text(message)
-        }
+        .deleteConfirmation(
+            pendingItem: $transactionPendingDelete,
+            title: { _ in "Delete this transaction? This can't be undone." },
+            onDelete: delete
+        )
+        .saveErrorAlert($actionError)
     }
 
     private func delete(_ transaction: SpendTransaction) {
@@ -153,47 +137,6 @@ struct TransactionsView: View {
     }
 }
 
-// MARK: - Row
-
-private struct TransactionListRow: View {
-    let transaction: SpendTransaction
-
-    private var isFixed: Bool { transaction.type == .fixed }
-
-    private var goalLabel: String {
-        transaction.savingsGoal?.displayName ?? "Unattributed"
-    }
-
-    var body: some View {
-        HStack {
-            Image(systemName: isFixed ? "lock.fill" : "cart.fill")
-                .foregroundStyle(isFixed ? .secondary : .primary)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(transaction.merchantName)
-                    .foregroundStyle(isFixed ? .secondary : .primary)
-                if isFixed {
-                    Text("Excluded from limit")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text(transaction.date, style: .time)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Text(goalLabel)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("transactions.row.goalLabel")
-            }
-
-            Spacer()
-
-            Text(transaction.amount, format: .currency(code: "USD"))
-                .foregroundStyle(isFixed ? .secondary : .primary)
-        }
-        .opacity(isFixed ? 0.6 : 1.0)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("transactions.row")
-    }
-}
+// `TransactionListRow` moved to `Reservoir/Shared/TransactionRowView.swift` (code review
+// on feat/transactions) so `TodayView`/`TransactionsView` share one row implementation
+// instead of two near-identical copies (STANDARDS.md §3).

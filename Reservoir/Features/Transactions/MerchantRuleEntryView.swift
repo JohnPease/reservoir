@@ -11,15 +11,7 @@ import OSLog
 /// and the retag mutation into a single `modelContext.save()` via `PersistenceSaveHelper`
 /// (adq.3 kickoff check 2 — one atomic save, not two sequential ones).
 struct MerchantRuleEntryView: View {
-    enum Mode {
-        case create
-        case edit(MerchantRule)
-
-        var isEdit: Bool {
-            if case .edit = self { return true }
-            return false
-        }
-    }
+    typealias Mode = EntryMode<MerchantRule>
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
@@ -28,13 +20,6 @@ struct MerchantRuleEntryView: View {
     var accessibilityIdentifier: String = "merchantRuleEntry.sheet"
 
     @Query private var existingRules: [MerchantRule]
-    @Query(
-        sort: [
-            SortDescriptor(\SpendTransaction.date, order: .reverse),
-            SortDescriptor(\SpendTransaction.createdAt, order: .reverse)
-        ]
-    )
-    private var allTransactions: [SpendTransaction]
 
     @State private var merchantName: String
     /// `nil` represents "no type chosen yet" — required on create, no silent default.
@@ -105,20 +90,27 @@ struct MerchantRuleEntryView: View {
                         .accessibilityIdentifier("merchantRuleEntry.submit")
                 }
             }
-            .alert(
-                "Couldn't save",
-                isPresented: Binding(
-                    get: { saveError != nil },
-                    set: { isPresented in if !isPresented { saveError = nil } }
-                ),
-                presenting: saveError
-            ) { _ in
-                Button("OK") { saveError = nil }
-            } message: { message in
-                Text(message)
-            }
+            .saveErrorAlert($saveError)
         }
         .accessibilityIdentifier(accessibilityIdentifier)
+    }
+
+    // MARK: - Retag support
+
+    /// Fetches only the `SpendTransaction`s a retag pass could plausibly touch, instead
+    /// of the view-level `@Query` this replaced (which loaded and sorted the entire
+    /// transaction table on every render just for this save-time use). The predicate is
+    /// a superset narrowing filter only — `MerchantRuleRetagCalculator.transactionsToRetag`
+    /// still does the authoritative case-insensitive exact-match + `isManualOverride`
+    /// filtering on the results, so this stays correct even though `localizedStandardContains`
+    /// isn't itself an exact case-insensitive equality test. No sort descriptors, since
+    /// `transactionsToRetag`'s plain filter doesn't need one.
+    private func transactionsToRetag(merchantName: String) -> [SpendTransaction] {
+        let descriptor = FetchDescriptor<SpendTransaction>(
+            predicate: #Predicate { $0.merchantName.localizedStandardContains(merchantName) }
+        )
+        let candidates = (try? modelContext.fetch(descriptor)) ?? []
+        return MerchantRuleRetagCalculator.transactionsToRetag(candidates, merchantName: merchantName)
     }
 
     // MARK: - Save
@@ -137,7 +129,7 @@ struct MerchantRuleEntryView: View {
 
     private func saveCreate(merchantName: String, type: TransactionType) {
         let rule = MerchantRule(merchantName: merchantName, type: type)
-        let matchingTransactions = MerchantRuleRetagCalculator.transactionsToRetag(allTransactions, merchantName: merchantName)
+        let matchingTransactions = transactionsToRetag(merchantName: merchantName)
         let originalTypes = matchingTransactions.map(\.type)
 
         let error = PersistenceSaveHelper.saveOrRollback(
@@ -171,7 +163,7 @@ struct MerchantRuleEntryView: View {
             newType: type
         )
         let matchingTransactions = shouldRetag
-            ? MerchantRuleRetagCalculator.transactionsToRetag(allTransactions, merchantName: merchantName)
+            ? transactionsToRetag(merchantName: merchantName)
             : []
         let originalTypes = matchingTransactions.map(\.type)
 

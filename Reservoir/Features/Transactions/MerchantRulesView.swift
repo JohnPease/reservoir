@@ -78,32 +78,12 @@ struct MerchantRulesView: View {
                 MerchantRuleEntryView(mode: .edit(rule), accessibilityIdentifier: "merchantRules.editSheet")
             }
         }
-        .confirmationDialog(
-            "Delete this merchant rule? Existing transactions keep their current tag.",
-            isPresented: Binding(
-                get: { rulePendingDelete != nil },
-                set: { isPresented in if !isPresented { rulePendingDelete = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Delete", role: .destructive) {
-                if let rule = rulePendingDelete { delete(rule) }
-                rulePendingDelete = nil
-            }
-            Button("Cancel", role: .cancel) { rulePendingDelete = nil }
-        }
-        .alert(
-            "Couldn't save",
-            isPresented: Binding(
-                get: { actionError != nil },
-                set: { isPresented in if !isPresented { actionError = nil } }
-            ),
-            presenting: actionError
-        ) { _ in
-            Button("OK") { actionError = nil }
-        } message: { message in
-            Text(message)
-        }
+        .deleteConfirmation(
+            pendingItem: $rulePendingDelete,
+            title: { _ in "Delete this merchant rule? Existing transactions keep their current tag." },
+            onDelete: delete
+        )
+        .saveErrorAlert($actionError)
     }
 
     /// Deleting a rule does not touch existing transactions' tags (asymmetric on purpose

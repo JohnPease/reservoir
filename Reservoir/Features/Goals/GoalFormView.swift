@@ -12,15 +12,7 @@ import OSLog
 /// save/rollback plumbing goes through `PersistenceSaveHelper`, shared with
 /// `GoalsView`'s edit/delete/dismiss flows.
 struct GoalFormView: View {
-    enum Mode {
-        case create
-        case edit(SavingsGoal)
-
-        var isEdit: Bool {
-            if case .edit = self { return true }
-            return false
-        }
-    }
+    typealias Mode = EntryMode<SavingsGoal>
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
@@ -141,18 +133,7 @@ struct GoalFormView: View {
                 Button("Continue", role: .destructive) { saveEdit() }
                 Button("Cancel", role: .cancel) {}
             }
-            .alert(
-                "Couldn't save",
-                isPresented: Binding(
-                    get: { saveError != nil },
-                    set: { isPresented in if !isPresented { saveError = nil } }
-                ),
-                presenting: saveError
-            ) { _ in
-                Button("OK") { saveError = nil }
-            } message: { message in
-                Text(message)
-            }
+            .saveErrorAlert($saveError)
         }
         .accessibilityIdentifier(accessibilityIdentifier)
     }

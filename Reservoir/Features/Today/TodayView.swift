@@ -166,18 +166,7 @@ struct TodayView: View {
                 accessibilityIdentifier: "today.settingsSheet"
             )
         }
-        .alert(
-            "Couldn't save",
-            isPresented: Binding(
-                get: { dismissError != nil },
-                set: { isPresented in if !isPresented { dismissError = nil } }
-            ),
-            presenting: dismissError
-        ) { _ in
-            Button("OK") { dismissError = nil }
-        } message: { message in
-            Text(message)
-        }
+        .saveErrorAlert($dismissError)
     }
 
     /// Dismissing a completion banner resets the goal to a true empty/no-goal state:
@@ -301,7 +290,7 @@ private struct RecentTransactionsSection: View {
                     .accessibilityIdentifier("today.emptyTransactions")
             } else {
                 ForEach(transactions, id: \.persistentModelID) { transaction in
-                    TransactionRow(transaction: transaction)
+                    TransactionRowView(transaction: transaction)
                 }
             }
         }
@@ -311,35 +300,6 @@ private struct RecentTransactionsSection: View {
     }
 }
 
-private struct TransactionRow: View {
-    let transaction: SpendTransaction
-
-    private var isFixed: Bool { transaction.type == .fixed }
-
-    var body: some View {
-        HStack {
-            Image(systemName: isFixed ? "lock.fill" : "cart.fill")
-                .foregroundStyle(isFixed ? .secondary : .primary)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(transaction.merchantName)
-                    .foregroundStyle(isFixed ? .secondary : .primary)
-                if isFixed {
-                    Text("Excluded from limit")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text(transaction.date, style: .time)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Spacer()
-
-            Text(transaction.amount, format: .currency(code: "USD"))
-                .foregroundStyle(isFixed ? .secondary : .primary)
-        }
-        .opacity(isFixed ? 0.6 : 1.0)
-    }
-}
+// `TransactionRow` moved to `Reservoir/Shared/TransactionRowView.swift` (code review on
+// feat/transactions) so `TodayView`/`TransactionsView` share one row implementation
+// instead of two near-identical copies (STANDARDS.md §3).

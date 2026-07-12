@@ -119,39 +119,18 @@ struct GoalsView: View {
                 GoalFormView(mode: .edit(goal), accessibilityIdentifier: "goals.editGoalSheet")
             }
         }
-        .confirmationDialog(
-            deleteConfirmationTitle,
-            isPresented: Binding(
-                get: { goalPendingDelete != nil },
-                set: { isPresented in if !isPresented { goalPendingDelete = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Delete", role: .destructive) {
-                if let goal = goalPendingDelete { delete(goal) }
-                goalPendingDelete = nil
-            }
-            Button("Cancel", role: .cancel) { goalPendingDelete = nil }
-        }
-        .alert(
-            "Couldn't save",
-            isPresented: Binding(
-                get: { actionError != nil },
-                set: { isPresented in if !isPresented { actionError = nil } }
-            ),
-            presenting: actionError
-        ) { _ in
-            Button("OK") { actionError = nil }
-        } message: { message in
-            Text(message)
-        }
+        .deleteConfirmation(
+            pendingItem: $goalPendingDelete,
+            title: deleteConfirmationTitle(for:),
+            onDelete: delete
+        )
+        .saveErrorAlert($actionError)
     }
 
     /// "Delete this goal? Its N attributed transactions will no longer count toward any
     /// daily limit, but will not be deleted." — the transaction clause is omitted when
     /// N == 0, per the bead's exact copy.
-    private var deleteConfirmationTitle: String {
-        guard let goal = goalPendingDelete else { return "Delete this goal?" }
+    private func deleteConfirmationTitle(for goal: SavingsGoal) -> String {
         let count = goal.transactions.count
         guard count > 0 else { return "Delete this goal?" }
         let noun = count == 1 ? "transaction" : "transactions"
