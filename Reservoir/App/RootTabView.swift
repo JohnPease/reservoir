@@ -15,7 +15,7 @@ struct RootTabView: View {
             GoalsView()
                 .tabItem { Label("Goals", systemImage: "target") }
 
-            Text("Transactions")
+            TransactionsView()
                 .tabItem { Label("Transactions", systemImage: "list.bullet") }
 
             Text("Settings")

@@ -153,12 +153,7 @@ struct TodayView: View {
             }
         }
         .sheet(isPresented: $isShowingAddTransaction) {
-            StubSheet(
-                title: "Add Transaction",
-                icon: "plus.circle",
-                description: "Manual transaction entry is coming in a future story.",
-                accessibilityIdentifier: "today.addTransactionSheet"
-            )
+            TransactionEntryView(mode: .create, accessibilityIdentifier: "today.addTransactionSheet")
         }
         .sheet(isPresented: $isShowingCreateGoal) {
             GoalFormView(mode: .create, accessibilityIdentifier: "today.createGoalSheet")
