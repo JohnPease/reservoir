@@ -355,10 +355,18 @@ auto-tagging can call it directly without reimplementing the match rule.
   Today; a shared zero-goals empty state; and full goal create/edit/delete,
   including backdatable `startDate` at creation. See "Goals screen" under
   Architecture above.
-- 🚧 Everything else is still in progress. Current state beyond the Today
-  and Goals screens: the SwiftData data model (`SavingsGoal`,
-  `SpendTransaction`, `MerchantRule`) and placeholder Transactions/Settings
-  tabs.
+- **Transactions tab** (implemented): day-grouped, date-descending list of
+  every transaction with an All/Variable/Fixed filter, goal-attribution
+  indicator per row, tap-to-edit/swipe-to-delete, and a "+" that opens the
+  same manual entry form as Today's "Add transaction" button (amount/date/
+  merchant/type validation, merchant-rule auto-suggest with manual-override
+  protection, goal-attribution picker). Merchant rule management
+  (create/edit/delete, duplicate-name rejection, retroactive retag of
+  matching transactions on rule create/edit) is reachable from this tab. See
+  "Transactions tab" under Architecture above.
+- 🚧 Everything else is still in progress. Current state beyond Today,
+  Goals, and Transactions: the placeholder Settings tab (linked accounts,
+  starting balances, goal management) and Plaid Link integration.
 - Planned MVP scope and build order are tracked in
   [`docs/PROJECT_SPEC.md`](docs/PROJECT_SPEC.md) and as beads under the
   `reservoir-adq` epic (`bd show reservoir-adq`).
