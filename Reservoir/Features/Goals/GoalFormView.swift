@@ -236,23 +236,6 @@ struct GoalFormView: View {
     }
 }
 
-/// A `Form` row pairing a control with its inline validation error, matching the "exact
-/// error copy shown inline under the offending field" requirement without repeating the
-/// `VStack`/error-`Text` boilerplate at every field (STANDARDS.md §3).
-private struct LabeledField<Content: View>: View {
-    let label: String
-    let error: String?
-    @ViewBuilder let content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            content
-            if let error {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .accessibilityIdentifier("goalForm.error.\(label)")
-            }
-        }
-    }
-}
+// `LabeledField` moved to `Reservoir/Shared/LabeledField.swift` (adq.3) so
+// `TransactionEntryView`/`MerchantRuleEntryView` reuse it instead of redefining it
+// (STANDARDS.md §3).
