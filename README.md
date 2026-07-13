@@ -181,11 +181,12 @@ toward spent/remaining, as does spend attributed to a completed-undismissed
 goal — a goal's spend doesn't disappear from tracking the instant
 `targetDate` passes, only once the user actually dismisses its banner.
 
-"Add transaction" and Settings share one parameterized `StubSheet`
-(`Features/Today/TodayStubSheets.swift`) for now — their real flows are
-separate stories (adq.3 and the Settings tab respectively). Goal creation
-from the empty state opens the real `GoalFormView` (see "Goals screen"
-below), not a stub — `CreateGoalStubSheet` was retired in adq.5. Covered by
+Settings still uses the parameterized `StubSheet`
+(`Features/Today/TodayStubSheets.swift`) — its real flow is a separate,
+future story. "Add transaction" now opens the real `TransactionEntryView`
+(see "Transactions tab" below) — `AddTransactionStubSheet` was retired in
+adq.3, same as `CreateGoalStubSheet` was retired in adq.5 when goal creation
+started opening the real `GoalFormView`. Covered by
 `ReservoirTests/TodayScreenCalculatorTests.swift` and
 `ReservoirUITests/TodayScreenUITests.swift`.
 
@@ -272,6 +273,59 @@ rollback-on-failure + error-alert helper, `Services/PersistenceSaveHelper.swift`
 — extracted from `TodayView.dismiss(_:)`'s original inline implementation so
 the pattern isn't duplicated four times (STANDARDS.md §3).
 
+**Transactions tab** (adq.3): `Features/Transactions/TransactionsView.swift`
+lists every `SpendTransaction`, day-grouped into `List` `Section`s ("Today,"
+"Yesterday," then full dates) and sorted date-descending (`createdAt`-desc
+same-day tiebreak, matching `TodayView`'s `@Query` convention), with an All/
+Variable/Fixed filter segmented control. Grouping/filtering/section-title
+logic lives in `Services/TransactionsScreenCalculator.swift`, not the view.
+Each row shows the same type icon/muted-fixed-styling convention as
+`TodayView.TransactionRow`, plus a goal-attribution caption (goal label or
+"Unattributed") — `SavingsGoal` has no `name` field, so
+`Shared/SavingsGoalDisplayName.swift` derives a short display label
+(`$1,000 by Mar 1`) from existing fields rather than adding one. A toolbar
+"+" and tapping a row both open `Features/Transactions/TransactionEntryView.swift`
+(create/edit, shared with `TodayView`'s "Add transaction" sheet); swipe-to-
+delete requires a confirmation.
+
+`TransactionEntryView` validates amount > 0, date <= today (no lower bound —
+backdating is a legitimate fallback), and non-empty trimmed merchant name via
+`Services/TransactionEntryValidator.swift` (pure, unit-tested). Typing a
+merchant name that case-insensitively matches a `MerchantRule`
+(`Services/MerchantMatcher.swift`) auto-suggests that rule's `type` until the
+user directly edits the type control themselves; if the final saved `type`
+diverges from the rule's suggestion, `isManualOverride = true` is set,
+protecting that transaction from future retag passes. No match (or the user
+accepting the suggestion as-is) means `isManualOverride = false`. Goal
+attribution auto-selects the sole active goal when exactly one exists;
+otherwise (zero or 2+ active goals) it defaults to "Unattributed" and — only
+when 2+ active goals exist — requires an explicit pick or confirm before save
+is enabled (`TransactionEntryValidator.goalAttributionRequirement`, reusing
+`TodayScreenCalculator.activeGoals` as the sole "active goal" source of
+truth, not a second lifecycle model).
+
+**Merchant rules** (adq.3): `Features/Transactions/MerchantRulesView.swift`
+(reachable via a toolbar link from the Transactions tab, not its own tab —
+the spec's 4-tab IA is locked) lists/creates/edits/deletes `MerchantRule`s
+through `Features/Transactions/MerchantRuleEntryView.swift`, validated by
+`Services/MerchantRuleValidator.swift` (non-empty merchant name, required
+type with no silent default, case-insensitive duplicate-name rejection).
+Creating or editing a rule such that its `merchantName`/`type` actually
+changes immediately retags every existing, non-manually-overridden
+`SpendTransaction` with a case-insensitively matching `merchantName` to the
+rule's `type` — the diff (does this edit even need to retag) and the
+match/mutation logic live in `Services/MerchantRuleRetagCalculator.swift`
+(pure, unit-tested), and the rule mutation + retag mutation are combined into
+one atomic `modelContext.save()` via `PersistenceSaveHelper`, not two
+sequential saves. A no-op edit (same name/type) never refires the retag.
+Deleting a rule is inert with respect to existing transactions — no
+retroactive untagging.
+
+`MerchantMatcher` is the single shared matching engine behind both the entry
+form's auto-suggest and the retag pass, exposed as a standalone `Services/`
+type (not private to a view) so reservoir-adq.4's Plaid import-time
+auto-tagging can call it directly without reimplementing the match rule.
+
 ## Technical details
 
 - **Minimum iOS version**: 17.0 (required for SwiftData and `@Observable`)
@@ -301,10 +355,18 @@ the pattern isn't duplicated four times (STANDARDS.md §3).
   Today; a shared zero-goals empty state; and full goal create/edit/delete,
   including backdatable `startDate` at creation. See "Goals screen" under
   Architecture above.
-- 🚧 Everything else is still in progress. Current state beyond the Today
-  and Goals screens: the SwiftData data model (`SavingsGoal`,
-  `SpendTransaction`, `MerchantRule`) and placeholder Transactions/Settings
-  tabs.
+- **Transactions tab** (implemented): day-grouped, date-descending list of
+  every transaction with an All/Variable/Fixed filter, goal-attribution
+  indicator per row, tap-to-edit/swipe-to-delete, and a "+" that opens the
+  same manual entry form as Today's "Add transaction" button (amount/date/
+  merchant/type validation, merchant-rule auto-suggest with manual-override
+  protection, goal-attribution picker). Merchant rule management
+  (create/edit/delete, duplicate-name rejection, retroactive retag of
+  matching transactions on rule create/edit) is reachable from this tab. See
+  "Transactions tab" under Architecture above.
+- 🚧 Everything else is still in progress. Current state beyond Today,
+  Goals, and Transactions: the placeholder Settings tab (linked accounts,
+  starting balances, goal management) and Plaid Link integration.
 - Planned MVP scope and build order are tracked in
   [`docs/PROJECT_SPEC.md`](docs/PROJECT_SPEC.md) and as beads under the
   `reservoir-adq` epic (`bd show reservoir-adq`).

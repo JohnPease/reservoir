@@ -48,4 +48,25 @@ enum PersistenceSaveHelper {
             return failureMessage
         }
     }
+
+    /// A thin `saveOrRollback` wrapper for the common "delete this model, re-insert it if
+    /// the save fails" shape — extracted because `TransactionsView.delete(_:)` and
+    /// `MerchantRulesView.delete(_:)` both implemented this identically, differing only in
+    /// the model type (STANDARDS.md §3). Not used by `GoalsView.delete(_:)`: deleting a
+    /// `SavingsGoal` has `.nullify`-relationship side effects that a plain
+    /// delete/re-insert rollback doesn't undo (see `saveOrRollback`'s doc comment) — that
+    /// call site needs its own capture-and-relink `rollback` closure, so it stays generic
+    /// via `saveOrRollback` directly rather than through this convenience method.
+    static func deleteWithRollback<T: PersistentModel>(
+        _ item: T,
+        modelContext: ModelContext,
+        logger: Logger
+    ) -> String? {
+        saveOrRollback(
+            modelContext: modelContext,
+            mutate: { modelContext.delete(item) },
+            rollback: { modelContext.insert(item) },
+            logger: logger
+        )
+    }
 }

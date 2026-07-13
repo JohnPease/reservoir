@@ -12,15 +12,7 @@ import OSLog
 /// save/rollback plumbing goes through `PersistenceSaveHelper`, shared with
 /// `GoalsView`'s edit/delete/dismiss flows.
 struct GoalFormView: View {
-    enum Mode {
-        case create
-        case edit(SavingsGoal)
-
-        var isEdit: Bool {
-            if case .edit = self { return true }
-            return false
-        }
-    }
+    typealias Mode = EntryMode<SavingsGoal>
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
@@ -141,18 +133,7 @@ struct GoalFormView: View {
                 Button("Continue", role: .destructive) { saveEdit() }
                 Button("Cancel", role: .cancel) {}
             }
-            .alert(
-                "Couldn't save",
-                isPresented: Binding(
-                    get: { saveError != nil },
-                    set: { isPresented in if !isPresented { saveError = nil } }
-                ),
-                presenting: saveError
-            ) { _ in
-                Button("OK") { saveError = nil }
-            } message: { message in
-                Text(message)
-            }
+            .saveErrorAlert($saveError)
         }
         .accessibilityIdentifier(accessibilityIdentifier)
     }
@@ -236,23 +217,6 @@ struct GoalFormView: View {
     }
 }
 
-/// A `Form` row pairing a control with its inline validation error, matching the "exact
-/// error copy shown inline under the offending field" requirement without repeating the
-/// `VStack`/error-`Text` boilerplate at every field (STANDARDS.md §3).
-private struct LabeledField<Content: View>: View {
-    let label: String
-    let error: String?
-    @ViewBuilder let content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            content
-            if let error {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .accessibilityIdentifier("goalForm.error.\(label)")
-            }
-        }
-    }
-}
+// `LabeledField` moved to `Reservoir/Shared/LabeledField.swift` (adq.3) so
+// `TransactionEntryView`/`MerchantRuleEntryView` reuse it instead of redefining it
+// (STANDARDS.md §3).

@@ -28,6 +28,26 @@ enum UITestScenario: String {
     /// Goals tab's (adq.5) "both sections render together" state.
     case goalsScreenMixed
 
+    /// One active goal plus three transactions spanning today/yesterday, a mix of
+    /// variable/fixed and attributed/unattributed — the Transactions tab's (adq.3) list
+    /// rendering, day-grouping, filter, edit, and delete flows.
+    case transactionsList
+    /// No goals and no transactions at all — exercises the Transactions tab's own "+"
+    /// entry point's zero-active-goals goal-attribution default (adq.3, 2026-07-12
+    /// clarification), which is reachable here unlike Today's "Add transaction" (Today
+    /// hides that button entirely with zero goals).
+    case transactionsZeroGoals
+    /// Two existing `MerchantRule`s ("Starbucks" -> variable, "Amazon" -> fixed) and no
+    /// transactions — the Merchant Rules list's edit/delete/duplicate-name-rejection
+    /// flows (adq.3).
+    case merchantRulesManage
+    /// No existing `MerchantRule`s, plus two "Uber" transactions dated today: one
+    /// ordinary (`isManualOverride == false`) and one the user has manually overridden
+    /// (`isManualOverride == true`), both currently `variable`. Creating/editing a rule
+    /// for "Uber" -> fixed should retag only the non-overridden one — adq.3's
+    /// retroactive-retag AC and the `isManualOverride` protection check together.
+    case merchantRulesRetag
+
     static var current: UITestScenario? {
         ProcessInfo.processInfo.environment["UITEST_SCENARIO"].flatMap(UITestScenario.init(rawValue:))
     }
@@ -151,6 +171,67 @@ enum UITestScenario: String {
                 type: .variable,
                 entryMethod: .manual,
                 savingsGoal: nil
+            ))
+
+        case .transactionsList:
+            let startDate = Calendar.current.date(byAdding: .day, value: -10, to: .now)!
+            let goal = SavingsGoal(
+                targetAmount: 1000,
+                targetDate: Calendar.current.date(byAdding: .day, value: 20, to: .now)!,
+                startDate: startDate,
+                startingBalance: 0,
+                dailyBase: 20,
+                createdAt: startDate
+            )
+            context.insert(goal)
+            context.insert(SpendTransaction(
+                amount: 12.50,
+                date: .now,
+                merchantName: "Coffee Shop",
+                type: .variable,
+                entryMethod: .manual,
+                savingsGoal: goal
+            ))
+            context.insert(SpendTransaction(
+                amount: 900,
+                date: .now,
+                merchantName: "Rent",
+                type: .fixed,
+                entryMethod: .manual,
+                savingsGoal: nil
+            ))
+            context.insert(SpendTransaction(
+                amount: 30,
+                date: Calendar.current.date(byAdding: .day, value: -1, to: .now)!,
+                merchantName: "Grocery Store",
+                type: .variable,
+                entryMethod: .manual,
+                savingsGoal: goal
+            ))
+
+        case .transactionsZeroGoals:
+            break
+
+        case .merchantRulesManage:
+            context.insert(MerchantRule(merchantName: "Starbucks", type: .variable))
+            context.insert(MerchantRule(merchantName: "Amazon", type: .fixed))
+
+        case .merchantRulesRetag:
+            context.insert(SpendTransaction(
+                amount: 25,
+                date: .now,
+                merchantName: "Uber",
+                type: .variable,
+                entryMethod: .manual,
+                isManualOverride: false
+            ))
+            context.insert(SpendTransaction(
+                amount: 40,
+                date: .now,
+                merchantName: "Uber",
+                type: .variable,
+                entryMethod: .manual,
+                isManualOverride: true
             ))
         }
 
