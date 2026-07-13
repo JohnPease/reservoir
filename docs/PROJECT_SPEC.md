@@ -10,7 +10,9 @@ Personal iOS app for tracking spending against a daily limit derived from saving
   - Plaid `access_token` is stored in Keychain, never `UserDefaults` or a
     committed config file.
   - Plaid environment: Sandbox during development, Production once linked
-    to real accounts — switched via build configuration, not a runtime toggle.
+    to real accounts — switched via an in-app settings toggle/flag (not a
+    separate build configuration), so the environment can change without a
+    rebuild.
   - No webhooks (no backend to receive them): transactions are refreshed by
     polling on app foreground plus a manual pull-to-refresh, not on a
     background timer.
