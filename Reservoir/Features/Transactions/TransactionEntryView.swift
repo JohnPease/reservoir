@@ -27,18 +27,22 @@ struct TransactionEntryView: View {
     @State private var amount: Decimal = 0
     @State private var date: Date
     @State private var merchantName: String = ""
+    /// - Warning: All writes to `type` must go through `typeBinding`, never direct state
+    ///   mutation (e.g. `type = ...`) — `typeBinding`'s setter is the only place that also
+    ///   flips `hasUserInteractedWithTypeControl`, and that flag's accuracy depends on
+    ///   every user-facing write funneling through it. SwiftUI gives no compiler-enforced
+    ///   way to seal off direct writes to a plain `@State var`, so this is a convention,
+    ///   not a guarantee — a future edit that assigns `type` directly (bypassing
+    ///   `typeBinding`) would silently break `isManualOverride`/auto-suggestion behavior.
     @State private var type: TransactionType = .variable
-    /// Once the user directly taps the type segmented control, auto-suggestion (driven by
-    /// `merchantName` changes) stops overwriting their explicit choice — see
-    /// `typeBinding`/`applyAutoSuggestedTypeIfNeeded()`. Always `true` from the start in
-    /// edit mode (an existing type is never silently reassigned by a merchant-name
-    /// edit), which makes this unsuitable on its own for deciding `isManualOverride` —
-    /// see `hasUserInteractedWithTypeControl` for that.
-    @State private var hasUserEditedType: Bool
     /// True once the user has directly tapped the type segmented control during *this*
-    /// entry/edit session — unlike `hasUserEditedType`, this starts `false` in edit mode
-    /// too, so `TransactionEntryValidator.isManualOverride` can tell "user actively chose
-    /// a type this session" apart from "type field untouched, preserve existing intent."
+    /// entry/edit session. Auto-suggestion (driven by `merchantName` changes, see
+    /// `applyAutoSuggestedTypeIfNeeded()`) stops overwriting `type` once this is `true`,
+    /// same as once `mode.isEdit` is true (an existing type is never silently reassigned
+    /// by a merchant-name edit). Unlike `mode.isEdit`, this always starts `false` — even
+    /// in edit mode — so `TransactionEntryValidator.isManualOverride` can tell "user
+    /// actively chose a type this session" apart from "type field untouched, preserve
+    /// existing intent."
     @State private var hasUserInteractedWithTypeControl = false
     @State private var selectedGoal: SavingsGoal?
     @State private var hasConfirmedGoalAttribution: Bool
@@ -54,7 +58,6 @@ struct TransactionEntryView: View {
         switch mode {
         case .create:
             _date = State(initialValue: .now)
-            _hasUserEditedType = State(initialValue: false)
             _selectedGoal = State(initialValue: nil)
             _hasConfirmedGoalAttribution = State(initialValue: false)
             _hasInitializedGoalAttribution = State(initialValue: false)
@@ -63,9 +66,6 @@ struct TransactionEntryView: View {
             _date = State(initialValue: transaction.date)
             _merchantName = State(initialValue: transaction.merchantName)
             _type = State(initialValue: transaction.type)
-            // Editing an existing transaction: never let merchant-name auto-suggest
-            // silently reassign an already-set type out from under the user.
-            _hasUserEditedType = State(initialValue: true)
             _selectedGoal = State(initialValue: transaction.savingsGoal)
             // Whatever attribution the transaction already has (including nil/
             // Unattributed) is itself a made choice — edit mode never re-requires an
@@ -103,7 +103,6 @@ struct TransactionEntryView: View {
             get: { type },
             set: { newValue in
                 type = newValue
-                hasUserEditedType = true
                 hasUserInteractedWithTypeControl = true
             }
         )
@@ -167,19 +166,14 @@ struct TransactionEntryView: View {
                 }
 
                 Section("Goal") {
-                    Picker("Goal", selection: goalBinding) {
-                        Text("Unattributed").tag(SavingsGoal?.none)
-                        ForEach(pickerGoals, id: \.persistentModelID) { goal in
-                            Text(goal.displayName).tag(SavingsGoal?.some(goal))
+                    LabeledField(label: "Goal", error: validation.goalAttributionError, errorIdentifierPrefix: "transactionEntry") {
+                        Picker("Goal", selection: goalBinding) {
+                            Text("Unattributed").tag(SavingsGoal?.none)
+                            ForEach(pickerGoals, id: \.persistentModelID) { goal in
+                                Text(goal.displayName).tag(SavingsGoal?.some(goal))
+                            }
                         }
-                    }
-                    .accessibilityIdentifier("transactionEntry.goalPicker")
-
-                    if let error = validation.goalAttributionError {
-                        Text(error)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .accessibilityIdentifier("transactionEntry.error.Goal")
+                        .accessibilityIdentifier("transactionEntry.goalPicker")
                     }
                 }
             }
@@ -224,7 +218,7 @@ struct TransactionEntryView: View {
     // MARK: - Type auto-suggest
 
     private func applyAutoSuggestedTypeIfNeeded() {
-        guard !hasUserEditedType else { return }
+        guard !mode.isEdit, !hasUserInteractedWithTypeControl else { return }
         type = suggestedType ?? .variable
     }
 
@@ -271,11 +265,7 @@ struct TransactionEntryView: View {
             rollback: { modelContext.delete(transaction) },
             logger: logger
         )
-        if let error {
-            saveError = error
-        } else {
-            dismiss()
-        }
+        handle(saveResult: error)
     }
 
     private func saveEdit(_ transaction: SpendTransaction, merchantName: String, isManualOverride: Bool) {
@@ -312,6 +302,13 @@ struct TransactionEntryView: View {
             },
             logger: logger
         )
+        handle(saveResult: error)
+    }
+
+    /// Shared by `saveCreate`/`saveEdit`: surface a failure inline via `saveErrorAlert`,
+    /// or dismiss the sheet on success (STANDARDS.md §3 — the two save paths otherwise
+    /// repeated this verbatim).
+    private func handle(saveResult error: String?) {
         if let error {
             saveError = error
         } else {
