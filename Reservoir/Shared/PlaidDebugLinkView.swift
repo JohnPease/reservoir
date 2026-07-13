@@ -28,19 +28,23 @@ struct PlaidDebugLinkView: View {
                             ProgressView()
                             Text("Exchanging token…")
                         }
+                        .accessibilityIdentifier("plaidDebug.exchanging")
                     } else {
                         Button(service.linkedItem == nil ? "Link a bank account" : "Relink") {
                             Task { await service.startLink() }
                         }
+                        .accessibilityIdentifier("plaidDebug.linkButton")
                     }
 
                     if let error = service.presentedError {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(error.userFacingMessage)
                                 .foregroundStyle(.red)
+                                .accessibilityIdentifier("plaidDebug.errorMessage")
                             Button("Try again") {
                                 Task { await service.retry() }
                             }
+                            .accessibilityIdentifier("plaidDebug.tryAgain")
                         }
                     }
                 }
@@ -49,9 +53,11 @@ struct PlaidDebugLinkView: View {
                     Button("Verify token stored") {
                         verifiedTokenMessage = Self.verifyTokenStored()
                     }
+                    .accessibilityIdentifier("plaidDebug.verifyTokenStored")
                     if let verifiedTokenMessage {
                         Text(verifiedTokenMessage)
                             .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("plaidDebug.verifyTokenResult")
                     }
                 }
             }
