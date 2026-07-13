@@ -1,0 +1,21 @@
+// Copy this file to Plaid.xcconfig (gitignored) and fill in real values from
+// your Plaid dashboard (https://dashboard.plaid.com/team-settings/keys).
+//
+// PLAID_SANDBOX_SECRET is the Sandbox environment's secret only — this story
+// (reservoir-adq.6.1) is Sandbox-only. Production switching is a separate
+// story (reservoir-adq.6.2) and will introduce its own secret handling.
+//
+// PLAID_URL_SCHEME is the custom URL scheme LinkKit uses to reopen the app
+// after an OAuth-institution redirect. Pick anything reasonably unique, e.g.
+// your reverse-DNS bundle ID with a suffix — it must also be registered with
+// Plaid as an "Allowed redirect URI" in the dashboard as
+// `<scheme>://oauth`.
+//
+// These values are embedded into the built app's Info.plist and are
+// readable by anyone with the .app bundle — acceptable only under this
+// app's accepted risk posture (personal, sideloaded, single-user, not
+// distributed). Do not commit Plaid.xcconfig.
+
+PLAID_CLIENT_ID = your_plaid_client_id
+PLAID_SANDBOX_SECRET = your_plaid_sandbox_secret
+PLAID_URL_SCHEME = com.johnpease.reservoir.plaid
