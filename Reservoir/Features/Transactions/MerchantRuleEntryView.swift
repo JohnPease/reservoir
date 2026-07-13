@@ -64,18 +64,13 @@ struct MerchantRuleEntryView: View {
                 }
 
                 Section {
-                    Picker("Type", selection: $type) {
-                        Text("Choose a type").tag(TransactionType?.none)
-                        Text("Variable").tag(TransactionType?.some(.variable))
-                        Text("Fixed").tag(TransactionType?.some(.fixed))
-                    }
-                    .accessibilityIdentifier("merchantRuleEntry.type")
-
-                    if let error = validation.typeError {
-                        Text(error)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .accessibilityIdentifier("merchantRuleEntry.error.Type")
+                    LabeledField(label: "Type", error: validation.typeError, errorIdentifierPrefix: "merchantRuleEntry") {
+                        Picker("Type", selection: $type) {
+                            Text("Choose a type").tag(TransactionType?.none)
+                            Text("Variable").tag(TransactionType?.some(.variable))
+                            Text("Fixed").tag(TransactionType?.some(.fixed))
+                        }
+                        .accessibilityIdentifier("merchantRuleEntry.type")
                     }
                 }
             }
@@ -146,11 +141,7 @@ struct MerchantRuleEntryView: View {
             },
             logger: logger
         )
-        if let error {
-            saveError = error
-        } else {
-            dismiss()
-        }
+        handle(saveResult: error)
     }
 
     private func saveEdit(_ rule: MerchantRule, merchantName: String, type: TransactionType) {
@@ -185,6 +176,13 @@ struct MerchantRuleEntryView: View {
             },
             logger: logger
         )
+        handle(saveResult: error)
+    }
+
+    /// Shared by `saveCreate`/`saveEdit`: surface a failure inline via `saveErrorAlert`,
+    /// or dismiss the sheet on success (STANDARDS.md §3 — the two save paths otherwise
+    /// repeated this verbatim; same pattern as `TransactionEntryView.handle(saveResult:)`).
+    private func handle(saveResult error: String?) {
         if let error {
             saveError = error
         } else {
