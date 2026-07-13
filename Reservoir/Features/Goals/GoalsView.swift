@@ -109,15 +109,8 @@ struct GoalsView: View {
         .sheet(isPresented: $isShowingCreateGoal) {
             GoalFormView(mode: .create, accessibilityIdentifier: "goals.createGoalSheet")
         }
-        .sheet(
-            isPresented: Binding(
-                get: { goalPendingEdit != nil },
-                set: { isPresented in if !isPresented { goalPendingEdit = nil } }
-            )
-        ) {
-            if let goal = goalPendingEdit {
-                GoalFormView(mode: .edit(goal), accessibilityIdentifier: "goals.editGoalSheet")
-            }
+        .editSheet(pendingItem: $goalPendingEdit) { goal in
+            GoalFormView(mode: .edit(goal), accessibilityIdentifier: "goals.editGoalSheet")
         }
         .deleteConfirmation(
             pendingItem: $goalPendingDelete,

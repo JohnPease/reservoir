@@ -109,15 +109,8 @@ struct TransactionsView: View {
         .sheet(isPresented: $isShowingAddTransaction) {
             TransactionEntryView(mode: .create, accessibilityIdentifier: "transactions.addTransactionSheet")
         }
-        .sheet(
-            isPresented: Binding(
-                get: { transactionPendingEdit != nil },
-                set: { isPresented in if !isPresented { transactionPendingEdit = nil } }
-            )
-        ) {
-            if let transaction = transactionPendingEdit {
-                TransactionEntryView(mode: .edit(transaction), accessibilityIdentifier: "transactions.editTransactionSheet")
-            }
+        .editSheet(pendingItem: $transactionPendingEdit) { transaction in
+            TransactionEntryView(mode: .edit(transaction), accessibilityIdentifier: "transactions.editTransactionSheet")
         }
         .deleteConfirmation(
             pendingItem: $transactionPendingDelete,
@@ -128,10 +121,9 @@ struct TransactionsView: View {
     }
 
     private func delete(_ transaction: SpendTransaction) {
-        actionError = PersistenceSaveHelper.saveOrRollback(
+        actionError = PersistenceSaveHelper.deleteWithRollback(
+            transaction,
             modelContext: modelContext,
-            mutate: { modelContext.delete(transaction) },
-            rollback: { modelContext.insert(transaction) },
             logger: logger
         )
     }

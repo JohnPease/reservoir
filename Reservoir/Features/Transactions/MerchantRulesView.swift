@@ -68,15 +68,8 @@ struct MerchantRulesView: View {
         .sheet(isPresented: $isShowingCreateRule) {
             MerchantRuleEntryView(mode: .create, accessibilityIdentifier: "merchantRules.createSheet")
         }
-        .sheet(
-            isPresented: Binding(
-                get: { rulePendingEdit != nil },
-                set: { isPresented in if !isPresented { rulePendingEdit = nil } }
-            )
-        ) {
-            if let rule = rulePendingEdit {
-                MerchantRuleEntryView(mode: .edit(rule), accessibilityIdentifier: "merchantRules.editSheet")
-            }
+        .editSheet(pendingItem: $rulePendingEdit) { rule in
+            MerchantRuleEntryView(mode: .edit(rule), accessibilityIdentifier: "merchantRules.editSheet")
         }
         .deleteConfirmation(
             pendingItem: $rulePendingDelete,
@@ -89,10 +82,9 @@ struct MerchantRulesView: View {
     /// Deleting a rule does not touch existing transactions' tags (asymmetric on purpose
     /// vs. create/edit's retag pass — see `MerchantRuleRetagCalculator`'s doc comment).
     private func delete(_ rule: MerchantRule) {
-        actionError = PersistenceSaveHelper.saveOrRollback(
+        actionError = PersistenceSaveHelper.deleteWithRollback(
+            rule,
             modelContext: modelContext,
-            mutate: { modelContext.delete(rule) },
-            rollback: { modelContext.insert(rule) },
             logger: logger
         )
     }
