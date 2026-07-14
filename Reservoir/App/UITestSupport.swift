@@ -99,6 +99,34 @@ enum UITestScenario: String {
         return URLSession(configuration: configuration)
     }
 
+    /// Deletes the app's stored Plaid access token before the app finishes
+    /// launching, when `UITEST_RESET_PLAID_KEYCHAIN=1` is set — keeps
+    /// `PlaidDebugLinkUITests.testVerifyTokenStoredReportsNoTokenWhenNothingLinked`
+    /// deterministic regardless of what a prior real Sandbox Link session (or
+    /// leftover simulator state — Keychain entries with
+    /// `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` survive app
+    /// reinstall) may have left behind on this simulator, matching
+    /// `KeychainServiceTests`' per-test namespacing strategy for the one
+    /// call site (the debug view) that deliberately uses the real,
+    /// unnamespaced production Keychain service.
+    ///
+    /// Blocks synchronously (a `DispatchSemaphore` bridging
+    /// `KeychainService`'s `async` API) so the reset is guaranteed to
+    /// complete before `ReservoirApp`'s first view appears — called from
+    /// `ReservoirApp.init()`, a synchronous context, and this only ever runs
+    /// under `DEBUG` + an XCUITest launch, so the brief blocking wait for a
+    /// single fast Keychain delete is an acceptable, deliberate tradeoff for
+    /// launch-time determinism.
+    static func resetPlaidKeychainIfRequested() {
+        guard ProcessInfo.processInfo.environment["UITEST_RESET_PLAID_KEYCHAIN"] == "1" else { return }
+        let semaphore = DispatchSemaphore(value: 0)
+        Task {
+            try? await KeychainService().delete(for: PlaidKeychainKey.accessToken)
+            semaphore.signal()
+        }
+        semaphore.wait()
+    }
+
     /// Seeds `context` with this scenario's fixtures and saves.
     func seed(into context: ModelContext) {
         switch self {

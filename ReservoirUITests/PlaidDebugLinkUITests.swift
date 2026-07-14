@@ -26,10 +26,13 @@ import XCTest
 /// non-2xx handling, `PlaidErrorClassifier`, UI update) still runs, just
 /// without depending on Plaid's actual API or local credentials.
 final class PlaidDebugLinkUITests: XCTestCase {
-    private func launchedApp(forcePlaidError: Bool = false) -> XCUIApplication {
+    private func launchedApp(forcePlaidError: Bool = false, resetPlaidKeychain: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         if forcePlaidError {
             app.launchEnvironment["UITEST_FORCE_PLAID_ERROR"] = "1"
+        }
+        if resetPlaidKeychain {
+            app.launchEnvironment["UITEST_RESET_PLAID_KEYCHAIN"] = "1"
         }
         app.launch()
         return app
@@ -64,7 +67,12 @@ final class PlaidDebugLinkUITests: XCTestCase {
     }
 
     func testVerifyTokenStoredReportsNoTokenWhenNothingLinked() {
-        let app = launchedApp()
+        // Reads the real, unnamespaced production Keychain service (unlike
+        // KeychainServiceTests, which namespaces per-test). UITEST_RESET_PLAID_KEYCHAIN
+        // clears that entry at launch (see UITestScenario.resetPlaidKeychainIfRequested)
+        // so this assertion doesn't depend on whatever a prior real Sandbox Link
+        // session, or leftover simulator state, may have left stored.
+        let app = launchedApp(resetPlaidKeychain: true)
         app.tabBars.buttons["Settings"].tap()
 
         XCTAssertTrue(app.buttons["plaidDebug.verifyTokenStored"].waitForExistence(timeout: 5))
