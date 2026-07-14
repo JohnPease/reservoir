@@ -2,18 +2,57 @@
 import SwiftUI
 
 /// Temporary, debug-only entry point for exercising the Plaid Link +
-/// Keychain flow built in reservoir-adq.6.1. Settings (reservoir-adq.7) owns
-/// the real "Link a bank account" entry point in the shipped app — this view
-/// exists only so the flow can be driven and verified end to end before that
-/// story exists, and should be removed once adq.7 ships (see reservoir-
-/// adq.6.1's UX section, "Entry point").
+/// Keychain flow built in reservoir-adq.6.1, plus the Sandbox/Production
+/// environment toggle built in reservoir-adq.6.2. Settings (reservoir-adq.7)
+/// owns the real "Link a bank account" entry point and Sandbox/Production
+/// toggle in the shipped app — this view exists only so both flows can be
+/// driven and verified end to end before that story exists, and should be
+/// removed once adq.7 ships (see reservoir-adq.6.1's UX section, "Entry
+/// point").
 struct PlaidDebugLinkView: View {
     @State private var service = PlaidServiceLive(urlSession: UITestScenario.plaidURLSession)
     @State private var verifiedTokenMessage: String?
+    private let environmentStore: PlaidEnvironmentStoring = PlaidEnvironmentStore()
+    @State private var environment: PlaidEnvironment = PlaidEnvironmentStore().current
+    @State private var pendingEnvironment: PlaidEnvironment?
+    @State private var showingProductionConfirmation = false
 
     var body: some View {
         NavigationStack {
             Form {
+                Section("Environment") {
+                    Picker("Plaid environment", selection: environmentSelection) {
+                        ForEach(PlaidEnvironment.allCases, id: \.self) { candidate in
+                            Text(candidate.displayName).tag(candidate)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("plaidDebug.environmentPicker")
+
+                    Text(environment == .production
+                         ? "Using Production credentials — real bank data."
+                         : "Using Sandbox credentials — test data only.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .confirmationDialog(
+                    "Switch to Production?",
+                    isPresented: $showingProductionConfirmation,
+                    titleVisibility: .visible,
+                    presenting: pendingEnvironment
+                ) { candidate in
+                    Button("Switch to \(candidate.displayName)", role: .destructive) {
+                        applyEnvironment(candidate)
+                    }
+                    .accessibilityIdentifier("plaidDebug.confirmProductionSwitch")
+                    Button("Cancel", role: .cancel) {
+                        pendingEnvironment = nil
+                    }
+                    .accessibilityIdentifier("plaidDebug.cancelProductionSwitch")
+                } message: { _ in
+                    Text("This will use real bank data. Only continue if you intend to link a real account.")
+                }
+
                 Section("Plaid Link (debug)") {
                     if let linkedItem = service.linkedItem {
                         LabeledContent("Linked institution", value: linkedItem.institutionName)
@@ -65,6 +104,30 @@ struct PlaidDebugLinkView: View {
             .navigationTitle("Plaid (Debug)")
             .plaidLinkPresentation(service: service)
         }
+    }
+
+    /// Switching *to* Production requires the confirmation dialog above
+    /// (real-money blast radius); switching back to Sandbox is immediate.
+    /// The `Picker`'s selection binding intercepts the attempted change
+    /// rather than applying it directly so Production can be gated.
+    private var environmentSelection: Binding<PlaidEnvironment> {
+        Binding(
+            get: { environment },
+            set: { newValue in
+                if newValue == .production {
+                    pendingEnvironment = newValue
+                    showingProductionConfirmation = true
+                } else {
+                    applyEnvironment(newValue)
+                }
+            }
+        )
+    }
+
+    private func applyEnvironment(_ newValue: PlaidEnvironment) {
+        environmentStore.set(newValue)
+        environment = newValue
+        pendingEnvironment = nil
     }
 
     /// Reads the stored token back out of Keychain directly — the manual

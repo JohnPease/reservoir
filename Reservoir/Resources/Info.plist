@@ -26,6 +26,8 @@
 	</array>
 	<key>PlaidClientID</key>
 	<string>$(PLAID_CLIENT_ID)</string>
+	<key>PlaidProductionSecret</key>
+	<string>$(PLAID_PRODUCTION_SECRET)</string>
 	<key>PlaidSandboxSecret</key>
 	<string>$(PLAID_SANDBOX_SECRET)</string>
 	<key>UIApplicationSceneManifest</key>

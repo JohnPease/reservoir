@@ -82,4 +82,60 @@ final class PlaidDebugLinkUITests: XCTestCase {
         XCTAssertTrue(result.waitForExistence(timeout: 5))
         XCTAssertEqual(result.label, "No token found in Keychain.")
     }
+
+    // MARK: - reservoir-adq.6.2: Sandbox/Production environment toggle
+
+    func testEnvironmentPickerDefaultsToSandbox() {
+        let app = launchedApp()
+        app.tabBars.buttons["Settings"].tap()
+
+        let picker = app.segmentedControls["plaidDebug.environmentPicker"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 5))
+        XCTAssertTrue(picker.buttons["Sandbox"].isSelected)
+        XCTAssertTrue(app.staticTexts["Using Sandbox credentials — test data only."].exists)
+    }
+
+    func testSelectingProductionRequiresConfirmation_cancelLeavesSandboxActive() {
+        let app = launchedApp()
+        app.tabBars.buttons["Settings"].tap()
+
+        let picker = app.segmentedControls["plaidDebug.environmentPicker"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 5))
+        picker.buttons["Production"].tap()
+
+        // A bare tap must not flip the environment by itself — the
+        // real-money blast radius of Production requires the confirmation
+        // dialog below (reservoir-adq.6.2's acceptance criteria).
+        let cancelButton = app.buttons["plaidDebug.cancelProductionSwitch"]
+        XCTAssertTrue(cancelButton.waitForExistence(timeout: 5))
+        cancelButton.tap()
+
+        XCTAssertTrue(picker.buttons["Sandbox"].isSelected)
+        XCTAssertTrue(app.staticTexts["Using Sandbox credentials — test data only."].exists)
+    }
+
+    func testConfirmingProductionSwitchesEnvironment() {
+        let app = launchedApp()
+        app.tabBars.buttons["Settings"].tap()
+
+        let picker = app.segmentedControls["plaidDebug.environmentPicker"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 5))
+        picker.buttons["Production"].tap()
+
+        let confirmButton = app.buttons["plaidDebug.confirmProductionSwitch"]
+        XCTAssertTrue(confirmButton.waitForExistence(timeout: 5))
+        confirmButton.tap()
+
+        // Wait on the description text first — it only updates once
+        // `environment` state has actually flipped, so this also acts as
+        // the wait for the picker's own selection state to settle before
+        // asserting it below.
+        XCTAssertTrue(app.staticTexts["Using Production credentials — real bank data."].waitForExistence(timeout: 5))
+        XCTAssertTrue(picker.buttons["Production"].isSelected)
+
+        // Switching back to Sandbox is immediate — no confirmation needed.
+        picker.buttons["Sandbox"].tap()
+        XCTAssertTrue(app.staticTexts["Using Sandbox credentials — test data only."].waitForExistence(timeout: 5))
+        XCTAssertTrue(picker.buttons["Sandbox"].isSelected)
+    }
 }

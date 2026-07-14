@@ -2,17 +2,36 @@ import Foundation
 import Observation
 import LinkKit
 
-/// Reads Plaid Sandbox credentials embedded into the app's Info.plist at
-/// build time from `Config/Plaid.xcconfig` (gitignored, see README and
+/// Reads Plaid credentials embedded into the app's Info.plist at build time
+/// from `Config/Plaid.xcconfig` (gitignored, see README and
 /// `Config/Plaid.xcconfig.example`). Never committed — acceptable only
 /// under this app's accepted risk posture for in-app API keys (personal,
 /// sideloaded, single-user, not distributed; see PROJECT_SPEC.md).
+///
+/// `client_id` is a single value shared across Plaid's Sandbox and
+/// Production environments (Plaid's own account model, not this app's
+/// choice) — only the `secret` differs per environment, so there is one
+/// `clientID` and two secrets here rather than two full credential pairs.
 private enum PlaidCredentials {
     static var clientID: String {
         Bundle.main.object(forInfoDictionaryKey: "PlaidClientID") as? String ?? ""
     }
     static var sandboxSecret: String {
         Bundle.main.object(forInfoDictionaryKey: "PlaidSandboxSecret") as? String ?? ""
+    }
+    static var productionSecret: String {
+        Bundle.main.object(forInfoDictionaryKey: "PlaidProductionSecret") as? String ?? ""
+    }
+
+    /// The `secret` to use for a given `PlaidEnvironment`. Pure function
+    /// (no Bundle/Info.plist access) so reservoir-adq.6.2's acceptance
+    /// criteria — environment-resolution logic unit tested with the flag
+    /// set both ways — can be verified without a bundled Info.plist.
+    static func secret(for environment: PlaidEnvironment, sandboxSecret: String, productionSecret: String) -> String {
+        switch environment {
+        case .sandbox: sandboxSecret
+        case .production: productionSecret
+        }
     }
 }
 
@@ -27,12 +46,14 @@ enum PlaidOAuthRedirect {
 
 /// Live implementation of `PlaidService`: owns the LinkKit session lifecycle
 /// and calls Plaid's REST API directly from the device to create a link
-/// token and to exchange a `public_token` for an `access_token` — Sandbox
-/// only (reservoir-adq.6.1's scope; Sandbox/Production switching is
-/// reservoir-adq.6.2). This file, along with `PlaidLinkPresentationView`, is
-/// the only place `LinkKit` is imported (STANDARDS §4 / reservoir-adq.6.1's
-/// acceptance criteria) — `PlaidService`'s own protocol surface has no
-/// LinkKit types.
+/// token and to exchange a `public_token` for an `access_token`. The
+/// Sandbox/Production `PlaidEnvironment` is resolved from
+/// `environmentStore` on every call (reservoir-adq.6.2), not cached at
+/// init, so an in-app toggle takes effect on the next Link/import call
+/// with no rebuild or relaunch. This file, along with
+/// `PlaidLinkPresentationView`, is the only place `LinkKit` is imported
+/// (STANDARDS §4 / reservoir-adq.6.1's acceptance criteria) —
+/// `PlaidService`'s own protocol surface has no LinkKit types.
 @Observable
 @MainActor
 final class PlaidServiceLive: PlaidService {
@@ -61,11 +82,22 @@ final class PlaidServiceLive: PlaidService {
 
     private let keychain: KeychainServicing
     private let urlSession: URLSession
-    private let baseURL = URL(string: "https://sandbox.plaid.com")!
+    private let environmentStore: PlaidEnvironmentStoring
 
-    init(keychain: KeychainServicing = KeychainService(), urlSession: URLSession = .shared) {
+    /// Read at call time, not cached at init — reservoir-adq.6.2 requires a
+    /// mid-session environment flip to take effect on the *next* Link/import
+    /// call without a relaunch.
+    private var environment: PlaidEnvironment { environmentStore.current }
+    private var baseURL: URL { environment.baseURL }
+
+    init(
+        keychain: KeychainServicing = KeychainService(),
+        urlSession: URLSession = .shared,
+        environmentStore: PlaidEnvironmentStoring = PlaidEnvironmentStore()
+    ) {
         self.keychain = keychain
         self.urlSession = urlSession
+        self.environmentStore = environmentStore
         self.linkedItem = Self.loadPersistedLinkedItem()
     }
 
@@ -182,7 +214,7 @@ final class PlaidServiceLive: PlaidService {
         }
     }
 
-    // MARK: - Plaid REST calls (direct from device, Sandbox only)
+    // MARK: - Plaid REST calls (direct from device, environment-aware)
 
     private func createLinkToken() async throws -> String {
         struct RequestBody: Encodable {
@@ -201,7 +233,11 @@ final class PlaidServiceLive: PlaidService {
 
         let body = RequestBody(
             client_id: PlaidCredentials.clientID,
-            secret: PlaidCredentials.sandboxSecret,
+            secret: PlaidCredentials.secret(
+                for: environment,
+                sandboxSecret: PlaidCredentials.sandboxSecret,
+                productionSecret: PlaidCredentials.productionSecret
+            ),
             client_name: "Reservoir",
             user: .init(client_user_id: Self.clientUserID),
             products: ["transactions"],
@@ -226,7 +262,11 @@ final class PlaidServiceLive: PlaidService {
 
         let body = RequestBody(
             client_id: PlaidCredentials.clientID,
-            secret: PlaidCredentials.sandboxSecret,
+            secret: PlaidCredentials.secret(
+                for: environment,
+                sandboxSecret: PlaidCredentials.sandboxSecret,
+                productionSecret: PlaidCredentials.productionSecret
+            ),
             public_token: publicToken
         )
         let response: ResponseBody = try await post("/item/public_token/exchange", body: body)

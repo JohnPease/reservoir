@@ -4,9 +4,14 @@
 // file when it's present, so its assignments override the placeholders —
 // see that file for the full explanation.
 //
-// PLAID_SANDBOX_SECRET is the Sandbox environment's secret only — this story
-// (reservoir-adq.6.1) is Sandbox-only. Production switching is a separate
-// story (reservoir-adq.6.2) and will introduce its own secret handling.
+// PLAID_CLIENT_ID is a single value shared across Plaid's Sandbox and
+// Production environments (Plaid's own account model) — only the secret
+// differs per environment, hence PLAID_SANDBOX_SECRET and
+// PLAID_PRODUCTION_SECRET below. PLAID_PRODUCTION_SECRET is only needed once
+// you're ready to link a real account in Production via the in-app
+// Sandbox/Production toggle (reservoir-adq.6.2) — leave it blank/placeholder
+// until then; the app defaults to Sandbox and stays there until you flip the
+// toggle (with its confirmation step) yourself.
 //
 // OAuth-institution redirects use a universal link
 // (https://johnpease.github.io/oauth), not a custom URL scheme — Plaid's
@@ -23,3 +28,4 @@
 
 PLAID_CLIENT_ID = your_plaid_client_id
 PLAID_SANDBOX_SECRET = your_plaid_sandbox_secret
+PLAID_PRODUCTION_SECRET = your_plaid_production_secret
