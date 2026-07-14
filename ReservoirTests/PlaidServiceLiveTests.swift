@@ -101,7 +101,23 @@ final class PlaidServiceLiveTests: XCTestCase {
 
     // MARK: - handleLinkSuccess Keychain-failure classification
 
+    /// `PlaidServiceLive.persist(_:)`/`loadPersistedLinkedItem()` read/write
+    /// this fixed `UserDefaults.standard` key (mirrored here since it's
+    /// `private` on `PlaidServiceLive`) regardless of which `PlaidServiceLive`
+    /// instance is doing the writing — a real `LinkedItem` written by one
+    /// test is otherwise still there (and gets loaded by `init`) for every
+    /// later test in the process. Clear it before and after each test below
+    /// so they can't see each other's persisted state.
+    private static let linkedItemDefaultsKey = "plaid.linkedItem"
+
+    private func clearPersistedLinkedItem() {
+        UserDefaults.standard.removeObject(forKey: Self.linkedItemDefaultsKey)
+    }
+
     func test_handleLinkSuccess_whenKeychainSaveFails_classifiesAsLocalStorageNotBankFailure() async {
+        clearPersistedLinkedItem()
+        addTeardownBlock { self.clearPersistedLinkedItem() }
+
         let keychain = StubKeychain()
         keychain.saveError = KeychainError.unhandled(status: -1)
         let sut = PlaidServiceLive(keychain: keychain, urlSession: makeSuccessfulExchangeURLSession())
@@ -116,6 +132,9 @@ final class PlaidServiceLiveTests: XCTestCase {
     }
 
     func test_handleLinkSuccess_whenExchangeAndKeychainBothSucceed_setsLinkedItemWithNoError() async {
+        clearPersistedLinkedItem()
+        addTeardownBlock { self.clearPersistedLinkedItem() }
+
         let sut = PlaidServiceLive(keychain: StubKeychain(), urlSession: makeSuccessfulExchangeURLSession())
 
         await sut.handleLinkSuccess(publicToken: "public-good", institutionName: "Test Bank")
