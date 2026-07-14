@@ -33,6 +33,7 @@ struct PlaidDebugLinkView: View {
                         Button(service.linkedItem == nil ? "Link a bank account" : "Relink") {
                             Task { await service.startLink() }
                         }
+                        .disabled(service.isStartingLink)
                         .accessibilityIdentifier("plaidDebug.linkButton")
                     }
 

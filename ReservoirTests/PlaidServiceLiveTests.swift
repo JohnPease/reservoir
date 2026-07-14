@@ -16,8 +16,25 @@ final class PlaidServiceLiveTests: XCTestCase {
         func delete(for key: String) throws {}
     }
 
-    private func makeSUT() -> PlaidServiceLive {
-        PlaidServiceLive(keychain: StubKeychain(), urlSession: .shared)
+    private func makeSUT(urlSession: URLSession = .shared) -> PlaidServiceLive {
+        PlaidServiceLive(keychain: StubKeychain(), urlSession: urlSession)
+    }
+
+    /// A `URLProtocol` that never calls back to its client — every request
+    /// hangs until the owning `URLSession`'s task is cancelled. Backs the
+    /// reentrancy-guard test below, which needs `startLink()`'s network call
+    /// to stay in flight long enough to make a concurrent second call.
+    private final class HangingURLProtocol: URLProtocol {
+        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+        override func startLoading() {}
+        override func stopLoading() {}
+    }
+
+    private func makeHangingURLSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [HangingURLProtocol.self]
+        return URLSession(configuration: configuration)
     }
 
     // MARK: - handleLinkExit
@@ -35,16 +52,40 @@ final class PlaidServiceLiveTests: XCTestCase {
         XCTAssertFalse(sut.isPresentingLink)
     }
 
-    func test_handleLinkExit_withNetworkErrorType_setsNetworkCategory() {
+    func test_handleLinkExit_withNetworkLikeErrorType_stillSetsPlaidSideCategory() {
+        // LinkKit's onExit taxonomy has no client-connectivity category, so
+        // even an errorType string that looks network-related classifies as
+        // .plaidSide, not .network — see PlaidErrorClassifier.classify.
         let sut = makeSUT()
         sut.handleLinkExit(errorType: "NETWORK_ERROR", errorCode: nil)
-        XCTAssertEqual(sut.presentedError, .network)
+        XCTAssertEqual(sut.presentedError, .plaidSide)
     }
 
     func test_handleLinkExit_withInstitutionErrorType_setsPlaidSideCategory() {
         let sut = makeSUT()
         sut.handleLinkExit(errorType: "INSTITUTION_ERROR", errorCode: "INSTITUTION_DOWN")
         XCTAssertEqual(sut.presentedError, .plaidSide)
+    }
+
+    // MARK: - startLink reentrancy guard
+
+    func test_startLink_whileAlreadyInFlight_secondCallIsNoOpAndReturnsPromptly() async {
+        let sut = makeSUT(urlSession: makeHangingURLSession())
+
+        let firstTask = Task { await sut.startLink() }
+        // Wait for the first call to claim the guard before firing the second.
+        while !sut.isStartingLink {
+            await Task.yield()
+        }
+
+        let secondCallReturned = expectation(description: "second startLink() returns without waiting on the network")
+        Task {
+            await sut.startLink()
+            secondCallReturned.fulfill()
+        }
+        await fulfillment(of: [secondCallReturned], timeout: 2.0)
+
+        firstTask.cancel()
     }
 
     // MARK: - errorType(for:) — ExitErrorCode -> app-domain string mapping

@@ -42,6 +42,16 @@ final class PlaidServiceLive: PlaidService {
     private(set) var linkedItem: LinkedItem?
     var presentedError: PlaidErrorCategory?
 
+    /// True while `startLink()` is in flight (from the moment it's called
+    /// until the link token request settles, success or failure). Guards
+    /// against a double-tap race: two concurrent `startLink()` calls would
+    /// otherwise both create link tokens/sessions and race to set
+    /// `linkToken`/`linkSession`/`isPresentingLink`, silently discarding
+    /// whichever session lost. `PlaidDebugLinkView` also disables its "Link a
+    /// bank account" button while this is true, but the guard here is the
+    /// actual fix — belt and suspenders against any other future call site.
+    private(set) var isStartingLink = false
+
     /// The active LinkKit session backing the current `linkToken`. Exposed
     /// (not part of the `PlaidService` protocol) so `PlaidLinkPresentationView`
     /// — the one other file allowed to depend on `LinkKit` — can present its
@@ -60,6 +70,10 @@ final class PlaidServiceLive: PlaidService {
     }
 
     func startLink() async {
+        guard !isStartingLink else { return }
+        isStartingLink = true
+        defer { isStartingLink = false }
+
         presentedError = nil
         do {
             let token = try await createLinkToken()
