@@ -8,7 +8,7 @@ import SwiftUI
 /// story exists, and should be removed once adq.7 ships (see reservoir-
 /// adq.6.1's UX section, "Entry point").
 struct PlaidDebugLinkView: View {
-    @State private var service = PlaidServiceLive()
+    @State private var service = PlaidServiceLive(urlSession: UITestScenario.plaidURLSession)
     @State private var verifiedTokenMessage: String?
 
     var body: some View {

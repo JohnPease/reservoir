@@ -10,15 +10,27 @@ import XCTest
 /// session (institution search, `user_good`/`pass_good`, an OAuth
 /// institution, `ins_20`) — that requires a real Sandbox `client_id`/secret
 /// in `Config/Plaid.xcconfig`, which isn't available in CI/this environment.
-/// With placeholder credentials, `startLink()`'s `/link/token/create` call
-/// reaches the real `sandbox.plaid.com` and gets rejected (invalid
-/// client), which is itself a real, live exercise of the "Plaid-side error"
-/// classification path end to end — the network round-trip, the non-2xx
-/// response, `PlaidErrorClassifier`, and the UI update are all real, only
-/// the specific rejection reason differs from a credentialed run.
+///
+/// reservoir-z0o: the error-classification test used to rely on Plaid's real
+/// Sandbox API rejecting whatever credentials happened to be in
+/// `Config/Plaid.xcconfig` — which passed "by accident" only because the
+/// app's old custom-scheme redirect_uri was itself invalid and got rejected
+/// regardless of credential validity. Once the redirect_uri became a
+/// legitimate https universal link, that test started succeeding or failing
+/// depending on whether the developer's local xcconfig held real, valid
+/// Sandbox credentials. It now forces the failure deterministically via
+/// `UITEST_FORCE_PLAID_ERROR=1`, which makes `PlaidDebugLinkView` hand
+/// `PlaidServiceLive` a `URLSession` that intercepts every Plaid REST call
+/// and fails it with a non-2xx response (see `UITestScenario.plaidURLSession`
+/// in `UITestSupport.swift`) — the full real code path (network round-trip,
+/// non-2xx handling, `PlaidErrorClassifier`, UI update) still runs, just
+/// without depending on Plaid's actual API or local credentials.
 final class PlaidDebugLinkUITests: XCTestCase {
-    private func launchedApp() -> XCUIApplication {
+    private func launchedApp(forcePlaidError: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
+        if forcePlaidError {
+            app.launchEnvironment["UITEST_FORCE_PLAID_ERROR"] = "1"
+        }
         app.launch()
         return app
     }
@@ -32,17 +44,18 @@ final class PlaidDebugLinkUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["No account linked yet."].exists)
     }
 
-    func testTappingLinkButtonWithInvalidCredentialsSurfacesClassifiedError() {
-        let app = launchedApp()
+    func testTappingLinkButtonWithForcedFailureSurfacesClassifiedError() {
+        let app = launchedApp(forcePlaidError: true)
         app.tabBars.buttons["Settings"].tap()
 
         XCTAssertTrue(app.buttons["plaidDebug.linkButton"].waitForExistence(timeout: 5))
         app.buttons["plaidDebug.linkButton"].tap()
 
-        // The placeholder Config/Plaid.xcconfig credentials get rejected by
-        // Plaid's real Sandbox API — startLink()'s own token-creation call
-        // fails before Link ever presents, which PlaidErrorClassifier maps
-        // to .plaidSide (a non-network HTTP failure), surfaced via
+        // UITEST_FORCE_PLAID_ERROR makes startLink()'s own token-creation
+        // call fail deterministically before Link ever presents (see the
+        // suite-level doc comment), independent of whatever's in
+        // Config/Plaid.xcconfig locally. PlaidErrorClassifier maps the
+        // resulting non-2xx response to .plaidSide, surfaced via
         // PlaidDebugLinkView's error banner and "Try again" affordance.
         let errorMessage = app.staticTexts["plaidDebug.errorMessage"]
         XCTAssertTrue(errorMessage.waitForExistence(timeout: 15))
