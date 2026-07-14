@@ -8,7 +8,10 @@ import Foundation
 /// exit by the caller before this classifier is ever consulted.
 enum PlaidErrorCategory: Equatable {
     /// No connectivity, or the request to Plaid timed out — a local/network
-    /// condition rather than something Plaid's servers did.
+    /// condition rather than something Plaid's servers did. Only reachable
+    /// from `.exchangeError`: LinkKit's `onExit` taxonomy (`.linkError`) has
+    /// no client-connectivity category, so `.linkError` never classifies as
+    /// `.network` — see `PlaidErrorClassifier.classify`.
     case network
     /// Plaid's servers (or the linked institution) returned an error —
     /// invalid credentials, institution outage, API-level failure, etc.
@@ -22,7 +25,10 @@ enum PlaidErrorCategory: Equatable {
 /// these cases before calling `classify`.
 enum PlaidFailureInput {
     /// A `PlaidError` reported by LinkKit's `onExit`, reduced to its two
-    /// classification-relevant strings.
+    /// identifying strings. Always classifies as `.plaidSide` (see
+    /// `PlaidErrorClassifier.classify`) — the strings are carried here for
+    /// logging/debugging and for reservoir-adq.6.5's reuse of this type, not
+    /// because `classify` inspects them today.
     case linkError(errorType: String?, errorCode: String?)
     /// A `URLSession`/`Codable` failure from the app's own direct call to
     /// Plaid's `/item/public_token/exchange` endpoint.
@@ -35,24 +41,21 @@ enum PlaidFailureInput {
 /// errors on an already-linked item, so keep this generically named and
 /// free of anything specific to the initial-link flow.
 enum PlaidErrorClassifier {
-    /// `errorType`/`errorCode` substrings LinkKit uses for connectivity-class
-    /// failures (as opposed to Plaid's servers/an institution rejecting the
-    /// request). Matched case-insensitively against whichever of the two
-    /// fields is present, since Plaid does not guarantee both are populated
-    /// for every error.
-    private static let networkIndicators = [
-        "NETWORK", "TIMEOUT", "CONNECTIVITY", "CONNECTION",
-    ]
-
     static func classify(_ input: PlaidFailureInput) -> PlaidErrorCategory {
         switch input {
-        case .linkError(let errorType, let errorCode):
-            let haystack = [errorType, errorCode]
-                .compactMap { $0 }
-                .joined(separator: " ")
-                .uppercased()
-            let isNetwork = networkIndicators.contains { haystack.contains($0) }
-            return isNetwork ? .network : .plaidSide
+        case .linkError:
+            // LinkKit's onExit error taxonomy (ExitErrorCode: apiError,
+            // authError, assetReportError, internal, institutionError,
+            // itemError, invalidInput, invalidRequest, rateLimitExceeded,
+            // unknown — see PlaidServiceLive.errorType(for:)) is exclusively
+            // Plaid/institution-side; verified against LinkKit 7.0.2's public
+            // interface, there is no client-connectivity category. LinkKit's
+            // own webview handles offline/timeout conditions internally
+            // rather than surfacing them through onExit, so a genuine local
+            // network failure during the Link flow never reaches this
+            // classifier as a .linkError in the first place. Every
+            // .linkError is therefore .plaidSide, unconditionally.
+            return .plaidSide
 
         case .exchangeError(let error):
             if let urlError = error as? URLError {

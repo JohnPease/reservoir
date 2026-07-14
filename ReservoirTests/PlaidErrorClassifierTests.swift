@@ -4,33 +4,34 @@ import XCTest
 final class PlaidErrorClassifierTests: XCTestCase {
 
     // MARK: - Link errors (from LinkKit's onExit)
+    //
+    // LinkKit's onExit ExitErrorCode taxonomy (apiError, authError,
+    // assetReportError, internal, institutionError, itemError, invalidInput,
+    // invalidRequest, rateLimitExceeded, unknown) is exclusively
+    // Plaid/institution-side — verified against LinkKit 7.0.2's public
+    // interface, there is no client-connectivity category. Every .linkError
+    // therefore classifies as .plaidSide unconditionally, regardless of what
+    // its errorType/errorCode strings happen to contain.
 
-    func test_linkError_withNetworkErrorType_classifiesAsNetwork() {
+    func test_linkError_withNetworkLikeErrorType_stillClassifiesAsPlaidSide() {
         let category = PlaidErrorClassifier.classify(
             .linkError(errorType: "NETWORK_ERROR", errorCode: nil)
         )
-        XCTAssertEqual(category, .network)
+        XCTAssertEqual(category, .plaidSide)
     }
 
-    func test_linkError_withConnectivityCode_classifiesAsNetwork() {
+    func test_linkError_withConnectivityLikeCode_stillClassifiesAsPlaidSide() {
         let category = PlaidErrorClassifier.classify(
             .linkError(errorType: nil, errorCode: "INTERNET_CONNECTIVITY")
         )
-        XCTAssertEqual(category, .network)
+        XCTAssertEqual(category, .plaidSide)
     }
 
-    func test_linkError_withTimeoutCode_classifiesAsNetwork() {
+    func test_linkError_withTimeoutLikeCode_stillClassifiesAsPlaidSide() {
         let category = PlaidErrorClassifier.classify(
             .linkError(errorType: "API_ERROR", errorCode: "REQUEST_TIMEOUT")
         )
-        XCTAssertEqual(category, .network)
-    }
-
-    func test_linkError_isCaseInsensitive() {
-        let category = PlaidErrorClassifier.classify(
-            .linkError(errorType: "network_error", errorCode: nil)
-        )
-        XCTAssertEqual(category, .network)
+        XCTAssertEqual(category, .plaidSide)
     }
 
     func test_linkError_institutionError_classifiesAsPlaidSide() {
