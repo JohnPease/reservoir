@@ -34,15 +34,15 @@ targets:
           UIApplicationSupportsMultipleScenes: false
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
-        CFBundleURLTypes:
-          - CFBundleURLSchemes:
-              - "$(PLAID_URL_SCHEME)"
-            CFBundleURLName: "$(PRODUCT_BUNDLE_IDENTIFIER).plaid-oauth"
         PlaidClientID: "$(PLAID_CLIENT_ID)"
         PlaidSandboxSecret: "$(PLAID_SANDBOX_SECRET)"
-        PlaidURLScheme: "$(PLAID_URL_SCHEME)"
         LSApplicationQueriesSchemes:
           - "plaidlink"
+    entitlements:
+      path: Reservoir/Resources/Reservoir.entitlements
+      properties:
+        com.apple.developer.associated-domains:
+          - applinks:johnpease.github.io
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.johnpease.Reservoir

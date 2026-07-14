@@ -348,11 +348,25 @@ appears anywhere in the app. It owns two responsibilities:
     Production switching is a separate story (adq.6.2).
 
   OAuth-institution redirects are handled by LinkKit itself
-  (`ASWebAuthenticationSession` under the hood) once the app's custom URL
-  scheme (`PLAID_URL_SCHEME` in `Config/Plaid.xcconfig`, registered as
-  `CFBundleURLTypes` — see `project.yml`'s `targets.Reservoir.info`) is
-  registered both in the app and as an allowed redirect URI in the Plaid
-  dashboard; no app-side URL-handling code is needed.
+  (`ASWebAuthenticationSession` under the hood) once the app has the
+  Associated Domains entitlement (`Reservoir.entitlements`, generated from
+  `project.yml`'s `targets.Reservoir.entitlements` —
+  `applinks:johnpease.github.io`) and an `apple-app-site-association` file is
+  hosted at `https://johnpease.github.io/.well-known/apple-app-site-association`
+  (a separate `johnpease.github.io` GitHub Pages repo, not part of this repo)
+  naming this app's `appID` and the `/oauth` path. The redirect URI passed to
+  `/link/token/create` (`PlaidOAuthRedirect.url` in `PlaidServiceLive.swift`,
+  `https://johnpease.github.io/oauth`) must also be registered as an allowed
+  redirect URI in the Plaid dashboard. Plaid's dashboard now requires an
+  `https` redirect URI — the custom URL scheme this app originally used
+  (`com.johnpease.reservoir.plaid://oauth`) is no longer accepted. No
+  app-side URL-handling code (`onOpenURL`, `application(_:continue:)`, or any
+  LinkKit continuation call) is needed: LinkKit's session-based `.sheet()`
+  presentation resumes automatically once the system completes the
+  associated-domains-backed `ASWebAuthenticationSession` — confirmed against
+  LinkKit 7.0.2's public interface (no `continue`/`resume`-style API exists)
+  and Plaid's own `LinkDemo-SwiftUI` sample app, which has no URL-handling
+  code anywhere in its `App` entry point or session example view.
 
   `KeychainService` (`Services/Plaid/KeychainService.swift`) wraps the
   `Security` framework's generic-password APIs directly — no third-party
@@ -393,17 +407,21 @@ appears anywhere in the app. It owns two responsibilities:
   own development team in Xcode's Signing & Capabilities before running on
   a device.
 - **Plaid setup**: copy `Config/Plaid.xcconfig.example` to `Config/Plaid.xcconfig`
-  (gitignored — never commit real credentials) and fill in `PLAID_CLIENT_ID`,
-  `PLAID_SANDBOX_SECRET` (from the [Plaid dashboard](https://dashboard.plaid.com/team-settings/keys)),
-  and `PLAID_URL_SCHEME` (also registered as the app's redirect URI in the
-  Plaid dashboard, `<scheme>://oauth`, for OAuth-institution support). These
-  are embedded into the built app's Info.plist and readable from the `.app`
-  bundle — acceptable only under this app's accepted risk posture for in-app
-  API keys (personal, sideloaded, single-user, not distributed). Sandbox only
-  for now (adq.6.1); Sandbox/Production switching is a separate story
-  (adq.6.2). The Plaid `access_token` itself is stored in Keychain, never
-  `UserDefaults` or committed to the repo — see "Plaid Link + Keychain token
-  storage" under Architecture above.
+  (gitignored — never commit real credentials) and fill in `PLAID_CLIENT_ID`
+  and `PLAID_SANDBOX_SECRET` (from the [Plaid dashboard](https://dashboard.plaid.com/team-settings/keys)).
+  These are embedded into the built app's Info.plist and readable from the
+  `.app` bundle — acceptable only under this app's accepted risk posture for
+  in-app API keys (personal, sideloaded, single-user, not distributed).
+  Sandbox only for now (adq.6.1); Sandbox/Production switching is a separate
+  story (adq.6.2). The Plaid `access_token` itself is stored in Keychain,
+  never `UserDefaults` or committed to the repo — see "Plaid Link + Keychain
+  token storage" under Architecture above. OAuth-institution support also
+  requires: the Associated Domains entitlement (already configured in
+  `project.yml`, no per-developer setup), the `johnpease.github.io`
+  GitHub Pages repo hosting `apple-app-site-association` staying live, and
+  `https://johnpease.github.io/oauth` registered as an allowed redirect URI
+  in the Plaid dashboard — see "Plaid Link + Keychain token storage" above
+  for details.
 
 ## Product features
 

@@ -14,13 +14,15 @@ private enum PlaidCredentials {
     static var sandboxSecret: String {
         Bundle.main.object(forInfoDictionaryKey: "PlaidSandboxSecret") as? String ?? ""
     }
-    /// URL scheme LinkKit's OAuth-institution redirect hands control back
-    /// to. Must match `Config/Plaid.xcconfig`'s `PLAID_URL_SCHEME` and be
-    /// registered as an allowed redirect URI (`<scheme>://oauth`) in the
-    /// Plaid dashboard.
-    static var urlScheme: String {
-        Bundle.main.object(forInfoDictionaryKey: "PlaidURLScheme") as? String ?? ""
-    }
+}
+
+/// OAuth-institution redirects use a universal link, not a custom URL
+/// scheme — Plaid requires an https redirect URI. This host must match
+/// `Reservoir.entitlements`' Associated Domains entry (`project.yml`) and
+/// be registered as an "Allowed redirect URI" in the Plaid dashboard. Not a
+/// secret, so it's a plain constant rather than xcconfig-injected.
+enum PlaidOAuthRedirect {
+    static let url = URL(string: "https://johnpease.github.io/oauth")!
 }
 
 /// Live implementation of `PlaidService`: owns the LinkKit session lifecycle
@@ -178,7 +180,7 @@ final class PlaidServiceLive: PlaidService {
             products: ["transactions"],
             country_codes: ["US"],
             language: "en",
-            redirect_uri: "\(PlaidCredentials.urlScheme)://oauth"
+            redirect_uri: PlaidOAuthRedirect.url.absoluteString
         )
         let response: ResponseBody = try await post("/link/token/create", body: body)
         return response.link_token
