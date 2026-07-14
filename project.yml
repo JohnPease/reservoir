@@ -6,22 +6,52 @@ options:
 settings:
   base:
     SWIFT_VERSION: 6.0
+packages:
+  LinkKit:
+    url: https://github.com/plaid/plaid-link-ios-spm.git
+    from: 7.0.0
 targets:
   Reservoir:
     type: application
     platform: iOS
     sources:
       - path: Reservoir
+    dependencies:
+      - package: LinkKit
+    info:
+      path: Reservoir/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: "$(PRODUCT_NAME)"
+        CFBundleExecutable: "$(EXECUTABLE_NAME)"
+        CFBundleIdentifier: "$(PRODUCT_BUNDLE_IDENTIFIER)"
+        CFBundleInfoDictionaryVersion: "6.0"
+        CFBundleName: "$(PRODUCT_NAME)"
+        CFBundlePackageType: APPL
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        PlaidClientID: "$(PLAID_CLIENT_ID)"
+        PlaidSandboxSecret: "$(PLAID_SANDBOX_SECRET)"
+        LSApplicationQueriesSchemes:
+          - "plaidlink"
+    entitlements:
+      path: Reservoir/Resources/Reservoir.entitlements
+      properties:
+        com.apple.developer.associated-domains:
+          - applinks:johnpease.github.io
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.johnpease.Reservoir
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        GENERATE_INFOPLIST_FILE: YES
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         TARGETED_DEVICE_FAMILY: "1"
-        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
-        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+    configFiles:
+      Debug: Config/Plaid.xcconfig
+      Release: Config/Plaid.xcconfig
   ReservoirTests:
     type: bundle.unit-test
     platform: iOS

@@ -326,6 +326,78 @@ form's auto-suggest and the retag pass, exposed as a standalone `Services/`
 type (not private to a view) so reservoir-adq.4's Plaid import-time
 auto-tagging can call it directly without reimplementing the match rule.
 
+**Plaid Link + Keychain token storage** (adq.6.1, foundation only —
+transaction import is a separate story, adq.6.3): `Services/Plaid/` is a new
+architectural boundary isolating the Plaid LinkKit SDK per STANDARDS §4.
+`PlaidService` (`Services/Plaid/PlaidService.swift`) is a LinkKit-free
+protocol — no `LinkKit` type appears in its public surface — exposing
+`startLink()`, `handleLinkSuccess`/`handleLinkExit`, and observable
+`isPresentingLink`/`linkToken`/`isExchangingToken`/`linkedItem`/
+`presentedError` state. `PlaidServiceLive` is the concrete implementation and,
+together with `PlaidLinkPresentationView`, the only place `import LinkKit`
+appears anywhere in the app. It owns two responsibilities:
+  - The LinkKit 7.x session lifecycle (`Plaid.createPlaidLinkSession`,
+    session-based, not the older `Handler` API), presented via
+    `PlaidLinkPresentationView`'s `.sheet()` modifier.
+  - Direct-from-device REST calls to Plaid's Sandbox API
+    (`/link/token/create`, `/item/public_token/exchange`) — no backend/proxy,
+    consistent with this app's no-backend architecture; `client_id`/
+    `PLAID_SANDBOX_SECRET` are embedded via `Config/Plaid.xcconfig` (committed,
+    safe placeholder defaults — see "Plaid setup" under Technical details
+    below for how real credentials get layered in via the gitignored
+    `Config/Plaid.local.xcconfig`) into the app's Info.plist at build time.
+    Sandbox only for this story — Sandbox/Production switching is a separate
+    story (adq.6.2).
+
+  OAuth-institution redirects are handled by LinkKit itself
+  (`ASWebAuthenticationSession` under the hood) once the app has the
+  Associated Domains entitlement (`Reservoir.entitlements`, generated from
+  `project.yml`'s `targets.Reservoir.entitlements` —
+  `applinks:johnpease.github.io`) and an `apple-app-site-association` file is
+  hosted at `https://johnpease.github.io/.well-known/apple-app-site-association`
+  (a separate `johnpease.github.io` GitHub Pages repo, not part of this repo)
+  naming this app's `appID` and the `/oauth` path. The redirect URI passed to
+  `/link/token/create` (`PlaidOAuthRedirect.url` in `PlaidServiceLive.swift`,
+  `https://johnpease.github.io/oauth`) must also be registered as an allowed
+  redirect URI in the Plaid dashboard. Plaid's dashboard now requires an
+  `https` redirect URI — the custom URL scheme this app originally used
+  (`com.johnpease.reservoir.plaid://oauth`) is no longer accepted. No
+  app-side URL-handling code (`onOpenURL`, `application(_:continue:)`, or any
+  LinkKit continuation call) is needed: LinkKit's session-based `.sheet()`
+  presentation resumes automatically once the system completes the
+  associated-domains-backed `ASWebAuthenticationSession` — confirmed against
+  LinkKit 7.0.2's public interface (no `continue`/`resume`-style API exists)
+  and Plaid's own `LinkDemo-SwiftUI` sample app, which has no URL-handling
+  code anywhere in its `App` entry point or session example view.
+
+  `KeychainService` (`Services/Plaid/KeychainService.swift`) wraps the
+  `Security` framework's generic-password APIs directly — no third-party
+  dependency, since iOS ships no SwiftData/Keychain bridge. The Plaid
+  `access_token` is stored with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`
+  (survives background refresh, never iCloud-synced/exportable), keyed by a
+  single fixed identifier — one linked item for now, multi-account linking is
+  deferred (see `docs/PROJECT_SPEC.md`/adq.6 breakdown). Non-secret linked-item
+  metadata (institution name, item ID) lives in `UserDefaults`, consistent
+  with PROJECT_SPEC's "no `User` entity" note that app-wide settings outside
+  SwiftData belong there — not a storage decision for Settings' eventual real
+  account list (adq.7/adq.6.3), which may need a SwiftData model once more
+  than metadata display is needed.
+
+  `PlaidErrorClassifier` (`Services/Plaid/PlaidErrorClassifier.swift`) is a
+  pure function classifying any Link or exchange failure into `.network` vs
+  `.plaidSide`, driving the two distinct user-facing messages the product
+  spec calls for (raw Plaid `errorCode`/`errorType` strings are never shown to
+  the user). It takes a LinkKit-free `PlaidFailureInput` so it stays reusable
+  without pulling in the SDK — reservoir-adq.6.5 (item relink / connection-
+  status UX) reuses this same classifier for `ITEM_LOGIN_REQUIRED`-style
+  import-time errors rather than duplicating the logic.
+
+  There's no permanent UI yet — a `#if DEBUG`-gated `PlaidDebugLinkView`
+  stands in for the "Settings" tab (reachable via the Settings tab item in
+  DEBUG builds only) so the flow can be driven and Keychain storage verified
+  end to end. Settings (adq.7) owns the real entry point and this debug view
+  is removed once that story ships.
+
 ## Technical details
 
 - **Minimum iOS version**: 17.0 (required for SwiftData and `@Observable`)
@@ -336,9 +408,27 @@ auto-tagging can call it directly without reimplementing the match rule.
 - **Signing/distribution**: sideloaded via Xcode, not App Store — set your
   own development team in Xcode's Signing & Capabilities before running on
   a device.
-- **Plaid setup**: not yet integrated (planned — see `docs/PROJECT_SPEC.md`
-  build order). API keys will be required and the Plaid `access_token` will
-  be stored in Keychain, never committed to the repo.
+- **Plaid setup**: `Config/Plaid.xcconfig` is committed with safe empty
+  placeholder defaults, so `xcodegen generate` and a plain build work on a
+  fresh clone with no setup at all (Plaid calls just fail until configured).
+  To develop against real Plaid Sandbox credentials, copy
+  `Config/Plaid.local.xcconfig.example` to `Config/Plaid.local.xcconfig`
+  (gitignored — never commit real credentials) and fill in `PLAID_CLIENT_ID`
+  and `PLAID_SANDBOX_SECRET` (from the [Plaid dashboard](https://dashboard.plaid.com/team-settings/keys)).
+  `Config/Plaid.xcconfig` `#include?`s this file, so its values override the
+  placeholder defaults when present. These are embedded into the built app's Info.plist and readable from the
+  `.app` bundle — acceptable only under this app's accepted risk posture for
+  in-app API keys (personal, sideloaded, single-user, not distributed).
+  Sandbox only for now (adq.6.1); Sandbox/Production switching is a separate
+  story (adq.6.2). The Plaid `access_token` itself is stored in Keychain,
+  never `UserDefaults` or committed to the repo — see "Plaid Link + Keychain
+  token storage" under Architecture above. OAuth-institution support also
+  requires: the Associated Domains entitlement (already configured in
+  `project.yml`, no per-developer setup), the `johnpease.github.io`
+  GitHub Pages repo hosting `apple-app-site-association` staying live, and
+  `https://johnpease.github.io/oauth` registered as an allowed redirect URI
+  in the Plaid dashboard — see "Plaid Link + Keychain token storage" above
+  for details.
 
 ## Product features
 
@@ -364,9 +454,15 @@ auto-tagging can call it directly without reimplementing the match rule.
   (create/edit/delete, duplicate-name rejection, retroactive retag of
   matching transactions on rule create/edit) is reachable from this tab. See
   "Transactions tab" under Architecture above.
+- **Plaid Link + Keychain token storage** (adq.6.1, foundation only): behind
+  a `#if DEBUG` entry point standing in for Settings (see Architecture
+  above) — links a Sandbox institution (including OAuth institutions) via
+  LinkKit, exchanges the resulting token directly from the device, and
+  stores it in Keychain. Transaction import itself is not built yet
+  (adq.6.3).
 - 🚧 Everything else is still in progress. Current state beyond Today,
   Goals, and Transactions: the placeholder Settings tab (linked accounts,
-  starting balances, goal management) and Plaid Link integration.
+  starting balances, goal management) and Plaid transaction import.
 - Planned MVP scope and build order are tracked in
   [`docs/PROJECT_SPEC.md`](docs/PROJECT_SPEC.md) and as beads under the
   `reservoir-adq` epic (`bd show reservoir-adq`).
@@ -386,3 +482,13 @@ auto-tagging can call it directly without reimplementing the match rule.
     -resultBundlePath TestResults.xcresult
   xcrun xccov view --report TestResults.xcresult
   ```
+  `Services/Plaid/`'s pure logic is held to the same bar: `KeychainService`
+  and `PlaidErrorClassifier` are both directly unit tested (no LinkKit/network
+  dependency needed). `PlaidServiceLive`'s LinkKit session creation and its
+  direct-to-Plaid REST calls are integration-level boundaries and
+  intentionally excluded from the coverage bar (consistent with how
+  `PlaidService` is designed to isolate them) — its pure mapping logic
+  (`errorType(for:)`, `handleLinkExit`'s cancel-vs-error branching) is still
+  unit tested. Driving an actual Sandbox Link session (including the
+  OAuth-institution redirect and Sandbox's error-simulation institutions) is
+  manual verification, noted in the relevant PR rather than automated.

@@ -5,6 +5,12 @@ import SwiftData
 struct ReservoirApp: App {
     let modelContainer: ModelContainer = ReservoirApp.makeModelContainer()
 
+    init() {
+        #if DEBUG
+        UITestScenario.resetPlaidKeychainIfRequested()
+        #endif
+    }
+
     /// A corrupted on-disk store must not permanently lock the user out of a
     /// single-device, no-backend app. If the default store fails to load,
     /// try once more against a fresh store file before falling back to an

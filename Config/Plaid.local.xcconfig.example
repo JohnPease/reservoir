@@ -1,0 +1,25 @@
+// Copy this file to Plaid.local.xcconfig (gitignored) and fill in real values
+// from your Plaid dashboard (https://dashboard.plaid.com/team-settings/keys).
+// Config/Plaid.xcconfig (committed, safe placeholder defaults) #includes this
+// file when it's present, so its assignments override the placeholders —
+// see that file for the full explanation.
+//
+// PLAID_SANDBOX_SECRET is the Sandbox environment's secret only — this story
+// (reservoir-adq.6.1) is Sandbox-only. Production switching is a separate
+// story (reservoir-adq.6.2) and will introduce its own secret handling.
+//
+// OAuth-institution redirects use a universal link
+// (https://johnpease.github.io/oauth), not a custom URL scheme — Plaid's
+// dashboard requires an https redirect URI. The domain is hardcoded in
+// PlaidServiceLive.swift and must be registered as an "Allowed redirect
+// URI" in the Plaid dashboard, and its Associated Domains entitlement
+// (Reservoir.entitlements) must list the same host. No per-developer
+// config needed here.
+//
+// These values are embedded into the built app's Info.plist and are
+// readable by anyone with the .app bundle — acceptable only under this
+// app's accepted risk posture (personal, sideloaded, single-user, not
+// distributed). Do not commit Plaid.local.xcconfig.
+
+PLAID_CLIENT_ID = your_plaid_client_id
+PLAID_SANDBOX_SECRET = your_plaid_sandbox_secret

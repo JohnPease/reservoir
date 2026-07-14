@@ -52,6 +52,81 @@ enum UITestScenario: String {
         ProcessInfo.processInfo.environment["UITEST_SCENARIO"].flatMap(UITestScenario.init(rawValue:))
     }
 
+    /// A stubbed `URLProtocol` that fails every request with a non-2xx HTTP
+    /// response, regardless of what's actually configured in
+    /// `Config/Plaid.xcconfig`. Backs `UITestScenario.plaidURLSession` so
+    /// `PlaidDebugLinkUITests`' error-classification test is deterministic —
+    /// it must not depend on whether the developer's local xcconfig happens
+    /// to hold valid or invalid Sandbox credentials (see reservoir-z0o: the
+    /// old custom-scheme redirect_uri used to make that test pass "by
+    /// accident" by getting rejected outright; the https universal-link
+    /// redirect_uri Plaid now requires no longer does that when credentials
+    /// are valid).
+    private final class PlaidForcedFailureURLProtocol: URLProtocol {
+        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+        override func startLoading() {
+            // Any non-2xx status makes PlaidServiceLive.post(_:body:) throw
+            // URLError(.badServerResponse), which PlaidErrorClassifier maps
+            // to .plaidSide — the same real, non-network failure path a
+            // genuine Plaid-side rejection takes, just without depending on
+            // Plaid's actual Sandbox API or real credentials.
+            let response = HTTPURLResponse(
+                url: request.url ?? URL(string: "https://sandbox.plaid.com")!,
+                statusCode: 400,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+
+        override func stopLoading() {}
+    }
+
+    /// The `URLSession` `PlaidDebugLinkView` should hand to `PlaidServiceLive`.
+    /// Under normal (non-UI-test) launches this is just `.shared`. Launched
+    /// under XCUITest with `UITEST_FORCE_PLAID_ERROR=1` set, every Plaid REST
+    /// call is intercepted and deterministically failed — see
+    /// `PlaidForcedFailureURLProtocol`.
+    static var plaidURLSession: URLSession {
+        guard ProcessInfo.processInfo.environment["UITEST_FORCE_PLAID_ERROR"] == "1" else {
+            return .shared
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [PlaidForcedFailureURLProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+
+    /// Deletes the app's stored Plaid access token before the app finishes
+    /// launching, when `UITEST_RESET_PLAID_KEYCHAIN=1` is set — keeps
+    /// `PlaidDebugLinkUITests.testVerifyTokenStoredReportsNoTokenWhenNothingLinked`
+    /// deterministic regardless of what a prior real Sandbox Link session (or
+    /// leftover simulator state — Keychain entries with
+    /// `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` survive app
+    /// reinstall) may have left behind on this simulator, matching
+    /// `KeychainServiceTests`' per-test namespacing strategy for the one
+    /// call site (the debug view) that deliberately uses the real,
+    /// unnamespaced production Keychain service.
+    ///
+    /// Blocks synchronously (a `DispatchSemaphore` bridging
+    /// `KeychainService`'s `async` API) so the reset is guaranteed to
+    /// complete before `ReservoirApp`'s first view appears — called from
+    /// `ReservoirApp.init()`, a synchronous context, and this only ever runs
+    /// under `DEBUG` + an XCUITest launch, so the brief blocking wait for a
+    /// single fast Keychain delete is an acceptable, deliberate tradeoff for
+    /// launch-time determinism.
+    static func resetPlaidKeychainIfRequested() {
+        guard ProcessInfo.processInfo.environment["UITEST_RESET_PLAID_KEYCHAIN"] == "1" else { return }
+        let semaphore = DispatchSemaphore(value: 0)
+        Task {
+            try? await KeychainService().delete(for: PlaidKeychainKey.accessToken)
+            semaphore.signal()
+        }
+        semaphore.wait()
+    }
+
     /// Seeds `context` with this scenario's fixtures and saves.
     func seed(into context: ModelContext) {
         switch self {

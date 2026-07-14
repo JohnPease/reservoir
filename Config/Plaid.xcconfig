@@ -1,0 +1,39 @@
+// Committed, tracked file — this is what makes `xcodegen generate` succeed on
+// a fresh clone with no local setup at all (project.yml's configFiles points
+// here). The safe empty defaults below mean the app builds and links fine
+// without real Plaid credentials; Plaid calls just fail until you configure
+// real ones.
+//
+// To develop against real Plaid Sandbox (or Production) credentials, copy
+// Config/Plaid.local.xcconfig.example to Config/Plaid.local.xcconfig
+// (gitignored — never commit real credentials) and fill in PLAID_CLIENT_ID
+// and PLAID_SANDBOX_SECRET from the Plaid dashboard
+// (https://dashboard.plaid.com/team-settings/keys). The #include? below
+// pulls that file in if it exists and its assignments override the defaults
+// declared above them (xcconfig: the last assignment of a given setting
+// wins) — if it doesn't exist, #include? is a silent no-op and the empty
+// defaults stand.
+//
+// PLAID_SANDBOX_SECRET is the Sandbox environment's secret only — this story
+// (reservoir-adq.6.1) is Sandbox-only. Production switching is a separate
+// story (reservoir-adq.6.2) and will introduce its own secret handling.
+//
+// OAuth-institution redirects use a universal link
+// (https://johnpease.github.io/oauth), not a custom URL scheme — Plaid's
+// dashboard requires an https redirect URI. The domain is hardcoded in
+// PlaidServiceLive.swift and must be registered as an "Allowed redirect
+// URI" in the Plaid dashboard, and its Associated Domains entitlement
+// (Reservoir.entitlements) must list the same host. No per-developer
+// config needed here.
+//
+// These values are embedded into the built app's Info.plist and are
+// readable by anyone with the .app bundle — acceptable only under this
+// app's accepted risk posture (personal, sideloaded, single-user, not
+// distributed). Do not commit real credentials — put them in
+// Plaid.local.xcconfig, not here.
+
+PLAID_CLIENT_ID =
+PLAID_SANDBOX_SECRET =
+PLAID_PRODUCTION_SECRET =
+
+#include? "Plaid.local.xcconfig"
