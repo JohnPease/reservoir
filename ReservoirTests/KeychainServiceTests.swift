@@ -9,59 +9,70 @@ final class KeychainServiceTests: XCTestCase {
         KeychainService(service: "com.johnpease.Reservoir.tests.\(function)")
     }
 
-    func test_read_returnsNilWhenNothingStored() throws {
+    func test_read_returnsNilWhenNothingStored() async throws {
         let sut = makeSUT()
-        XCTAssertNil(try sut.read(for: "missing-key"))
+        let value = try await sut.read(for: "missing-key")
+        XCTAssertNil(value)
     }
 
-    func test_saveThenRead_returnsStoredValue() throws {
+    func test_saveThenRead_returnsStoredValue() async throws {
         let sut = makeSUT()
-        defer { try? sut.delete(for: "token") }
-        try sut.save("access-token-123", for: "token")
-        XCTAssertEqual(try sut.read(for: "token"), "access-token-123")
+        addTeardownBlock { try? await sut.delete(for: "token") }
+        try await sut.save("access-token-123", for: "token")
+        let value = try await sut.read(for: "token")
+        XCTAssertEqual(value, "access-token-123")
     }
 
-    func test_saveTwice_overwritesPreviousValue() throws {
+    func test_saveTwice_overwritesPreviousValue() async throws {
         let sut = makeSUT()
-        defer { try? sut.delete(for: "token") }
-        try sut.save("first-token", for: "token")
-        try sut.save("second-token", for: "token")
-        XCTAssertEqual(try sut.read(for: "token"), "second-token")
+        addTeardownBlock { try? await sut.delete(for: "token") }
+        try await sut.save("first-token", for: "token")
+        try await sut.save("second-token", for: "token")
+        let value = try await sut.read(for: "token")
+        XCTAssertEqual(value, "second-token")
     }
 
-    func test_delete_removesStoredValue() throws {
+    func test_delete_removesStoredValue() async throws {
         let sut = makeSUT()
-        try sut.save("access-token-123", for: "token")
-        try sut.delete(for: "token")
-        XCTAssertNil(try sut.read(for: "token"))
+        try await sut.save("access-token-123", for: "token")
+        try await sut.delete(for: "token")
+        let value = try await sut.read(for: "token")
+        XCTAssertNil(value)
     }
 
-    func test_delete_whenNothingStored_doesNotThrow() {
+    func test_delete_whenNothingStored_doesNotThrow() async {
         let sut = makeSUT()
-        XCTAssertNoThrow(try sut.delete(for: "never-stored"))
-    }
-
-    func test_saveAndRead_areScopedByKey() throws {
-        let sut = makeSUT()
-        defer {
-            try? sut.delete(for: "key-a")
-            try? sut.delete(for: "key-b")
+        do {
+            try await sut.delete(for: "never-stored")
+        } catch {
+            XCTFail("Expected delete of a never-stored key not to throw, got \(error)")
         }
-        try sut.save("token-a", for: "key-a")
-        try sut.save("token-b", for: "key-b")
-        XCTAssertEqual(try sut.read(for: "key-a"), "token-a")
-        XCTAssertEqual(try sut.read(for: "key-b"), "token-b")
     }
 
-    func test_differentServiceNamespaces_doNotSeeEachOthersValues() throws {
+    func test_saveAndRead_areScopedByKey() async throws {
+        let sut = makeSUT()
+        addTeardownBlock {
+            try? await sut.delete(for: "key-a")
+            try? await sut.delete(for: "key-b")
+        }
+        try await sut.save("token-a", for: "key-a")
+        try await sut.save("token-b", for: "key-b")
+        let valueA = try await sut.read(for: "key-a")
+        let valueB = try await sut.read(for: "key-b")
+        XCTAssertEqual(valueA, "token-a")
+        XCTAssertEqual(valueB, "token-b")
+    }
+
+    func test_differentServiceNamespaces_doNotSeeEachOthersValues() async throws {
         let sutA = KeychainService(service: "com.johnpease.Reservoir.tests.namespaceA")
         let sutB = KeychainService(service: "com.johnpease.Reservoir.tests.namespaceB")
-        defer {
-            try? sutA.delete(for: "token")
-            try? sutB.delete(for: "token")
+        addTeardownBlock {
+            try? await sutA.delete(for: "token")
+            try? await sutB.delete(for: "token")
         }
 
-        try sutA.save("token-a", for: "token")
-        XCTAssertNil(try sutB.read(for: "token"))
+        try await sutA.save("token-a", for: "token")
+        let valueFromB = try await sutB.read(for: "token")
+        XCTAssertNil(valueFromB)
     }
 }

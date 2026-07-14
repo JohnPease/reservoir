@@ -20,10 +20,19 @@ enum KeychainError: Error, Equatable {
 /// readable by background refresh triggers (reservoir-adq.6.4) after the
 /// device has been unlocked once since boot, never iCloud-synced, never
 /// exportable to another device.
-protocol KeychainServicing {
-    func save(_ value: String, for key: String) throws
-    func read(for key: String) throws -> String?
-    func delete(for key: String) throws
+///
+/// `async`: the underlying `Security` calls are synchronous and can block
+/// for a noticeable moment (device state, Keychain contention). Every call
+/// site is `@MainActor` (`PlaidServiceLive`, `PlaidDebugLinkView`), so a
+/// synchronous protocol here would block the main actor on every Keychain
+/// touch — this `async` surface exists so `KeychainService`'s implementation
+/// can hop off main, and so every future call site (reservoir-adq.6.4,
+/// adq.6.5) inherits that off-main behavior for free rather than having to
+/// remember to dispatch manually.
+protocol KeychainServicing: Sendable {
+    func save(_ value: String, for key: String) async throws
+    func read(for key: String) async throws -> String?
+    func delete(for key: String) async throws
 }
 
 struct KeychainService: KeychainServicing {
@@ -36,9 +45,43 @@ struct KeychainService: KeychainServicing {
         self.service = service
     }
 
-    func save(_ value: String, for key: String) throws {
+    func save(_ value: String, for key: String) async throws {
+        let service = service
+        try await Self.offMainActor {
+            try Self.performSave(value, for: key, service: service)
+        }
+    }
+
+    func read(for key: String) async throws -> String? {
+        let service = service
+        return try await Self.offMainActor {
+            try Self.performRead(for: key, service: service)
+        }
+    }
+
+    func delete(for key: String) async throws {
+        let service = service
+        try await Self.offMainActor {
+            try Self.performDelete(for: key, service: service)
+        }
+    }
+
+    /// Runs a synchronous `Security`-framework call off the main actor.
+    /// `Task.detached` is sufficient here (no shared mutable state to
+    /// serialize against — each call builds its own query dictionary), and
+    /// keeps this wrapper free of any custom `DispatchQueue`/executor
+    /// plumbing.
+    private static func offMainActor<T: Sendable>(
+        _ work: @escaping @Sendable () throws -> T
+    ) async throws -> T {
+        try await Task.detached(priority: .userInitiated) {
+            try work()
+        }.value
+    }
+
+    private static func performSave(_ value: String, for key: String, service: String) throws {
         let data = Data(value.utf8)
-        let query = baseQuery(for: key)
+        let query = baseQuery(for: key, service: service)
 
         // Update-then-add: a plain SecItemAdd fails with errSecDuplicateItem
         // if a value is already stored for this key, so try to update the
@@ -65,8 +108,8 @@ struct KeychainService: KeychainServicing {
         }
     }
 
-    func read(for key: String) throws -> String? {
-        var query = baseQuery(for: key)
+    private static func performRead(for key: String, service: String) throws -> String? {
+        var query = baseQuery(for: key, service: service)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
@@ -86,14 +129,14 @@ struct KeychainService: KeychainServicing {
         }
     }
 
-    func delete(for key: String) throws {
-        let status = SecItemDelete(baseQuery(for: key) as CFDictionary)
+    private static func performDelete(for key: String, service: String) throws {
+        let status = SecItemDelete(baseQuery(for: key, service: service) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw KeychainError.unhandled(status: status)
         }
     }
 
-    private func baseQuery(for key: String) -> [String: Any] {
+    private static func baseQuery(for key: String, service: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
