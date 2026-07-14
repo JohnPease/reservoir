@@ -342,10 +342,12 @@ appears anywhere in the app. It owns two responsibilities:
   - Direct-from-device REST calls to Plaid's Sandbox API
     (`/link/token/create`, `/item/public_token/exchange`) — no backend/proxy,
     consistent with this app's no-backend architecture; `client_id`/
-    `PLAID_SANDBOX_SECRET` are embedded via `Config/Plaid.xcconfig`
-    (gitignored, copy from `Config/Plaid.xcconfig.example`) into the app's
-    Info.plist at build time. Sandbox only for this story — Sandbox/
-    Production switching is a separate story (adq.6.2).
+    `PLAID_SANDBOX_SECRET` are embedded via `Config/Plaid.xcconfig` (committed,
+    safe placeholder defaults — see "Plaid setup" under Technical details
+    below for how real credentials get layered in via the gitignored
+    `Config/Plaid.local.xcconfig`) into the app's Info.plist at build time.
+    Sandbox only for this story — Sandbox/Production switching is a separate
+    story (adq.6.2).
 
   OAuth-institution redirects are handled by LinkKit itself
   (`ASWebAuthenticationSession` under the hood) once the app has the
@@ -406,10 +408,15 @@ appears anywhere in the app. It owns two responsibilities:
 - **Signing/distribution**: sideloaded via Xcode, not App Store — set your
   own development team in Xcode's Signing & Capabilities before running on
   a device.
-- **Plaid setup**: copy `Config/Plaid.xcconfig.example` to `Config/Plaid.xcconfig`
+- **Plaid setup**: `Config/Plaid.xcconfig` is committed with safe empty
+  placeholder defaults, so `xcodegen generate` and a plain build work on a
+  fresh clone with no setup at all (Plaid calls just fail until configured).
+  To develop against real Plaid Sandbox credentials, copy
+  `Config/Plaid.local.xcconfig.example` to `Config/Plaid.local.xcconfig`
   (gitignored — never commit real credentials) and fill in `PLAID_CLIENT_ID`
   and `PLAID_SANDBOX_SECRET` (from the [Plaid dashboard](https://dashboard.plaid.com/team-settings/keys)).
-  These are embedded into the built app's Info.plist and readable from the
+  `Config/Plaid.xcconfig` `#include?`s this file, so its values override the
+  placeholder defaults when present. These are embedded into the built app's Info.plist and readable from the
   `.app` bundle — acceptable only under this app's accepted risk posture for
   in-app API keys (personal, sideloaded, single-user, not distributed).
   Sandbox only for now (adq.6.1); Sandbox/Production switching is a separate
