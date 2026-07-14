@@ -10,10 +10,14 @@ import LinkKit
 /// those are covered by manual verification (see PR notes).
 @MainActor
 final class PlaidServiceLiveTests: XCTestCase {
-    private final class StubKeychain: KeychainServicing {
-        func save(_ value: String, for key: String) throws {}
-        func read(for key: String) throws -> String? { nil }
-        func delete(for key: String) throws {}
+    private final class StubKeychain: KeychainServicing, @unchecked Sendable {
+        var saveError: Error?
+
+        func save(_ value: String, for key: String) async throws {
+            if let saveError { throw saveError }
+        }
+        func read(for key: String) async throws -> String? { nil }
+        func delete(for key: String) async throws {}
     }
 
     private func makeSUT(urlSession: URLSession = .shared) -> PlaidServiceLive {
@@ -34,6 +38,34 @@ final class PlaidServiceLiveTests: XCTestCase {
     private func makeHangingURLSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [HangingURLProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+
+    /// A `URLProtocol` that answers every request with a successful
+    /// `/item/public_token/exchange`-shaped JSON body, regardless of path —
+    /// stands in for a real Plaid Sandbox exchange succeeding, so
+    /// `handleLinkSuccess` can be exercised down to the Keychain-save step.
+    private final class SuccessfulExchangeURLProtocol: URLProtocol {
+        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+        override func startLoading() {
+            let body = Data(#"{"access_token":"access-sandbox-test","item_id":"item-test"}"#.utf8)
+            let response = HTTPURLResponse(
+                url: request.url ?? URL(string: "https://sandbox.plaid.com")!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: body)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+        override func stopLoading() {}
+    }
+
+    private func makeSuccessfulExchangeURLSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [SuccessfulExchangeURLProtocol.self]
         return URLSession(configuration: configuration)
     }
 
@@ -65,6 +97,32 @@ final class PlaidServiceLiveTests: XCTestCase {
         let sut = makeSUT()
         sut.handleLinkExit(errorType: "INSTITUTION_ERROR", errorCode: "INSTITUTION_DOWN")
         XCTAssertEqual(sut.presentedError, .plaidSide)
+    }
+
+    // MARK: - handleLinkSuccess Keychain-failure classification
+
+    func test_handleLinkSuccess_whenKeychainSaveFails_classifiesAsLocalStorageNotBankFailure() async {
+        let keychain = StubKeychain()
+        keychain.saveError = KeychainError.unhandled(status: -1)
+        let sut = PlaidServiceLive(keychain: keychain, urlSession: makeSuccessfulExchangeURLSession())
+
+        await sut.handleLinkSuccess(publicToken: "public-good", institutionName: "Test Bank")
+
+        // The bank exchange succeeded (the stub session returns a valid
+        // access_token/item_id) — only the local Keychain write failed, so
+        // this must not be classified/copy'd as a bank-side failure.
+        XCTAssertEqual(sut.presentedError, .localStorage)
+        XCTAssertNil(sut.linkedItem)
+    }
+
+    func test_handleLinkSuccess_whenExchangeAndKeychainBothSucceed_setsLinkedItemWithNoError() async {
+        let sut = PlaidServiceLive(keychain: StubKeychain(), urlSession: makeSuccessfulExchangeURLSession())
+
+        await sut.handleLinkSuccess(publicToken: "public-good", institutionName: "Test Bank")
+
+        XCTAssertNil(sut.presentedError)
+        XCTAssertEqual(sut.linkedItem?.itemID, "item-test")
+        XCTAssertEqual(sut.linkedItem?.institutionName, "Test Bank")
     }
 
     // MARK: - startLink reentrancy guard

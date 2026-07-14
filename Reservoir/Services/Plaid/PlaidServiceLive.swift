@@ -96,19 +96,32 @@ final class PlaidServiceLive: PlaidService {
         isExchangingToken = true
         defer { isExchangingToken = false }
 
+        let exchange: (accessToken: String, itemID: String)
         do {
-            let exchange = try await exchangePublicToken(publicToken)
-            // Persist only after a fully successful exchange — if the save
-            // below throws, nothing has been written yet, so there is no
-            // partial/orphaned state to roll back (reservoir-adq.6.1's
-            // "Token exchange failure" UX requirement).
-            try keychain.save(exchange.accessToken, for: PlaidKeychainKey.accessToken)
-            let item = LinkedItem(itemID: exchange.itemID, institutionName: institutionName, linkedAt: Date())
-            linkedItem = item
-            Self.persist(item)
+            exchange = try await exchangePublicToken(publicToken)
         } catch {
             presentedError = PlaidErrorClassifier.classify(.exchangeError(error))
+            return
         }
+
+        // Persist only after a fully successful exchange — if the save below
+        // throws, nothing has been written yet, so there is no partial/
+        // orphaned state to roll back (reservoir-adq.6.1's "Token exchange
+        // failure" UX requirement). A save failure here is classified
+        // separately from an exchange failure (.localStorage vs. .network/
+        // .plaidSide): the bank exchange itself succeeded, so "Couldn't
+        // connect to your bank" would be the wrong message — the failure is
+        // local Keychain storage, not Plaid.
+        do {
+            try await keychain.save(exchange.accessToken, for: PlaidKeychainKey.accessToken)
+        } catch {
+            presentedError = PlaidErrorClassifier.classify(.localStorageError(error))
+            return
+        }
+
+        let item = LinkedItem(itemID: exchange.itemID, institutionName: institutionName, linkedAt: Date())
+        linkedItem = item
+        Self.persist(item)
     }
 
     func handleLinkExit(errorType: String?, errorCode: String?) {

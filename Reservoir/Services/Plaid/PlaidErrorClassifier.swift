@@ -16,6 +16,12 @@ enum PlaidErrorCategory: Equatable {
     /// Plaid's servers (or the linked institution) returned an error —
     /// invalid credentials, institution outage, API-level failure, etc.
     case plaidSide
+    /// The bank exchange itself succeeded, but persisting the resulting
+    /// access token to Keychain failed (a local storage failure, not a
+    /// network/Plaid-side one). Distinct from `.plaidSide` so the user isn't
+    /// told "couldn't connect to your bank" for a failure that has nothing
+    /// to do with the bank.
+    case localStorage
 }
 
 /// Input to `PlaidErrorClassifier`, shaped to keep the classifier free of any
@@ -33,6 +39,12 @@ enum PlaidFailureInput {
     /// A `URLSession`/`Codable` failure from the app's own direct call to
     /// Plaid's `/item/public_token/exchange` endpoint.
     case exchangeError(Error)
+    /// A `KeychainServicing` failure persisting the access token after a
+    /// successful exchange. Always classifies as `.localStorage` — the
+    /// underlying error isn't inspected further, since every
+    /// `KeychainError` case is a local storage condition, never a
+    /// network/Plaid-side one.
+    case localStorageError(Error)
 }
 
 /// Pure function mapping a Plaid Link or token-exchange failure into a
@@ -65,6 +77,9 @@ enum PlaidErrorClassifier {
             // an HTTP error status Plaid returned, etc.) are Plaid's servers
             // responding, not a local connectivity problem.
             return .plaidSide
+
+        case .localStorageError:
+            return .localStorage
         }
     }
 
@@ -97,6 +112,8 @@ extension PlaidErrorCategory {
             return "Couldn't reach the network. Check your connection and try again."
         case .plaidSide:
             return "Couldn't connect to your bank. Try again."
+        case .localStorage:
+            return "Couldn't save your login. Try again."
         }
     }
 }

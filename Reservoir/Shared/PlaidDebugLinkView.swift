@@ -52,7 +52,7 @@ struct PlaidDebugLinkView: View {
 
                 Section("Keychain verification") {
                     Button("Verify token stored") {
-                        verifiedTokenMessage = Self.verifyTokenStored()
+                        Task { verifiedTokenMessage = await Self.verifyTokenStored() }
                     }
                     .accessibilityIdentifier("plaidDebug.verifyTokenStored")
                     if let verifiedTokenMessage {
@@ -71,10 +71,10 @@ struct PlaidDebugLinkView: View {
     /// check called for by reservoir-adq.6.1's acceptance criteria ("verified
     /// by reading it back"). Never displays the token itself, only whether
     /// one is present.
-    private static func verifyTokenStored() -> String {
+    private static func verifyTokenStored() async -> String {
         let keychain = KeychainService()
         do {
-            if let token = try keychain.read(for: PlaidKeychainKey.accessToken), !token.isEmpty {
+            if let token = try await keychain.read(for: PlaidKeychainKey.accessToken), !token.isEmpty {
                 return "Token present in Keychain (\(token.count) characters)."
             } else {
                 return "No token found in Keychain."

@@ -107,6 +107,16 @@ final class PlaidErrorClassifierTests: XCTestCase {
         XCTAssertEqual(category, .plaidSide)
     }
 
+    // MARK: - Local storage (Keychain save) errors
+
+    func test_localStorageError_classifiesAsLocalStorage() {
+        struct KeychainStandIn: Error {}
+        let category = PlaidErrorClassifier.classify(
+            .localStorageError(KeychainStandIn())
+        )
+        XCTAssertEqual(category, .localStorage)
+    }
+
     // MARK: - User-facing copy
 
     func test_network_userFacingMessage_matchesUXSpec() {
@@ -120,6 +130,13 @@ final class PlaidErrorClassifierTests: XCTestCase {
         XCTAssertEqual(
             PlaidErrorCategory.plaidSide.userFacingMessage,
             "Couldn't connect to your bank. Try again."
+        )
+    }
+
+    func test_localStorage_userFacingMessage_matchesUXSpec() {
+        XCTAssertEqual(
+            PlaidErrorCategory.localStorage.userFacingMessage,
+            "Couldn't save your login. Try again."
         )
     }
 }
