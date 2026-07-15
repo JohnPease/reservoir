@@ -10,12 +10,32 @@ import SwiftUI
 /// removed once adq.7 ships (see reservoir-adq.6.1's UX section, "Entry
 /// point").
 struct PlaidDebugLinkView: View {
-    @State private var service = PlaidServiceLive(urlSession: UITestScenario.plaidURLSession)
+    @State private var service: PlaidServiceLive
     @State private var verifiedTokenMessage: String?
-    private let environmentStore: PlaidEnvironmentStoring = PlaidEnvironmentStore()
-    @State private var environment: PlaidEnvironment = PlaidEnvironmentStore().current
+    private let environmentStore: PlaidEnvironmentStoring
+    @State private var environment: PlaidEnvironment
     @State private var pendingEnvironment: PlaidEnvironment?
     @State private var showingProductionConfirmation = false
+
+    /// A single shared `PlaidEnvironmentStore` instance backs `environmentStore`,
+    /// `environment`'s initial value, and `service`'s own environment
+    /// resolution — previously each was seeded from its own separate
+    /// `PlaidEnvironmentStore()` instance. Those coincidentally agreed on
+    /// *reads* (same `UserDefaults` key underneath), but `PlaidServiceLive`'s
+    /// linked-item/Keychain invalidation hook (see `PlaidEnvironmentStore.onChange`)
+    /// lives on the specific instance passed to its initializer — with separate
+    /// instances, this view calling `.set(_:)` on its own copy would never
+    /// have fired that hook on `service`'s copy. One shared instance closes
+    /// both gaps (PR #12 review finding).
+    init() {
+        let store = PlaidEnvironmentStore()
+        self.environmentStore = store
+        self._environment = State(initialValue: store.current)
+        self._service = State(initialValue: PlaidServiceLive(
+            urlSession: UITestScenario.plaidURLSession,
+            environmentStore: store
+        ))
+    }
 
     var body: some View {
         NavigationStack {
