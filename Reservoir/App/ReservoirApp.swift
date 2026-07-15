@@ -8,6 +8,7 @@ struct ReservoirApp: App {
     init() {
         #if DEBUG
         UITestScenario.resetPlaidKeychainIfRequested()
+        UITestScenario.resetPlaidEnvironmentIfRequested()
         #endif
     }
 

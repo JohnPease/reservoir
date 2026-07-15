@@ -339,15 +339,33 @@ appears anywhere in the app. It owns two responsibilities:
   - The LinkKit 7.x session lifecycle (`Plaid.createPlaidLinkSession`,
     session-based, not the older `Handler` API), presented via
     `PlaidLinkPresentationView`'s `.sheet()` modifier.
-  - Direct-from-device REST calls to Plaid's Sandbox API
+  - Direct-from-device REST calls to Plaid's Sandbox or Production API
     (`/link/token/create`, `/item/public_token/exchange`) — no backend/proxy,
-    consistent with this app's no-backend architecture; `client_id`/
-    `PLAID_SANDBOX_SECRET` are embedded via `Config/Plaid.xcconfig` (committed,
-    safe placeholder defaults — see "Plaid setup" under Technical details
-    below for how real credentials get layered in via the gitignored
-    `Config/Plaid.local.xcconfig`) into the app's Info.plist at build time.
-    Sandbox only for this story — Sandbox/Production switching is a separate
-    story (adq.6.2).
+    consistent with this app's no-backend architecture; `client_id`,
+    `PLAID_SANDBOX_SECRET`, and `PLAID_PRODUCTION_SECRET` are embedded via
+    `Config/Plaid.xcconfig` (committed, safe placeholder defaults — see
+    "Plaid setup" under Technical details below for how real credentials get
+    layered in via the gitignored `Config/Plaid.local.xcconfig`) into the
+    app's Info.plist at build time. `client_id` is a single value shared
+    across both environments (Plaid's own account model) — only the
+    `secret` differs.
+
+  **Sandbox/Production environment switching** (adq.6.2): `PlaidEnvironment`
+  (`Services/Plaid/PlaidEnvironment.swift`) is a `.sandbox`/`.production`
+  enum resolving each environment's base URL. `PlaidEnvironmentStore` (also
+  in that file, behind a `PlaidEnvironmentStoring` protocol) persists the
+  chosen environment in `UserDefaults` — a mode flag, not a secret, so it
+  is deliberately not Keychain — and defaults to `.sandbox`. `PlaidServiceLive`
+  reads `environmentStore.current` at the top of every Link/token call
+  (`createLinkToken()`, `exchangePublicToken(_:)`), not once at init, so
+  flipping the in-app toggle takes effect on the next call with no rebuild
+  or relaunch. The toggle lives in the same `#if DEBUG` `PlaidDebugLinkView`
+  standing in for Settings (below): a segmented Sandbox/Production picker
+  whose binding intercepts any attempt to select Production and routes it
+  through a confirmation dialog ("This will use real bank data...") before
+  applying — selecting Sandbox applies immediately, given the asymmetric
+  real-money risk. Settings (adq.7) will host the real control; this is
+  temporary scaffolding like the rest of `PlaidDebugLinkView`.
 
   OAuth-institution redirects are handled by LinkKit itself
   (`ASWebAuthenticationSession` under the hood) once the app has the
@@ -411,19 +429,25 @@ appears anywhere in the app. It owns two responsibilities:
 - **Plaid setup**: `Config/Plaid.xcconfig` is committed with safe empty
   placeholder defaults, so `xcodegen generate` and a plain build work on a
   fresh clone with no setup at all (Plaid calls just fail until configured).
-  To develop against real Plaid Sandbox credentials, copy
+  To develop against real Plaid credentials, copy
   `Config/Plaid.local.xcconfig.example` to `Config/Plaid.local.xcconfig`
-  (gitignored — never commit real credentials) and fill in `PLAID_CLIENT_ID`
-  and `PLAID_SANDBOX_SECRET` (from the [Plaid dashboard](https://dashboard.plaid.com/team-settings/keys)).
-  `Config/Plaid.xcconfig` `#include?`s this file, so its values override the
-  placeholder defaults when present. These are embedded into the built app's Info.plist and readable from the
-  `.app` bundle — acceptable only under this app's accepted risk posture for
-  in-app API keys (personal, sideloaded, single-user, not distributed).
-  Sandbox only for now (adq.6.1); Sandbox/Production switching is a separate
-  story (adq.6.2). The Plaid `access_token` itself is stored in Keychain,
-  never `UserDefaults` or committed to the repo — see "Plaid Link + Keychain
-  token storage" under Architecture above. OAuth-institution support also
-  requires: the Associated Domains entitlement (already configured in
+  (gitignored — never commit real credentials) and fill in `PLAID_CLIENT_ID`,
+  `PLAID_SANDBOX_SECRET`, and `PLAID_PRODUCTION_SECRET` (from the
+  [Plaid dashboard](https://dashboard.plaid.com/team-settings/keys) —
+  `client_id` is shared across environments; each environment has its own
+  secret). `Config/Plaid.xcconfig` `#include?`s this file, so its values
+  override the placeholder defaults when present. `PLAID_PRODUCTION_SECRET`
+  only needs a real value once you're ready to link a real account — the app
+  defaults to Sandbox and only calls Production once you flip the in-app
+  Sandbox/Production toggle (see "Sandbox/Production environment switching"
+  under Architecture above), which is gated by a confirmation step. These
+  are embedded into the built app's Info.plist and readable from the `.app`
+  bundle — acceptable only under this app's accepted risk posture for
+  in-app API keys (personal, sideloaded, single-user, not distributed). The
+  Plaid `access_token` itself is stored in Keychain, never `UserDefaults` or
+  committed to the repo — see "Plaid Link + Keychain token storage" under
+  Architecture above. OAuth-institution support also requires: the
+  Associated Domains entitlement (already configured in
   `project.yml`, no per-developer setup), the `johnpease.github.io`
   GitHub Pages repo hosting `apple-app-site-association` staying live, and
   `https://johnpease.github.io/oauth` registered as an allowed redirect URI
@@ -456,10 +480,13 @@ appears anywhere in the app. It owns two responsibilities:
   "Transactions tab" under Architecture above.
 - **Plaid Link + Keychain token storage** (adq.6.1, foundation only): behind
   a `#if DEBUG` entry point standing in for Settings (see Architecture
-  above) — links a Sandbox institution (including OAuth institutions) via
-  LinkKit, exchanges the resulting token directly from the device, and
-  stores it in Keychain. Transaction import itself is not built yet
-  (adq.6.3).
+  above) — links an institution (including OAuth institutions) via LinkKit,
+  exchanges the resulting token directly from the device, and stores it in
+  Keychain. Transaction import itself is not built yet (adq.6.3).
+- **Sandbox/Production environment switching** (adq.6.2): an in-app toggle
+  (currently on the same `#if DEBUG` entry point above) switches which
+  Plaid credential set/API host `PlaidServiceLive` uses, with no rebuild —
+  see "Sandbox/Production environment switching" under Architecture above.
 - 🚧 Everything else is still in progress. Current state beyond Today,
   Goals, and Transactions: the placeholder Settings tab (linked accounts,
   starting balances, goal management) and Plaid transaction import.
@@ -482,13 +509,20 @@ appears anywhere in the app. It owns two responsibilities:
     -resultBundlePath TestResults.xcresult
   xcrun xccov view --report TestResults.xcresult
   ```
-  `Services/Plaid/`'s pure logic is held to the same bar: `KeychainService`
-  and `PlaidErrorClassifier` are both directly unit tested (no LinkKit/network
-  dependency needed). `PlaidServiceLive`'s LinkKit session creation and its
-  direct-to-Plaid REST calls are integration-level boundaries and
-  intentionally excluded from the coverage bar (consistent with how
-  `PlaidService` is designed to isolate them) — its pure mapping logic
-  (`errorType(for:)`, `handleLinkExit`'s cancel-vs-error branching) is still
-  unit tested. Driving an actual Sandbox Link session (including the
-  OAuth-institution redirect and Sandbox's error-simulation institutions) is
-  manual verification, noted in the relevant PR rather than automated.
+  `Services/Plaid/`'s pure logic is held to the same bar: `KeychainService`,
+  `PlaidErrorClassifier`, and `PlaidEnvironment`/`PlaidEnvironmentStore` are
+  all directly unit tested (no LinkKit/network dependency needed).
+  `PlaidServiceLive`'s LinkKit session creation and its direct-to-Plaid REST
+  calls are integration-level boundaries and intentionally excluded from the
+  coverage bar (consistent with how `PlaidService` is designed to isolate
+  them) — its pure mapping logic (`errorType(for:)`, `handleLinkExit`'s
+  cancel-vs-error branching) is still unit tested, as is the environment-
+  resolution behavior added in adq.6.2: `PlaidEnvironmentTests` stubs
+  `PlaidEnvironmentStoring` and intercepts outgoing requests via a test
+  `URLProtocol` to assert `PlaidServiceLive` dials the Sandbox vs. Production
+  host matching the current flag, re-read on every call (flipping the flag
+  between two calls on the same instance changes the second call's host with
+  no new instance required). Driving an actual Sandbox Link session
+  (including the OAuth-institution redirect and Sandbox's error-simulation
+  institutions) is manual verification, noted in the relevant PR rather than
+  automated.

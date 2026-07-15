@@ -36,6 +36,7 @@ targets:
           - UIInterfaceOrientationPortrait
         PlaidClientID: "$(PLAID_CLIENT_ID)"
         PlaidSandboxSecret: "$(PLAID_SANDBOX_SECRET)"
+        PlaidProductionSecret: "$(PLAID_PRODUCTION_SECRET)"
         LSApplicationQueriesSchemes:
           - "plaidlink"
     entitlements:

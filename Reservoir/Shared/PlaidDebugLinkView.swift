@@ -2,18 +2,68 @@
 import SwiftUI
 
 /// Temporary, debug-only entry point for exercising the Plaid Link +
-/// Keychain flow built in reservoir-adq.6.1. Settings (reservoir-adq.7) owns
-/// the real "Link a bank account" entry point in the shipped app — this view
-/// exists only so the flow can be driven and verified end to end before that
-/// story exists, and should be removed once adq.7 ships (see reservoir-
-/// adq.6.1's UX section, "Entry point").
+/// Keychain flow built in reservoir-adq.6.1, plus the Sandbox/Production
+/// environment toggle built in reservoir-adq.6.2. Settings (reservoir-adq.7)
+/// owns the real "Link a bank account" entry point and Sandbox/Production
+/// toggle in the shipped app — this view exists only so both flows can be
+/// driven and verified end to end before that story exists, and should be
+/// removed once adq.7 ships (see reservoir-adq.6.1's UX section, "Entry
+/// point").
 struct PlaidDebugLinkView: View {
-    @State private var service = PlaidServiceLive(urlSession: UITestScenario.plaidURLSession)
+    @State private var service: PlaidServiceLive
     @State private var verifiedTokenMessage: String?
+    private let environmentStore: PlaidEnvironmentStoring
+    @State private var environment: PlaidEnvironment
+    @State private var pendingEnvironment: PlaidEnvironment?
+
+    /// A single shared `PlaidEnvironmentStore` instance backs `environmentStore`,
+    /// `environment`'s initial value, and `service`'s own environment
+    /// resolution — previously each was seeded from its own separate
+    /// `PlaidEnvironmentStore()` instance. Those coincidentally agreed on
+    /// *reads* (same `UserDefaults` key underneath), but `PlaidServiceLive`'s
+    /// linked-item/Keychain invalidation hook (see `PlaidEnvironmentStore.onChange`)
+    /// lives on the specific instance passed to its initializer — with separate
+    /// instances, this view calling `.set(_:)` on its own copy would never
+    /// have fired that hook on `service`'s copy. One shared instance closes
+    /// both gaps (PR #12 review finding).
+    init() {
+        let store = PlaidEnvironmentStore()
+        self.environmentStore = store
+        self._environment = State(initialValue: store.current)
+        self._service = State(initialValue: PlaidServiceLive(
+            urlSession: UITestScenario.plaidURLSession,
+            environmentStore: store
+        ))
+    }
 
     var body: some View {
         NavigationStack {
             Form {
+                Section("Environment") {
+                    Picker("Plaid environment", selection: environmentSelection) {
+                        ForEach(PlaidEnvironment.allCases, id: \.self) { candidate in
+                            Text(candidate.displayName).tag(candidate)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("plaidDebug.environmentPicker")
+
+                    Text(environment == .production
+                         ? "Using Production credentials — real bank data."
+                         : "Using Sandbox credentials — test data only.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .deleteConfirmation(
+                    pendingItem: $pendingEnvironment,
+                    title: { _ in "Switch to Production?" },
+                    message: { _ in "This will use real bank data. Only continue if you intend to link a real account." },
+                    actionTitle: { candidate in "Switch to \(candidate.displayName)" },
+                    actionAccessibilityIdentifier: "plaidDebug.confirmProductionSwitch",
+                    cancelAccessibilityIdentifier: "plaidDebug.cancelProductionSwitch",
+                    onDelete: applyEnvironment
+                )
+
                 Section("Plaid Link (debug)") {
                     if let linkedItem = service.linkedItem {
                         LabeledContent("Linked institution", value: linkedItem.institutionName)
@@ -65,6 +115,29 @@ struct PlaidDebugLinkView: View {
             .navigationTitle("Plaid (Debug)")
             .plaidLinkPresentation(service: service)
         }
+    }
+
+    /// Switching *to* Production requires the confirmation dialog above
+    /// (real-money blast radius); switching back to Sandbox is immediate.
+    /// The `Picker`'s selection binding intercepts the attempted change
+    /// rather than applying it directly so Production can be gated.
+    private var environmentSelection: Binding<PlaidEnvironment> {
+        Binding(
+            get: { environment },
+            set: { newValue in
+                if newValue == .production {
+                    pendingEnvironment = newValue
+                } else {
+                    applyEnvironment(newValue)
+                }
+            }
+        )
+    }
+
+    private func applyEnvironment(_ newValue: PlaidEnvironment) {
+        environmentStore.set(newValue)
+        environment = newValue
+        pendingEnvironment = nil
     }
 
     /// Reads the stored token back out of Keychain directly — the manual

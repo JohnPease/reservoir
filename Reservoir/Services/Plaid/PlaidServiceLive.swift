@@ -2,17 +2,36 @@ import Foundation
 import Observation
 import LinkKit
 
-/// Reads Plaid Sandbox credentials embedded into the app's Info.plist at
-/// build time from `Config/Plaid.xcconfig` (gitignored, see README and
+/// Reads Plaid credentials embedded into the app's Info.plist at build time
+/// from `Config/Plaid.xcconfig` (gitignored, see README and
 /// `Config/Plaid.xcconfig.example`). Never committed — acceptable only
 /// under this app's accepted risk posture for in-app API keys (personal,
 /// sideloaded, single-user, not distributed; see PROJECT_SPEC.md).
+///
+/// `client_id` is a single value shared across Plaid's Sandbox and
+/// Production environments (Plaid's own account model, not this app's
+/// choice) — only the `secret` differs per environment, so there is one
+/// `clientID` and two secrets here rather than two full credential pairs.
 private enum PlaidCredentials {
     static var clientID: String {
         Bundle.main.object(forInfoDictionaryKey: "PlaidClientID") as? String ?? ""
     }
     static var sandboxSecret: String {
         Bundle.main.object(forInfoDictionaryKey: "PlaidSandboxSecret") as? String ?? ""
+    }
+    static var productionSecret: String {
+        Bundle.main.object(forInfoDictionaryKey: "PlaidProductionSecret") as? String ?? ""
+    }
+
+    /// The `secret` to use for a given `PlaidEnvironment`. Pure function
+    /// (no Bundle/Info.plist access) so reservoir-adq.6.2's acceptance
+    /// criteria — environment-resolution logic unit tested with the flag
+    /// set both ways — can be verified without a bundled Info.plist.
+    static func secret(for environment: PlaidEnvironment, sandboxSecret: String, productionSecret: String) -> String {
+        switch environment {
+        case .sandbox: sandboxSecret
+        case .production: productionSecret
+        }
     }
 }
 
@@ -27,12 +46,14 @@ enum PlaidOAuthRedirect {
 
 /// Live implementation of `PlaidService`: owns the LinkKit session lifecycle
 /// and calls Plaid's REST API directly from the device to create a link
-/// token and to exchange a `public_token` for an `access_token` — Sandbox
-/// only (reservoir-adq.6.1's scope; Sandbox/Production switching is
-/// reservoir-adq.6.2). This file, along with `PlaidLinkPresentationView`, is
-/// the only place `LinkKit` is imported (STANDARDS §4 / reservoir-adq.6.1's
-/// acceptance criteria) — `PlaidService`'s own protocol surface has no
-/// LinkKit types.
+/// token and to exchange a `public_token` for an `access_token`. The
+/// Sandbox/Production `PlaidEnvironment` is resolved from
+/// `environmentStore` on every call (reservoir-adq.6.2), not cached at
+/// init, so an in-app toggle takes effect on the next Link/import call
+/// with no rebuild or relaunch. This file, along with
+/// `PlaidLinkPresentationView`, is the only place `LinkKit` is imported
+/// (STANDARDS §4 / reservoir-adq.6.1's acceptance criteria) —
+/// `PlaidService`'s own protocol surface has no LinkKit types.
 @Observable
 @MainActor
 final class PlaidServiceLive: PlaidService {
@@ -61,18 +82,55 @@ final class PlaidServiceLive: PlaidService {
 
     private let keychain: KeychainServicing
     private let urlSession: URLSession
-    private let baseURL = URL(string: "https://sandbox.plaid.com")!
+    private let environmentStore: PlaidEnvironmentStoring
 
-    init(keychain: KeychainServicing = KeychainService(), urlSession: URLSession = .shared) {
+    /// The environment pinned for the Link flow currently in progress (set
+    /// by `startLink()`, cleared once that flow settles). `createLinkToken()`
+    /// and the matching `exchangePublicToken()` call in `handleLinkSuccess()`
+    /// both read this rather than `environmentStore.current` independently —
+    /// those two calls are separated by an async user interaction (the
+    /// LinkKit sheet), so without pinning, a mid-flow environment flip could
+    /// create the link token under one environment and exchange it against
+    /// the other's host. `environmentStore.current` is still re-read fresh
+    /// at the *start* of each new flow (`startLink()`), which is what gives
+    /// reservoir-adq.6.2's "toggle takes effect on the next call without
+    /// rebuild" — this only pins a flow already in progress, it doesn't
+    /// change how the flag is read when no flow is running.
+    private var pinnedEnvironment: PlaidEnvironment?
+    private var environment: PlaidEnvironment { pinnedEnvironment ?? environmentStore.current }
+    private var baseURL: URL { environment.baseURL }
+
+    init(
+        keychain: KeychainServicing = KeychainService(),
+        urlSession: URLSession = .shared,
+        environmentStore: PlaidEnvironmentStoring = PlaidEnvironmentStore()
+    ) {
         self.keychain = keychain
         self.urlSession = urlSession
+        self.environmentStore = environmentStore
         self.linkedItem = Self.loadPersistedLinkedItem()
+
+        let keychainForInvalidation = keychain
+        (environmentStore as? PlaidEnvironmentStore)?.onChange = { [weak self] _ in
+            Task { @MainActor in
+                self?.linkedItem = nil
+                Self.clearPersistedLinkedItem()
+                try? await keychainForInvalidation.delete(for: PlaidKeychainKey.accessToken)
+            }
+        }
     }
 
     func startLink() async {
         guard !isStartingLink else { return }
         isStartingLink = true
         defer { isStartingLink = false }
+
+        // Pin the environment for the duration of this Link flow — read
+        // fresh here (a new flow always picks up the latest toggle value,
+        // per reservoir-adq.6.2), then held steady through
+        // `handleLinkSuccess()`'s `exchangePublicToken()` call even if the
+        // toggle changes while LinkKit's sheet is up. See `pinnedEnvironment`.
+        pinnedEnvironment = environmentStore.current
 
         presentedError = nil
         do {
@@ -82,6 +140,8 @@ final class PlaidServiceLive: PlaidService {
             isPresentingLink = true
         } catch {
             presentedError = PlaidErrorClassifier.classify(.exchangeError(error))
+            // Flow ended before Link ever presented — nothing left to pin for.
+            pinnedEnvironment = nil
         }
     }
 
@@ -94,7 +154,12 @@ final class PlaidServiceLive: PlaidService {
         isPresentingLink = false
         linkSession = nil
         isExchangingToken = true
-        defer { isExchangingToken = false }
+        // This flow is settling one way or another below — release the pin
+        // so the *next* flow picks up whatever environment is current then.
+        defer {
+            isExchangingToken = false
+            pinnedEnvironment = nil
+        }
 
         let exchange: (accessToken: String, itemID: String)
         do {
@@ -127,6 +192,9 @@ final class PlaidServiceLive: PlaidService {
     func handleLinkExit(errorType: String?, errorCode: String?) {
         isPresentingLink = false
         linkSession = nil
+        // Link exited without ever reaching handleLinkSuccess — this flow is
+        // over, release the pin (see startLink()/pinnedEnvironment).
+        pinnedEnvironment = nil
         guard errorType != nil || errorCode != nil else {
             // Plain user cancel — silent, no error UI (UX spec).
             return
@@ -182,7 +250,7 @@ final class PlaidServiceLive: PlaidService {
         }
     }
 
-    // MARK: - Plaid REST calls (direct from device, Sandbox only)
+    // MARK: - Plaid REST calls (direct from device, environment-aware)
 
     private func createLinkToken() async throws -> String {
         struct RequestBody: Encodable {
@@ -201,7 +269,11 @@ final class PlaidServiceLive: PlaidService {
 
         let body = RequestBody(
             client_id: PlaidCredentials.clientID,
-            secret: PlaidCredentials.sandboxSecret,
+            secret: PlaidCredentials.secret(
+                for: environment,
+                sandboxSecret: PlaidCredentials.sandboxSecret,
+                productionSecret: PlaidCredentials.productionSecret
+            ),
             client_name: "Reservoir",
             user: .init(client_user_id: Self.clientUserID),
             products: ["transactions"],
@@ -226,7 +298,11 @@ final class PlaidServiceLive: PlaidService {
 
         let body = RequestBody(
             client_id: PlaidCredentials.clientID,
-            secret: PlaidCredentials.sandboxSecret,
+            secret: PlaidCredentials.secret(
+                for: environment,
+                sandboxSecret: PlaidCredentials.sandboxSecret,
+                productionSecret: PlaidCredentials.productionSecret
+            ),
             public_token: publicToken
         )
         let response: ResponseBody = try await post("/item/public_token/exchange", body: body)
@@ -279,6 +355,13 @@ final class PlaidServiceLive: PlaidService {
             "linkedAt": item.linkedAt.timeIntervalSince1970,
         ]
         UserDefaults.standard.set(dict, forKey: linkedItemDefaultsKey)
+    }
+
+    /// Clears the persisted linked-item metadata — used when the Plaid
+    /// environment changes, since a linked item is only ever valid for the
+    /// environment it was linked under (see `onChange` wiring in `init`).
+    private static func clearPersistedLinkedItem() {
+        UserDefaults.standard.removeObject(forKey: linkedItemDefaultsKey)
     }
 
     private static func loadPersistedLinkedItem() -> LinkedItem? {
