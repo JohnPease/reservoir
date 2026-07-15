@@ -84,10 +84,20 @@ final class PlaidServiceLive: PlaidService {
     private let urlSession: URLSession
     private let environmentStore: PlaidEnvironmentStoring
 
-    /// Read at call time, not cached at init — reservoir-adq.6.2 requires a
-    /// mid-session environment flip to take effect on the *next* Link/import
-    /// call without a relaunch.
-    private var environment: PlaidEnvironment { environmentStore.current }
+    /// The environment pinned for the Link flow currently in progress (set
+    /// by `startLink()`, cleared once that flow settles). `createLinkToken()`
+    /// and the matching `exchangePublicToken()` call in `handleLinkSuccess()`
+    /// both read this rather than `environmentStore.current` independently —
+    /// those two calls are separated by an async user interaction (the
+    /// LinkKit sheet), so without pinning, a mid-flow environment flip could
+    /// create the link token under one environment and exchange it against
+    /// the other's host. `environmentStore.current` is still re-read fresh
+    /// at the *start* of each new flow (`startLink()`), which is what gives
+    /// reservoir-adq.6.2's "toggle takes effect on the next call without
+    /// rebuild" — this only pins a flow already in progress, it doesn't
+    /// change how the flag is read when no flow is running.
+    private var pinnedEnvironment: PlaidEnvironment?
+    private var environment: PlaidEnvironment { pinnedEnvironment ?? environmentStore.current }
     private var baseURL: URL { environment.baseURL }
 
     init(
@@ -115,6 +125,13 @@ final class PlaidServiceLive: PlaidService {
         isStartingLink = true
         defer { isStartingLink = false }
 
+        // Pin the environment for the duration of this Link flow — read
+        // fresh here (a new flow always picks up the latest toggle value,
+        // per reservoir-adq.6.2), then held steady through
+        // `handleLinkSuccess()`'s `exchangePublicToken()` call even if the
+        // toggle changes while LinkKit's sheet is up. See `pinnedEnvironment`.
+        pinnedEnvironment = environmentStore.current
+
         presentedError = nil
         do {
             let token = try await createLinkToken()
@@ -123,6 +140,8 @@ final class PlaidServiceLive: PlaidService {
             isPresentingLink = true
         } catch {
             presentedError = PlaidErrorClassifier.classify(.exchangeError(error))
+            // Flow ended before Link ever presented — nothing left to pin for.
+            pinnedEnvironment = nil
         }
     }
 
@@ -135,7 +154,12 @@ final class PlaidServiceLive: PlaidService {
         isPresentingLink = false
         linkSession = nil
         isExchangingToken = true
-        defer { isExchangingToken = false }
+        // This flow is settling one way or another below — release the pin
+        // so the *next* flow picks up whatever environment is current then.
+        defer {
+            isExchangingToken = false
+            pinnedEnvironment = nil
+        }
 
         let exchange: (accessToken: String, itemID: String)
         do {
@@ -168,6 +192,9 @@ final class PlaidServiceLive: PlaidService {
     func handleLinkExit(errorType: String?, errorCode: String?) {
         isPresentingLink = false
         linkSession = nil
+        // Link exited without ever reaching handleLinkSuccess — this flow is
+        // over, release the pin (see startLink()/pinnedEnvironment).
+        pinnedEnvironment = nil
         guard errorType != nil || errorCode != nil else {
             // Plain user cancel — silent, no error UI (UX spec).
             return

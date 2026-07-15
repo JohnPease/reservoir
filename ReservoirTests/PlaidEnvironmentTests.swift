@@ -94,6 +94,44 @@ final class PlaidEnvironmentTests: XCTestCase {
         return URLSession(configuration: configuration)
     }
 
+    /// Like `CapturingURLProtocol`, but answers `/link/token/create` with a
+    /// successful (fake) `link_token` instead of failing every request —
+    /// needed for the pinning test below, which requires `startLink()` to
+    /// actually reach `isPresentingLink = true` (i.e. not hit its `catch`,
+    /// which intentionally releases the pin once a flow has ended) so the
+    /// pin survives into the later `handleLinkSuccess()` call.
+    private final class CapturingSuccessfulLinkTokenURLProtocol: URLProtocol {
+        nonisolated(unsafe) static var capturedHost: String?
+
+        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+        override func startLoading() {
+            Self.capturedHost = request.url?.host
+            let isTokenCreate = request.url?.path.contains("link/token/create") ?? false
+            let body = isTokenCreate
+                ? Data(#"{"link_token":"link-sandbox-test"}"#.utf8)
+                : Data(#"{}"#.utf8)
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: isTokenCreate ? 200 : 400,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: body)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+
+        override func stopLoading() {}
+    }
+
+    private func makeCapturingSuccessfulLinkTokenURLSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CapturingSuccessfulLinkTokenURLProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+
     @MainActor
     func test_startLink_withSandboxEnvironment_dialsSandboxHost() async {
         CapturingURLProtocol.capturedHost = nil
@@ -207,5 +245,52 @@ final class PlaidEnvironmentTests: XCTestCase {
 
         XCTAssertNotNil(sut.linkedItem)
         XCTAssertTrue(keychain.deletedKeys.isEmpty)
+    }
+
+    // MARK: - Environment pinned across a single Link flow
+
+    /// `startLink()` (token creation) and `handleLinkSuccess()` (token
+    /// exchange) are separated by an async user interaction — the LinkKit
+    /// sheet — during which the Sandbox/Production toggle could change.
+    /// Without pinning, `exchangePublicToken()` would independently re-read
+    /// `environmentStore.current` and could dial a different host than the
+    /// one the link token was actually created against. This proves a flow
+    /// started under one environment stays pinned to it even if the store's
+    /// value changes before the flow's second call completes — the fix for
+    /// the PR #12 review finding at `PlaidServiceLive.swift:90`.
+    @MainActor
+    func test_linkFlow_staysPinnedToStartingEnvironment_evenIfStoreChangesMidFlow() async {
+        CapturingSuccessfulLinkTokenURLProtocol.capturedHost = nil
+        let store = StubEnvironmentStore(.sandbox)
+        let sut = PlaidServiceLive(
+            keychain: StubKeychain(),
+            urlSession: makeCapturingSuccessfulLinkTokenURLSession(),
+            environmentStore: store
+        )
+
+        await sut.startLink()
+        XCTAssertEqual(
+            CapturingSuccessfulLinkTokenURLProtocol.capturedHost, "sandbox.plaid.com",
+            "token creation dialed sandbox"
+        )
+        XCTAssertTrue(sut.isPresentingLink, "sanity check: the flow must actually be in progress for a pin to matter")
+
+        // Flip the toggle while LinkKit's sheet would still be up — this
+        // must not affect the in-flight flow's exchange call below.
+        store.set(.production)
+
+        CapturingSuccessfulLinkTokenURLProtocol.capturedHost = nil
+        await sut.handleLinkSuccess(publicToken: "public-good", institutionName: "Test Bank")
+        XCTAssertEqual(
+            CapturingSuccessfulLinkTokenURLProtocol.capturedHost, "sandbox.plaid.com",
+            "exchange must stay pinned to the environment the flow started under, not the store's live value"
+        )
+
+        // The *next* flow, started fresh after this one settled, picks up
+        // the now-current Production value — reservoir-adq.6.2's "takes
+        // effect on the next call" acceptance criterion still holds.
+        CapturingSuccessfulLinkTokenURLProtocol.capturedHost = nil
+        await sut.startLink()
+        XCTAssertEqual(CapturingSuccessfulLinkTokenURLProtocol.capturedHost, "production.plaid.com")
     }
 }
