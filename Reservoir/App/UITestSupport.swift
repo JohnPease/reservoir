@@ -127,6 +127,24 @@ enum UITestScenario: String {
         semaphore.wait()
     }
 
+    /// Resets the persisted Plaid Sandbox/Production toggle to its default
+    /// (Sandbox) before the app finishes launching, when
+    /// `UITEST_RESET_PLAID_ENVIRONMENT=1` is set — mirrors
+    /// `resetPlaidKeychainIfRequested()` above for the equivalent problem on
+    /// the `plaid.environment` `UserDefaults` key (see `PlaidEnvironmentStore`).
+    /// Without this, `testConfirmingProductionSwitchesEnvironment` writes
+    /// real `UserDefaults.standard` state with no reset mechanism: a mid-test
+    /// failure (or any run that doesn't reach its own "switch back to
+    /// Sandbox" step) leaves "Production" stuck, breaking
+    /// `testEnvironmentPickerDefaultsToSandbox` on a later run (PR #12 review
+    /// finding). No async Keychain work is needed here, so — unlike the
+    /// Keychain reset above — this can just remove the UserDefaults key
+    /// directly, synchronously.
+    static func resetPlaidEnvironmentIfRequested() {
+        guard ProcessInfo.processInfo.environment["UITEST_RESET_PLAID_ENVIRONMENT"] == "1" else { return }
+        UserDefaults.standard.removeObject(forKey: "plaid.environment")
+    }
+
     /// Seeds `context` with this scenario's fixtures and saves.
     func seed(into context: ModelContext) {
         switch self {

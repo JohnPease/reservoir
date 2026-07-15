@@ -26,13 +26,20 @@ import XCTest
 /// non-2xx handling, `PlaidErrorClassifier`, UI update) still runs, just
 /// without depending on Plaid's actual API or local credentials.
 final class PlaidDebugLinkUITests: XCTestCase {
-    private func launchedApp(forcePlaidError: Bool = false, resetPlaidKeychain: Bool = false) -> XCUIApplication {
+    private func launchedApp(
+        forcePlaidError: Bool = false,
+        resetPlaidKeychain: Bool = false,
+        resetPlaidEnvironment: Bool = false
+    ) -> XCUIApplication {
         let app = XCUIApplication()
         if forcePlaidError {
             app.launchEnvironment["UITEST_FORCE_PLAID_ERROR"] = "1"
         }
         if resetPlaidKeychain {
             app.launchEnvironment["UITEST_RESET_PLAID_KEYCHAIN"] = "1"
+        }
+        if resetPlaidEnvironment {
+            app.launchEnvironment["UITEST_RESET_PLAID_ENVIRONMENT"] = "1"
         }
         app.launch()
         return app
@@ -86,7 +93,10 @@ final class PlaidDebugLinkUITests: XCTestCase {
     // MARK: - reservoir-adq.6.2: Sandbox/Production environment toggle
 
     func testEnvironmentPickerDefaultsToSandbox() {
-        let app = launchedApp()
+        // UITEST_RESET_PLAID_ENVIRONMENT guarantees this test isn't reading
+        // "Production" left stuck by a prior run's mid-test failure — see
+        // UITestScenario.resetPlaidEnvironmentIfRequested.
+        let app = launchedApp(resetPlaidEnvironment: true)
         app.tabBars.buttons["Settings"].tap()
 
         let picker = app.segmentedControls["plaidDebug.environmentPicker"]
@@ -96,7 +106,7 @@ final class PlaidDebugLinkUITests: XCTestCase {
     }
 
     func testSelectingProductionRequiresConfirmation_cancelLeavesSandboxActive() {
-        let app = launchedApp()
+        let app = launchedApp(resetPlaidEnvironment: true)
         app.tabBars.buttons["Settings"].tap()
 
         let picker = app.segmentedControls["plaidDebug.environmentPicker"]
@@ -115,7 +125,11 @@ final class PlaidDebugLinkUITests: XCTestCase {
     }
 
     func testConfirmingProductionSwitchesEnvironment() {
-        let app = launchedApp()
+        // Starts from a clean Sandbox state regardless of what a prior run
+        // left behind — this test itself switches back to Sandbox at the
+        // end, but a mid-test failure before that step would otherwise leave
+        // "Production" stuck for the next run (PR #12 review finding).
+        let app = launchedApp(resetPlaidEnvironment: true)
         app.tabBars.buttons["Settings"].tap()
 
         let picker = app.segmentedControls["plaidDebug.environmentPicker"]
