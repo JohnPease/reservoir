@@ -99,6 +99,15 @@ final class PlaidServiceLive: PlaidService {
         self.urlSession = urlSession
         self.environmentStore = environmentStore
         self.linkedItem = Self.loadPersistedLinkedItem()
+
+        let keychainForInvalidation = keychain
+        (environmentStore as? PlaidEnvironmentStore)?.onChange = { [weak self] _ in
+            Task { @MainActor in
+                self?.linkedItem = nil
+                Self.clearPersistedLinkedItem()
+                try? await keychainForInvalidation.delete(for: PlaidKeychainKey.accessToken)
+            }
+        }
     }
 
     func startLink() async {
@@ -319,6 +328,13 @@ final class PlaidServiceLive: PlaidService {
             "linkedAt": item.linkedAt.timeIntervalSince1970,
         ]
         UserDefaults.standard.set(dict, forKey: linkedItemDefaultsKey)
+    }
+
+    /// Clears the persisted linked-item metadata — used when the Plaid
+    /// environment changes, since a linked item is only ever valid for the
+    /// environment it was linked under (see `onChange` wiring in `init`).
+    private static func clearPersistedLinkedItem() {
+        UserDefaults.standard.removeObject(forKey: linkedItemDefaultsKey)
     }
 
     private static func loadPersistedLinkedItem() -> LinkedItem? {

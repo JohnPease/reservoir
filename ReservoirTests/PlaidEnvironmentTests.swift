@@ -137,4 +137,75 @@ final class PlaidEnvironmentTests: XCTestCase {
         await sut.startLink()
         XCTAssertEqual(CapturingURLProtocol.capturedHost, "production.plaid.com")
     }
+
+    // MARK: - Environment change invalidates the linked item / Keychain token
+
+    /// Records `delete(for:)` calls so tests can assert the Keychain token
+    /// was actually invalidated, not just that `linkedItem` went nil.
+    private final class RecordingKeychain: KeychainServicing, @unchecked Sendable {
+        private(set) var deletedKeys: [String] = []
+        func save(_ value: String, for key: String) async throws {}
+        func read(for key: String) async throws -> String? { nil }
+        func delete(for key: String) async throws { deletedKeys.append(key) }
+    }
+
+    private static let linkedItemDefaultsKey = "plaid.linkedItem"
+
+    /// A real `PlaidEnvironmentStore` is required here (not `StubEnvironmentStore`)
+    /// since the invalidation hook lives on `PlaidEnvironmentStore.onChange`,
+    /// which `PlaidServiceLive.init` wires up — an isolated `UserDefaults`
+    /// suite keeps this from touching `.standard`.
+    private func makeIsolatedStore() -> PlaidEnvironmentStore {
+        let suiteName = "PlaidEnvironmentTests.invalidation.\(UUID().uuidString)"
+        addTeardownBlock { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
+        return PlaidEnvironmentStore(defaults: UserDefaults(suiteName: suiteName)!)
+    }
+
+    @MainActor
+    func test_realEnvironmentChange_clearsLinkedItemAndDeletesKeychainToken() async {
+        UserDefaults.standard.set(
+            ["itemID": "item-old", "institutionName": "Old Bank", "linkedAt": Date().timeIntervalSince1970],
+            forKey: Self.linkedItemDefaultsKey
+        )
+        addTeardownBlock { UserDefaults.standard.removeObject(forKey: Self.linkedItemDefaultsKey) }
+
+        let store = makeIsolatedStore()
+        let keychain = RecordingKeychain()
+        let sut = PlaidServiceLive(keychain: keychain, urlSession: .shared, environmentStore: store)
+
+        XCTAssertNotNil(sut.linkedItem, "sanity check: the pre-seeded linked item should have loaded at init")
+
+        store.set(.production)
+
+        // The Keychain delete is dispatched onto a `Task { @MainActor in }`
+        // from a non-isolated closure — yield until it's had a chance to run.
+        for _ in 0..<50 where keychain.deletedKeys.isEmpty {
+            await Task.yield()
+        }
+
+        XCTAssertNil(sut.linkedItem)
+        XCTAssertNil(UserDefaults.standard.dictionary(forKey: Self.linkedItemDefaultsKey))
+        XCTAssertEqual(keychain.deletedKeys, [PlaidKeychainKey.accessToken])
+    }
+
+    @MainActor
+    func test_settingSameEnvironment_doesNotClearLinkedItem() async {
+        UserDefaults.standard.set(
+            ["itemID": "item-keep", "institutionName": "Keep Bank", "linkedAt": Date().timeIntervalSince1970],
+            forKey: Self.linkedItemDefaultsKey
+        )
+        addTeardownBlock { UserDefaults.standard.removeObject(forKey: Self.linkedItemDefaultsKey) }
+
+        let store = makeIsolatedStore()
+        let keychain = RecordingKeychain()
+        let sut = PlaidServiceLive(keychain: keychain, urlSession: .shared, environmentStore: store)
+
+        // Default/no-op set to the environment already in effect (sandbox) —
+        // must not be treated as a real change.
+        store.set(.sandbox)
+        await Task.yield()
+
+        XCTAssertNotNil(sut.linkedItem)
+        XCTAssertTrue(keychain.deletedKeys.isEmpty)
+    }
 }
