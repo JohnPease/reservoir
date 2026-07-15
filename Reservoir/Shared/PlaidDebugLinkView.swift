@@ -15,7 +15,6 @@ struct PlaidDebugLinkView: View {
     private let environmentStore: PlaidEnvironmentStoring
     @State private var environment: PlaidEnvironment
     @State private var pendingEnvironment: PlaidEnvironment?
-    @State private var showingProductionConfirmation = false
 
     /// A single shared `PlaidEnvironmentStore` instance backs `environmentStore`,
     /// `environment`'s initial value, and `service`'s own environment
@@ -55,23 +54,15 @@ struct PlaidDebugLinkView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-                .confirmationDialog(
-                    "Switch to Production?",
-                    isPresented: $showingProductionConfirmation,
-                    titleVisibility: .visible,
-                    presenting: pendingEnvironment
-                ) { candidate in
-                    Button("Switch to \(candidate.displayName)", role: .destructive) {
-                        applyEnvironment(candidate)
-                    }
-                    .accessibilityIdentifier("plaidDebug.confirmProductionSwitch")
-                    Button("Cancel", role: .cancel) {
-                        pendingEnvironment = nil
-                    }
-                    .accessibilityIdentifier("plaidDebug.cancelProductionSwitch")
-                } message: { _ in
-                    Text("This will use real bank data. Only continue if you intend to link a real account.")
-                }
+                .deleteConfirmation(
+                    pendingItem: $pendingEnvironment,
+                    title: { _ in "Switch to Production?" },
+                    message: { _ in "This will use real bank data. Only continue if you intend to link a real account." },
+                    actionTitle: { candidate in "Switch to \(candidate.displayName)" },
+                    actionAccessibilityIdentifier: "plaidDebug.confirmProductionSwitch",
+                    cancelAccessibilityIdentifier: "plaidDebug.cancelProductionSwitch",
+                    onDelete: applyEnvironment
+                )
 
                 Section("Plaid Link (debug)") {
                     if let linkedItem = service.linkedItem {
@@ -136,7 +127,6 @@ struct PlaidDebugLinkView: View {
             set: { newValue in
                 if newValue == .production {
                     pendingEnvironment = newValue
-                    showingProductionConfirmation = true
                 } else {
                     applyEnvironment(newValue)
                 }
