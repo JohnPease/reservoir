@@ -38,6 +38,14 @@ In Xcode, select the `Reservoir` scheme and an iOS Simulator (e.g. iPhone
 or add/remove source files — the `.xcodeproj` is a build artifact, not
 tracked in git, so it can go stale otherwise.
 
+**Local config (Plaid)**: the app builds and runs out of the box with no
+setup — `Config/Plaid.xcconfig` is committed with safe empty placeholder
+defaults, so Plaid calls simply fail until configured. To actually exercise
+the Plaid Link flow, copy `Config/Plaid.local.xcconfig.example` to
+`Config/Plaid.local.xcconfig` (gitignored — never commit real credentials)
+and fill in your own Plaid dashboard keys — see "Plaid setup" under
+Technical details below for the full walkthrough.
+
 **Command line**, as an alternative to the Xcode GUI:
 
 ```
