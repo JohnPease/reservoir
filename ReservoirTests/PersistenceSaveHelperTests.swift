@@ -20,7 +20,7 @@ final class PersistenceSaveHelperTests: XCTestCase {
     private let logger = Logger(subsystem: "com.reservoir.tests", category: "PersistenceSaveHelperTests")
 
     override func setUpWithError() throws {
-        let schema = Schema(versionedSchema: SchemaV3.self)
+        let schema = Schema(versionedSchema: SchemaV4.self)
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         container = try ModelContainer(for: schema, migrationPlan: ReservoirMigrationPlan.self, configurations: [configuration])
         context = ModelContext(container)
@@ -84,7 +84,7 @@ final class PersistenceSaveHelperTests: XCTestCase {
     /// giving deterministic coverage of `PersistenceSaveHelper`'s `catch` branch without
     /// mocking anything or tearing down a container mid-call.
     private func makeReadOnlyContext() throws -> ModelContext {
-        let schema = Schema(versionedSchema: SchemaV3.self)
+        let schema = Schema(versionedSchema: SchemaV4.self)
         let storeURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("PersistenceSaveHelperTests-\(UUID().uuidString)")
             .appendingPathExtension("store")
@@ -170,7 +170,7 @@ final class PersistenceSaveHelperTests: XCTestCase {
     /// `rollback()` — against a genuinely failing `save()` (read-only store), matching
     /// this file's existing read-only-container pattern.
     func testSaveOrRollbackRestoresTransactionGoalLinkAfterFailedDelete() throws {
-        let schema = Schema(versionedSchema: SchemaV3.self)
+        let schema = Schema(versionedSchema: SchemaV4.self)
         let storeURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("PersistenceSaveHelperTests-deleteRollback-\(UUID().uuidString)")
             .appendingPathExtension("store")

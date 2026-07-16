@@ -48,6 +48,12 @@ enum UITestScenario: String {
     /// retroactive-retag AC and the `isManualOverride` protection check together.
     case merchantRulesRetag
 
+    /// One manual `SpendTransaction` ("Coffee Shop", $12.50, dated `todayForImportTests`)
+    /// that exactly matches the scripted Plaid transaction
+    /// `PlaidImportMergePromptURLProtocol` returns from `/transactions/sync` — backs
+    /// `TransactionImportUITests` (adq.6.3's mandated merge-prompt end-to-end coverage).
+    case transactionImportMergePrompt
+
     static var current: UITestScenario? {
         ProcessInfo.processInfo.environment["UITEST_SCENARIO"].flatMap(UITestScenario.init(rawValue:))
     }
@@ -85,18 +91,132 @@ enum UITestScenario: String {
         override func stopLoading() {}
     }
 
-    /// The `URLSession` `PlaidDebugLinkView` should hand to `PlaidServiceLive`.
-    /// Under normal (non-UI-test) launches this is just `.shared`. Launched
-    /// under XCUITest with `UITEST_FORCE_PLAID_ERROR=1` set, every Plaid REST
-    /// call is intercepted and deterministically failed — see
-    /// `PlaidForcedFailureURLProtocol`.
-    static var plaidURLSession: URLSession {
-        guard ProcessInfo.processInfo.environment["UITEST_FORCE_PLAID_ERROR"] == "1" else {
-            return .shared
+    /// Fixture constants shared between `.transactionImportMergePrompt`'s seeded manual
+    /// `SpendTransaction` (see `seed(into:)` below) and
+    /// `PlaidImportMergePromptURLProtocol`'s scripted `/transactions/sync` response —
+    /// both need to agree exactly (amount, merchant, calendar day) for
+    /// `TransactionDedupMatcher.findMatch` to actually fire during
+    /// `TransactionImportUITests`.
+    static let transactionImportMergePromptMerchantName = "Coffee Shop"
+    static let transactionImportMergePromptAmount: Decimal = 12.50
+    static let transactionImportMergePromptPlaidTransactionID = "uitest-plaid-merge-1"
+
+    /// `yyyy-MM-dd` (UTC), matching `PlaidTransactionMapper`'s expected wire format —
+    /// used both to build the scripted `/transactions/sync` response's `date` field and
+    /// to parse the exact same `Date` back for the seeded manual transaction, so the two
+    /// land on the same calendar day regardless of the device's local time zone.
+    private static var todayDateString: String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .iso8601)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: .now)
+    }
+
+    /// `todayDateString`, parsed back to a `Date` — see that property's doc comment.
+    static var todayForImportTests: Date {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .iso8601)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.date(from: todayDateString)!
+    }
+
+    /// A stubbed `URLProtocol` answering `/transactions/sync` with one scripted `added`
+    /// transaction that exactly matches `.transactionImportMergePrompt`'s seeded manual
+    /// entry — backs `TransactionImportUITests`, letting it drive the real import
+    /// pipeline (`TransactionImportService.runImport()`, `TransactionDedupMatcher`, the
+    /// merge prompt) end to end without depending on Plaid's actual Sandbox API or local
+    /// credentials, same reasoning as `PlaidForcedFailureURLProtocol` above.
+    private final class PlaidImportMergePromptURLProtocol: URLProtocol {
+        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+        override func startLoading() {
+            let isSync = request.url?.path.contains("transactions/sync") ?? false
+            let body: Data
+            if isSync {
+                let json = """
+                {"added": [{"transaction_id": "\(UITestScenario.transactionImportMergePromptPlaidTransactionID)", \
+                "amount": \(UITestScenario.transactionImportMergePromptAmount), \
+                "date": "\(UITestScenario.todayDateString)", \
+                "merchant_name": "\(UITestScenario.transactionImportMergePromptMerchantName)", \
+                "name": "\(UITestScenario.transactionImportMergePromptMerchantName)"}], \
+                "modified": [], "removed": [], "next_cursor": "uitest-cursor-1", "has_more": false}
+                """
+                body = Data(json.utf8)
+            } else {
+                body = Data(#"{}"#.utf8)
+            }
+            let response = HTTPURLResponse(
+                url: request.url ?? URL(string: "https://sandbox.plaid.com")!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: body)
+            client?.urlProtocolDidFinishLoading(self)
         }
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [PlaidForcedFailureURLProtocol.self]
-        return URLSession(configuration: configuration)
+
+        override func stopLoading() {}
+    }
+
+    /// The `URLSession` `PlaidDebugLinkView` should hand to `PlaidServiceLive` and
+    /// `TransactionImportService`. Under normal (non-UI-test) launches this is just
+    /// `.shared`. Launched under XCUITest with `UITEST_FORCE_PLAID_ERROR=1` set, every
+    /// Plaid REST call is intercepted and deterministically failed — see
+    /// `PlaidForcedFailureURLProtocol`. Launched with
+    /// `UITEST_PLAID_IMPORT_SCENARIO=mergePrompt` set, `/transactions/sync` calls are
+    /// intercepted and answered with the scripted merge-prompt fixture above — see
+    /// `PlaidImportMergePromptURLProtocol`.
+    static var plaidURLSession: URLSession {
+        if ProcessInfo.processInfo.environment["UITEST_FORCE_PLAID_ERROR"] == "1" {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [PlaidForcedFailureURLProtocol.self]
+            return URLSession(configuration: configuration)
+        }
+        if ProcessInfo.processInfo.environment["UITEST_PLAID_IMPORT_SCENARIO"] == "mergePrompt" {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [PlaidImportMergePromptURLProtocol.self]
+            return URLSession(configuration: configuration)
+        }
+        return .shared
+    }
+
+    /// Seeds a fake linked-item + Keychain access token before the app finishes
+    /// launching, when `UITEST_SEED_PLAID_LINKED_ITEM=1` / `UITEST_SEED_PLAID_TOKEN=1`
+    /// are set — `TransactionImportUITests` needs both so `PlaidDebugLinkView`'s
+    /// "Import transactions" button is enabled (`service.linkedItem != nil`) and
+    /// `TransactionImportService.runImport()` gets past its "no stored token, no-op"
+    /// guard, without ever driving a real Plaid Link session. Mirrors
+    /// `resetPlaidKeychainIfRequested()`'s persistence shapes exactly (see
+    /// `PlaidServiceLive.persist(_:)`/`PlaidKeychainKey`) — duplicated here rather than
+    /// called through `PlaidServiceLive` since those methods are `private` to that file
+    /// and this only needs to write the same two, already-documented storage locations.
+    static func seedPlaidLinkedItemIfRequested() {
+        guard ProcessInfo.processInfo.environment["UITEST_SEED_PLAID_LINKED_ITEM"] == "1" else { return }
+        let dict: [String: Any] = [
+            "itemID": "uitest-item",
+            "institutionName": "UITest Bank",
+            "linkedAt": Date().timeIntervalSince1970,
+        ]
+        UserDefaults.standard.set(dict, forKey: "plaid.linkedItem")
+    }
+
+    /// See `seedPlaidLinkedItemIfRequested()` above. Blocks synchronously, same
+    /// `DispatchSemaphore` bridging pattern as `resetPlaidKeychainIfRequested()`, so the
+    /// token is guaranteed present before `ReservoirApp`'s first view appears.
+    static func seedPlaidTokenIfRequested() {
+        guard ProcessInfo.processInfo.environment["UITEST_SEED_PLAID_TOKEN"] == "1" else { return }
+        let semaphore = DispatchSemaphore(value: 0)
+        Task {
+            try? await KeychainService().save("uitest-fake-access-token", for: PlaidKeychainKey.accessToken)
+            semaphore.signal()
+        }
+        semaphore.wait()
     }
 
     /// Deletes the app's stored Plaid access token before the app finishes
@@ -325,6 +445,15 @@ enum UITestScenario: String {
                 type: .variable,
                 entryMethod: .manual,
                 isManualOverride: true
+            ))
+
+        case .transactionImportMergePrompt:
+            context.insert(SpendTransaction(
+                amount: Self.transactionImportMergePromptAmount,
+                date: Self.todayForImportTests,
+                merchantName: Self.transactionImportMergePromptMerchantName,
+                type: .variable,
+                entryMethod: .manual
             ))
         }
 

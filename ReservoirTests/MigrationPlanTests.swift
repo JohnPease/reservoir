@@ -100,7 +100,13 @@ final class MigrationPlanTests: XCTestCase {
             configurations: [v3Configuration]
         )
         let context = ModelContext(v3Container)
-        let fetched = try context.fetch(FetchDescriptor<SavingsGoal>())
+        // Explicitly `SchemaV3.SavingsGoal`, not the bare `SavingsGoal` alias — that
+        // alias now points at `SchemaV4` (see `CurrentSchema.swift`), and this container
+        // was opened `for: v3Schema` only, so a `SchemaV4`-typed `FetchDescriptor`
+        // doesn't relate to it (same pitfall the V1->V2 test above already documents;
+        // this one crashed with a real "KeyPath does not relate" fatal error before this
+        // fix, once `CurrentSchema`'s aliases moved to `SchemaV4` for adq.6.3).
+        let fetched = try context.fetch(FetchDescriptor<SchemaV3.SavingsGoal>())
         let afterMigration = Date()
 
         XCTAssertEqual(fetched.count, 1)
@@ -109,5 +115,44 @@ final class MigrationPlanTests: XCTestCase {
         let createdAt = try XCTUnwrap(fetched.first?.createdAt)
         XCTAssertGreaterThanOrEqual(createdAt, beforeMigration)
         XCTAssertLessThanOrEqual(createdAt, afterMigration)
+    }
+
+    /// Regression coverage for adq.6.3: a store created under `SchemaV3` (as any
+    /// pre-adq.6.3 build would have on disk) must open cleanly under `SchemaV4` via
+    /// `ReservoirMigrationPlan`, with existing data intact and the new
+    /// `wasMergedFromManual` field present, defaulted to `false` for data that predates
+    /// it — see `SchemaV4`'s doc comment.
+    func testV3StoreMigratesToV4WithDataIntactAndWasMergedFromManualDefaultedFalse() throws {
+        let v3Schema = Schema(versionedSchema: SchemaV3.self)
+        let v3Configuration = ModelConfiguration(schema: v3Schema, url: storeURL)
+        do {
+            let v3Container = try ModelContainer(for: v3Schema, configurations: [v3Configuration])
+            let context = ModelContext(v3Container)
+            let transaction = SchemaV3.SpendTransaction(
+                amount: 45.00,
+                date: .now,
+                merchantName: "Grocery Store",
+                type: .variable,
+                entryMethod: .imported,
+                plaidTransactionID: "plaid-txn-existing"
+            )
+            context.insert(transaction)
+            try context.save()
+        }
+
+        let v4Schema = Schema(versionedSchema: SchemaV4.self)
+        let v4Configuration = ModelConfiguration(schema: v4Schema, url: storeURL)
+        let v4Container = try ModelContainer(
+            for: v4Schema,
+            migrationPlan: ReservoirMigrationPlan.self,
+            configurations: [v4Configuration]
+        )
+        let context = ModelContext(v4Container)
+        let fetched = try context.fetch(FetchDescriptor<SpendTransaction>())
+
+        XCTAssertEqual(fetched.count, 1)
+        XCTAssertEqual(fetched.first?.merchantName, "Grocery Store")
+        XCTAssertEqual(fetched.first?.plaidTransactionID, "plaid-txn-existing")
+        XCTAssertEqual(fetched.first?.wasMergedFromManual, false)
     }
 }
