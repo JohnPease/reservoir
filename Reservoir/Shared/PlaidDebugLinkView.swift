@@ -11,18 +11,19 @@ import SwiftData
 /// removed once adq.7 ships (see reservoir-adq.6.1's UX section, "Entry
 /// point").
 struct PlaidDebugLinkView: View {
-    @Environment(\.modelContext) private var modelContext
     @State private var service: PlaidServiceLive
     @State private var verifiedTokenMessage: String?
     private let environmentStore: PlaidEnvironmentStoring
     @State private var environment: PlaidEnvironment
     @State private var pendingEnvironment: PlaidEnvironment?
 
-    /// Constructed lazily in `.task` once `modelContext` (an `@Environment` value) is
-    /// available — a view's `init()` runs before environment values are injected, so
-    /// this can't be built alongside `service` above. adq.6.3's debug-only manual import
-    /// trigger; the real triggers (foreground refresh, pull-to-refresh) are adq.6.4.
-    @State private var importService: TransactionImportService?
+    /// The one shared `TransactionImportService` instance (adq.6.4), owned by
+    /// `RootTabView` and injected here via `.environment(_:)` — no longer a standalone
+    /// instance constructed by this view (adq.6.3's original, debug-only approach). This
+    /// keeps exactly one `mergeQueue`/`isImporting` for the whole app; the debug "Import
+    /// transactions" button below just calls `runImport()` against the shared instance,
+    /// same as the foreground and pull-to-refresh triggers.
+    @Environment(TransactionImportService.self) private var importService: TransactionImportService?
 
     /// A single shared `PlaidEnvironmentStore` instance backs `environmentStore`,
     /// `environment`'s initial value, and `service`'s own environment
@@ -154,42 +155,7 @@ struct PlaidDebugLinkView: View {
             }
             .navigationTitle("Plaid (Debug)")
             .plaidLinkPresentation(service: service)
-            .mergePromptConfirmation(
-                pendingItem: mergeDecisionBinding,
-                title: { decision in
-                    "This looks like a transaction you already added: \(decision.manualTransaction.merchantName), "
-                        + "\(decision.manualTransaction.amount.formatted(.currency(code: "USD"))), "
-                        + decision.manualTransaction.date.formatted(.dateTime.month(.wide).day().year())
-                },
-                message: { _ in "Keep as one entry?" },
-                mergeAccessibilityIdentifier: "plaidDebug.mergePrompt.merge",
-                keepBothAccessibilityIdentifier: "plaidDebug.mergePrompt.keepBoth",
-                onMerge: { _ in importService?.resolveMergeDecision(.merge) },
-                onKeepBoth: { _ in importService?.resolveMergeDecision(.keepBoth) }
-            )
-            .task {
-                if importService == nil {
-                    importService = TransactionImportService(
-                        modelContext: modelContext,
-                        urlSession: UITestScenario.plaidURLSession,
-                        environmentStore: environmentStore
-                    )
-                }
-            }
         }
-    }
-
-    /// `mergePromptConfirmation`'s `pendingItem` binding, sourced from
-    /// `importService.pendingMergeDecision` (the queue's head) rather than its own
-    /// `@State` — the queue is the single source of truth, owned by the service. Setting
-    /// this binding to `nil` (dismiss-by-swipe) is a deliberate no-op: per this story's
-    /// UX spec, there's no free "Cancel" for a merge prompt, only "Merge"/"Keep both",
-    /// both of which pop the queue themselves via `resolveMergeDecision(_:)`.
-    private var mergeDecisionBinding: Binding<TransactionImportService.PendingMergeDecision?> {
-        Binding(
-            get: { importService?.pendingMergeDecision },
-            set: { _ in }
-        )
     }
 
     private static func summaryText(_ summary: ImportSummary) -> String {

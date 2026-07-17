@@ -1,5 +1,6 @@
 import XCTest
 import SwiftData
+import SwiftUI
 @testable import Reservoir
 
 /// Covers `TransactionImportService`'s orchestration logic against a real in-memory
@@ -681,6 +682,129 @@ final class TransactionImportServiceTests: XCTestCase {
         )
         let fetched = try ModelContext(verificationContainer).fetch(FetchDescriptor<SpendTransaction>())
         XCTAssertTrue(fetched.isEmpty, "Failed inserts must roll back, not persist half-applied.")
+    }
+
+    // MARK: - handleScenePhaseTransition (adq.6.4 foreground-refresh trigger)
+    //
+    // `handleScenePhaseTransition` takes only the new phase, one call per real
+    // `.onChange(of: scenePhase)` firing — a real device delivers a return from
+    // background as *two* separate calls (`.background`, then `.inactive`, then
+    // `.active`... i.e. `to: .background`, `to: .inactive`, `to: .active` as three
+    // distinct calls), never one call spanning both endpoints. These tests drive the
+    // exact call sequence a real device would produce, not synthetic (old, new) pairs.
+
+    /// The realistic backgrounding-then-foregrounding sequence: `.active -> .inactive ->
+    /// .background -> .inactive -> .active`, delivered as five separate calls. Only the
+    /// final call (landing on `.active` after a genuine `.background` sighting) should
+    /// invoke `runImport()`.
+    func testHandleScenePhaseTransition_realBackgroundForegroundSequence_firesRunImportOnce() async {
+        ScriptedSyncURLProtocol.responses = [
+            syncResponse(added: [transactionJSON(id: "plaid-1", amount: 12.50)], nextCursor: "cursor-1")
+        ]
+        let sut = makeSUT()
+
+        await sut.handleScenePhaseTransition(to: .inactive)
+        await sut.handleScenePhaseTransition(to: .background)
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 0, "must not import while merely backgrounding, before returning to active.")
+
+        await sut.handleScenePhaseTransition(to: .inactive)
+        await sut.handleScenePhaseTransition(to: .active)
+
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 1, "a genuine return from background must invoke the import pipeline exactly once.")
+        XCTAssertEqual(sut.lastImportSummary?.added, 1)
+    }
+
+    /// Cold launch's scene-phase sequence is `.inactive -> .active` (SwiftUI never
+    /// reports an initial `.background` phase), so it must NOT be mistaken for a return
+    /// from backgrounding — Link itself just happened in that case per the bead's UX
+    /// notes, and a separate first-launch-import story would own this if wanted.
+    func testHandleScenePhaseTransition_coldLaunchSequence_doesNotFireRunImport() async {
+        ScriptedSyncURLProtocol.responses = [
+            syncResponse(added: [transactionJSON(id: "plaid-1", amount: 12.50)], nextCursor: "cursor-1")
+        ]
+        let sut = makeSUT()
+
+        await sut.handleScenePhaseTransition(to: .inactive)
+        await sut.handleScenePhaseTransition(to: .active)
+
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 0, "cold-launch's inactive -> active sequence must not trigger an import.")
+        XCTAssertNil(sut.lastImportSummary)
+    }
+
+    /// A brief `.inactive` blip that never actually reaches `.background` (e.g. pulling
+    /// down Control Center while already active) must not be mistaken for a real return
+    /// from backgrounding — only an observed `.background` phase should arm the next
+    /// `.active` transition. Distinct from the cold-launch test above: this one starts
+    /// from a genuinely active session, not from app launch.
+    func testHandleScenePhaseTransition_inactiveBlipWithoutBackgrounding_doesNotFireRunImport() async {
+        ScriptedSyncURLProtocol.responses = [
+            syncResponse(added: [transactionJSON(id: "plaid-1", amount: 12.50)], nextCursor: "cursor-1")
+        ]
+        let sut = makeSUT()
+        await sut.handleScenePhaseTransition(to: .inactive)
+        await sut.handleScenePhaseTransition(to: .active)
+        ScriptedSyncURLProtocol.responses = [
+            syncResponse(added: [transactionJSON(id: "plaid-2", amount: 5.00)], nextCursor: "cursor-2")
+        ]
+
+        await sut.handleScenePhaseTransition(to: .inactive)
+        await sut.handleScenePhaseTransition(to: .active)
+
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 0, "an inactive blip that never reaches .background must not trigger an import.")
+        XCTAssertNil(sut.lastImportSummary)
+    }
+
+    /// Backgrounding alone (never returning to `.active`) must not fire an import — only
+    /// the subsequent transition *into* `.active` should.
+    func testHandleScenePhaseTransition_backgroundingAlone_doesNotFireRunImport() async {
+        ScriptedSyncURLProtocol.responses = [
+            syncResponse(added: [transactionJSON(id: "plaid-1", amount: 12.50)], nextCursor: "cursor-1")
+        ]
+        let sut = makeSUT()
+
+        await sut.handleScenePhaseTransition(to: .inactive)
+        await sut.handleScenePhaseTransition(to: .background)
+
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 0, "backgrounding alone (never returning to active) must not trigger an import.")
+        XCTAssertNil(sut.lastImportSummary)
+    }
+
+    // MARK: - presentedErrorDetail (code-review finding: pull-to-refresh failures were silent)
+
+    /// A malformed `/transactions/sync` response fails JSON decoding inside `syncPage`,
+    /// landing in `runImport()`'s `catch` — verifies `presentedErrorDetail` is populated
+    /// with the raw underlying error alongside the coarse `presentedError` category, so a
+    /// UI can offer an opt-in "technical details" reveal without changing the default,
+    /// friendly copy `presentedError.userFacingMessage` still drives.
+    func testRunImport_syncFailure_populatesPresentedErrorDetailAlongsideCategory() async {
+        ScriptedSyncURLProtocol.responses = [Data("not valid json".utf8)]
+        let sut = makeSUT()
+
+        await sut.runImport()
+
+        XCTAssertEqual(sut.presentedError, .plaidSide)
+        XCTAssertNotNil(sut.presentedErrorDetail, "the raw underlying error must be retained, not discarded, at classification time.")
+        XCTAssertFalse(sut.presentedErrorDetail?.isEmpty ?? true)
+    }
+
+    /// A successful run must clear any previously-set detail, not just the category —
+    /// otherwise a stale technical detail could linger and be shown for an error that no
+    /// longer applies.
+    func testRunImport_successAfterFailure_clearsPresentedErrorDetail() async {
+        ScriptedSyncURLProtocol.responses = [Data("not valid json".utf8)]
+        let sut = makeSUT()
+        await sut.runImport()
+        XCTAssertNotNil(sut.presentedErrorDetail)
+
+        ScriptedSyncURLProtocol.reset()
+        ScriptedSyncURLProtocol.responses = [
+            syncResponse(added: [transactionJSON(id: "plaid-1", amount: 12.50)], nextCursor: "cursor-1")
+        ]
+
+        await sut.runImport()
+
+        XCTAssertNil(sut.presentedError)
+        XCTAssertNil(sut.presentedErrorDetail)
     }
 
     // MARK: - Multi-page pagination

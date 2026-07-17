@@ -412,9 +412,12 @@ appears anywhere in the app. It owns two responsibilities:
 
   `PlaidErrorClassifier` (`Services/Plaid/PlaidErrorClassifier.swift`) is a
   pure function classifying any Link or exchange failure into `.network` vs
-  `.plaidSide`, driving the two distinct user-facing messages the product
-  spec calls for (raw Plaid `errorCode`/`errorType` strings are never shown to
-  the user). It takes a LinkKit-free `PlaidFailureInput` so it stays reusable
+  `.plaidSide`, driving the two distinct, coarse user-facing messages shown
+  by default (raw Plaid `errorCode`/`errorType` strings never drive that
+  default copy). `TransactionImportService` separately retains the raw error
+  as `presentedErrorDetail` for an opt-in "technical details" reveal
+  (adq.6.4, `TransactionsView`'s tappable error banner) rather than
+  discarding it. It takes a LinkKit-free `PlaidFailureInput` so it stays reusable
   without pulling in the SDK — reservoir-adq.6.5 (item relink / connection-
   status UX) reuses this same classifier for `ITEM_LOGIN_REQUIRED`-style
   import-time errors rather than duplicating the logic.
@@ -492,6 +495,49 @@ double-counted.
     "Transaction import (debug)" section (manual "Import transactions"
     trigger, non-blocking summary line, merge prompt wiring). Foreground/
     pull-to-refresh triggers are adq.6.4, not built here.
+
+**Foreground refresh + pull-to-refresh triggers** (adq.6.4): wires
+`TransactionImportService` to its two real, permanent triggers per
+PROJECT_SPEC's locked "no webhooks/no background timer" decision — a manual
+debug button is no longer the only way to run an import.
+  - `RootTabView` (`App/RootTabView.swift`) now owns the app's one shared
+    `TransactionImportService` instance (constructed lazily in `.task`, same
+    convention `PlaidDebugLinkView` used previously), injected to every tab
+    via `.environment(_:)`. `PlaidDebugLinkView`'s own standalone instance was
+    removed — there is exactly one `mergeQueue`/`isImporting` for the whole
+    app now, not three independent import paths racing the same persisted
+    store. Its "Import transactions" debug button calls `runImport()` against
+    this shared instance.
+  - `RootTabView` observes `\.scenePhase` and calls
+    `TransactionImportService.handleScenePhaseTransition(to:)` on every
+    change. SwiftUI fires `.onChange(of: scenePhase)` once per discrete phase
+    change, not once per multi-step transition — a real return from
+    background arrives as separate `.background`, `.inactive`, `.active`
+    calls, not one call spanning both endpoints — so this method tracks
+    `hasBackgroundedSinceActive` across calls rather than comparing a single
+    call's old/new pair: cold launch's `.inactive → .active` sequence never
+    passes through `.background` first, so it's correctly excluded, while a
+    genuine backgrounding arms the next `.active` transition to trigger
+    exactly one import (code-review finding on this same PR — the original
+    `(oldPhase, newPhase)` comparison could never match a real device
+    transition).
+  - `TransactionsView` (`Features/Transactions/TransactionsView.swift`) adds
+    `.refreshable { await importService?.runImport() }` on its transaction
+    list — pull-to-refresh calls the exact same `runImport()` entry point,
+    no duplicated import logic. A failed import (foreground- or
+    pull-to-refresh-triggered) now also surfaces `presentedError` as a
+    tappable, non-blocking red banner above the list — tapping it reveals
+    `presentedErrorDetail` (the underlying raw error, retained by
+    `TransactionImportService` rather than discarded at classification time)
+    in a "Technical details" sheet. Previously this failure was silent
+    (code-review finding); the raw detail is an explicit, opt-in reveal
+    rather than shown by default, keeping `PlaidErrorCategory`'s coarse
+    default copy unchanged.
+  - The merge-prompt confirmation (`mergePromptConfirmation`) moved from
+    `PlaidDebugLinkView` up to `RootTabView`, bound to the shared instance's
+    `pendingMergeDecision`, so a merge prompt raised by a foreground- or
+    pull-to-refresh-triggered import surfaces regardless of which tab is
+    active.
 
 ## Technical details
 
