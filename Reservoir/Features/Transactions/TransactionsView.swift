@@ -27,6 +27,7 @@ struct TransactionsView: View {
     @State private var transactionPendingEdit: SpendTransaction?
     @State private var transactionPendingDelete: SpendTransaction?
     @State private var actionError: String?
+    @State private var isShowingImportErrorDetail = false
 
     private let calendar: Calendar = .current
     private let logger = Logger(subsystem: "com.reservoir.app", category: "TransactionsView")
@@ -43,13 +44,26 @@ struct TransactionsView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 if let error = importService?.presentedError {
-                    Text(error.userFacingMessage)
+                    HStack(spacing: 12) {
+                        Button {
+                            isShowingImportErrorDetail = true
+                        } label: {
+                            Text(error.userFacingMessage)
+                                .font(.footnote)
+                                .foregroundStyle(.red)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .accessibilityIdentifier("transactions.importError")
+                        }
+                        .buttonStyle(.plain)
+
+                        Button("Retry") {
+                            Task { await triggerRefresh() }
+                        }
                         .font(.footnote)
-                        .foregroundStyle(.red)
-                        .padding(.horizontal)
-                        .padding(.vertical, 8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityIdentifier("transactions.importError")
+                        .accessibilityIdentifier("transactions.importErrorRetry")
+                    }
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
                 }
                 Group {
                     if transactions.isEmpty {
@@ -149,6 +163,25 @@ struct TransactionsView: View {
             onDelete: delete
         )
         .saveErrorAlert($actionError)
+        .sheet(isPresented: $isShowingImportErrorDetail) {
+            NavigationStack {
+                ScrollView {
+                    Text(importService?.presentedErrorDetail ?? "No further detail available.")
+                        .font(.system(.footnote, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                        .accessibilityIdentifier("transactions.importErrorDetail")
+                }
+                .navigationTitle("Technical details")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { isShowingImportErrorDetail = false }
+                    }
+                }
+            }
+        }
     }
 
     private func delete(_ transaction: SpendTransaction) {

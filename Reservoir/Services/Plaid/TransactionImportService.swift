@@ -68,6 +68,12 @@ struct ImportSummary: Equatable {
 final class TransactionImportService {
     private(set) var isImporting = false
     var presentedError: PlaidErrorCategory?
+    /// The raw underlying error behind `presentedError`, kept alongside the coarse
+    /// category (rather than discarded at classification time) so the UI can offer an
+    /// optional "technical details" reveal for a technically-inclined user, without
+    /// changing the friendly, coarse-category text shown by default. `nil` whenever
+    /// `presentedError` is `nil`.
+    private(set) var presentedErrorDetail: String?
     private(set) var lastImportSummary: ImportSummary?
     /// In-memory mirror of the `PendingTransactionMerge` rows in `modelContext` —
     /// durable persistence (see `SchemaV5`'s doc comment) is what actually survives app
@@ -166,6 +172,7 @@ final class TransactionImportService {
         defer { isImporting = false }
 
         presentedError = nil
+        presentedErrorDetail = nil
 
         guard let accessToken = try? await keychain.read(for: PlaidKeychainKey.accessToken) else {
             // No linked item yet, or the keychain read failed — nothing to import,
@@ -199,6 +206,7 @@ final class TransactionImportService {
                 response = try await syncPage(accessToken: accessToken, cursor: requestCursor, environment: environment)
             } catch {
                 presentedError = PlaidErrorClassifier.classify(.exchangeError(error))
+                presentedErrorDetail = String(describing: error)
                 break
             }
 

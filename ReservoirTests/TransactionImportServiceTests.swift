@@ -769,6 +769,44 @@ final class TransactionImportServiceTests: XCTestCase {
         XCTAssertNil(sut.lastImportSummary)
     }
 
+    // MARK: - presentedErrorDetail (code-review finding: pull-to-refresh failures were silent)
+
+    /// A malformed `/transactions/sync` response fails JSON decoding inside `syncPage`,
+    /// landing in `runImport()`'s `catch` — verifies `presentedErrorDetail` is populated
+    /// with the raw underlying error alongside the coarse `presentedError` category, so a
+    /// UI can offer an opt-in "technical details" reveal without changing the default,
+    /// friendly copy `presentedError.userFacingMessage` still drives.
+    func testRunImport_syncFailure_populatesPresentedErrorDetailAlongsideCategory() async {
+        ScriptedSyncURLProtocol.responses = [Data("not valid json".utf8)]
+        let sut = makeSUT()
+
+        await sut.runImport()
+
+        XCTAssertEqual(sut.presentedError, .plaidSide)
+        XCTAssertNotNil(sut.presentedErrorDetail, "the raw underlying error must be retained, not discarded, at classification time.")
+        XCTAssertFalse(sut.presentedErrorDetail?.isEmpty ?? true)
+    }
+
+    /// A successful run must clear any previously-set detail, not just the category —
+    /// otherwise a stale technical detail could linger and be shown for an error that no
+    /// longer applies.
+    func testRunImport_successAfterFailure_clearsPresentedErrorDetail() async {
+        ScriptedSyncURLProtocol.responses = [Data("not valid json".utf8)]
+        let sut = makeSUT()
+        await sut.runImport()
+        XCTAssertNotNil(sut.presentedErrorDetail)
+
+        ScriptedSyncURLProtocol.reset()
+        ScriptedSyncURLProtocol.responses = [
+            syncResponse(added: [transactionJSON(id: "plaid-1", amount: 12.50)], nextCursor: "cursor-1")
+        ]
+
+        await sut.runImport()
+
+        XCTAssertNil(sut.presentedError)
+        XCTAssertNil(sut.presentedErrorDetail)
+    }
+
     // MARK: - Multi-page pagination
 
     func testRunImport_multiplePages_advancesCursorThroughToFinalPage() async throws {

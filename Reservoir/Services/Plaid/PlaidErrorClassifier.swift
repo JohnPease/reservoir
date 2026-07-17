@@ -1,11 +1,13 @@
 import Foundation
 
 /// User-facing bucket for a Plaid Link or token-exchange failure. Deliberately
-/// coarse — the target user isn't financially/technically sophisticated (see
-/// PROJECT_SPEC.md), so raw Plaid `errorCode`/`errorType` strings are never
-/// surfaced; only this classification drives on-screen copy. User-cancelled
-/// Link sessions are not a case here — they're handled as a silent, non-error
-/// exit by the caller before this classifier is ever consulted.
+/// coarse — only this classification drives the default, always-visible on-screen
+/// copy, not any raw Plaid `errorCode`/`errorType` string. The underlying raw error
+/// isn't discarded, though: `TransactionImportService.presentedErrorDetail` retains
+/// it for an explicit, opt-in "technical details" reveal (`TransactionsView`'s error
+/// banner is tappable) rather than showing it by default. User-cancelled Link
+/// sessions are not a case here — they're handled as a silent, non-error exit by the
+/// caller before this classifier is ever consulted.
 enum PlaidErrorCategory: Equatable {
     /// No connectivity, or the request to Plaid timed out — a local/network
     /// condition rather than something Plaid's servers did. Only reachable
