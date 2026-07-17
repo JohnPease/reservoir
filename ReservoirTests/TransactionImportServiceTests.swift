@@ -451,6 +451,112 @@ final class TransactionImportServiceTests: XCTestCase {
         XCTAssertEqual(fetched.first?.type, .fixed, "merchant-name change must trigger a fresh MerchantMatcher re-match.")
     }
 
+    /// A `modified` event whose new amount is non-positive (review finding 4) -- e.g.
+    /// reclassified as a refund -- must not be silently dropped by the `guard let mapped
+    /// = ... else { continue }` before the existing row is ever looked up. A pure import
+    /// is hard-deleted, matching how a genuine `removed` event is handled.
+    func testRunImport_modified_nonPositiveAmount_pureImport_isHardDeleted() async throws {
+        let existing = SpendTransaction(
+            amount: 10, date: .now, merchantName: "Grocery", type: .variable, entryMethod: .imported,
+            plaidTransactionID: "plaid-1", wasMergedFromManual: false
+        )
+        context.insert(existing)
+        try context.save()
+
+        ScriptedSyncURLProtocol.responses = [
+            syncResponse(modified: [transactionJSON(id: "plaid-1", amount: -5.00)], nextCursor: "cursor-1")
+        ]
+        let sut = makeSUT()
+        await sut.runImport()
+
+        let fetched = try context.fetch(FetchDescriptor<SpendTransaction>())
+        XCTAssertTrue(fetched.isEmpty, "A modified event reclassifying the transaction as non-positive must delete the stale pure import, not leave its pre-refund amount stale forever.")
+    }
+
+    /// Same as above, but for a merge-derived row (review finding 4) -- reverted to
+    /// `.manual` rather than hard-deleted, matching a genuine `removed` event's handling,
+    /// since deleting it would destroy data the user entered themselves.
+    func testRunImport_modified_nonPositiveAmount_mergeDerived_isRevertedNotDeleted() async throws {
+        let existing = SpendTransaction(
+            amount: 10, date: .now, merchantName: "Grocery", type: .fixed, entryMethod: .imported,
+            plaidTransactionID: "plaid-1", isManualOverride: true, wasMergedFromManual: true
+        )
+        context.insert(existing)
+        try context.save()
+
+        ScriptedSyncURLProtocol.responses = [
+            syncResponse(modified: [transactionJSON(id: "plaid-1", amount: -5.00)], nextCursor: "cursor-1")
+        ]
+        let sut = makeSUT()
+        await sut.runImport()
+
+        let fetched = try context.fetch(FetchDescriptor<SpendTransaction>())
+        XCTAssertEqual(fetched.count, 1, "A merge-derived row must survive a non-positive-amount modified event, reverted rather than deleted.")
+        XCTAssertEqual(fetched.first?.entryMethod, .manual)
+        XCTAssertNil(fetched.first?.plaidTransactionID)
+        XCTAssertEqual(fetched.first?.wasMergedFromManual, false)
+        XCTAssertEqual(fetched.first?.merchantName, "Grocery", "Every other field must be untouched by the revert.")
+    }
+
+    // MARK: - modified/removed for a still-queued merge decision (review finding 3)
+
+    /// A queued-not-saved decision is a frozen snapshot never added to
+    /// `importedByPlaidID`, so a later `modified` event for that same
+    /// `transaction_id` (e.g. the incoming amount was corrected) must update the
+    /// pending decision's stored snapshot rather than being silently ignored -- otherwise
+    /// resolving "Merge" later would write stale data into the user's manual entry.
+    func testRunImport_modifiedEventForStillQueuedItem_updatesPendingDecisionSnapshot() async throws {
+        let manual = SpendTransaction(amount: 12.50, date: matchingFixtureDate, merchantName: "Coffee Shop", type: .variable, entryMethod: .manual)
+        context.insert(manual)
+        try context.save()
+
+        ScriptedSyncURLProtocol.responses = [
+            syncResponse(added: [transactionJSON(id: "plaid-1", amount: 12.50)], nextCursor: "cursor-1", hasMore: true),
+            syncResponse(modified: [transactionJSON(id: "plaid-1", amount: 15.00, merchantName: "Coffee Shop Corrected")], nextCursor: "cursor-2"),
+        ]
+        let sut = makeSUT()
+        await sut.runImport()
+
+        XCTAssertEqual(sut.mergeQueue.count, 1, "still exactly one pending decision, refreshed rather than duplicated or dropped.")
+        XCTAssertEqual(sut.pendingMergeDecision?.incoming.amount, 15.00, "the queued snapshot must reflect the modified event's corrected amount, not the stale original.")
+        XCTAssertEqual(sut.pendingMergeDecision?.incoming.merchantName, "Coffee Shop Corrected")
+
+        // Resolving "Merge" afterward must use the corrected data, not the original.
+        sut.resolveMergeDecision(.merge)
+        let fetched = try context.fetch(FetchDescriptor<SpendTransaction>())
+        XCTAssertEqual(fetched.first?.amount, 15.00)
+        XCTAssertEqual(fetched.first?.merchantName, "Coffee Shop Corrected")
+    }
+
+    /// A `removed` event for a still-queued decision (the incoming transaction was
+    /// voided/reversed before the user resolved the merge prompt) must clear the pending
+    /// decision entirely (UX call: the merge prompt simply disappears, treated as "no
+    /// longer a live duplicate to resolve" -- see `TransactionImportService`'s doc
+    /// comment) rather than leaving it pointing at data that no longer exists on Plaid's
+    /// side. The manual transaction itself is left untouched.
+    func testRunImport_removedEventForStillQueuedItem_clearsPendingDecision() async throws {
+        let manual = SpendTransaction(amount: 12.50, date: matchingFixtureDate, merchantName: "Coffee Shop", type: .variable, entryMethod: .manual)
+        context.insert(manual)
+        try context.save()
+
+        ScriptedSyncURLProtocol.responses = [
+            syncResponse(added: [transactionJSON(id: "plaid-1", amount: 12.50)], nextCursor: "cursor-1", hasMore: true),
+            syncResponse(removed: [removedJSON(id: "plaid-1")], nextCursor: "cursor-2"),
+        ]
+        let sut = makeSUT()
+        await sut.runImport()
+
+        XCTAssertTrue(sut.mergeQueue.isEmpty, "A removed event for a still-queued transaction must clear the pending decision, not leave it dangling.")
+        let fetched = try context.fetch(FetchDescriptor<SpendTransaction>())
+        XCTAssertEqual(fetched.count, 1)
+        XCTAssertEqual(fetched.first?.entryMethod, .manual, "The manual transaction itself must be untouched -- only the pending decision is cleared.")
+
+        // The persisted PendingTransactionMerge row must also be gone, not just the
+        // in-memory mergeQueue -- otherwise a fresh service instance would resurrect it.
+        let relaunchedSUT = makeSUT()
+        XCTAssertTrue(relaunchedSUT.mergeQueue.isEmpty)
+    }
+
     // MARK: - removed
 
     func testRunImport_removed_pureImport_isHardDeleted() async throws {

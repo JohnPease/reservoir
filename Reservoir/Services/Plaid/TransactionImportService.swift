@@ -280,6 +280,54 @@ final class TransactionImportService {
         }
 
         for raw in response.modified {
+            // A queued-not-saved decision is a frozen snapshot that was never added to
+            // `importedByPlaidID`, so the checks below it would silently miss a later
+            // `modified` event for the same `transaction_id` (review finding 3) — check
+            // `mergeQueue` first. A non-positive new amount (e.g. reclassified as a
+            // refund) means this is no longer a live duplicate to resolve — the pending
+            // decision is dropped rather than left pointing at stale/invalid Plaid data
+            // (UX call: the merge prompt simply disappears, same as if it had never
+            // matched; the manual transaction is left untouched and becomes eligible
+            // for matching again on a future sync). Otherwise, the queued snapshot's
+            // data is refreshed so a later "Merge" resolution uses current data.
+            if let queuedIndex = mergeQueue.firstIndex(where: { $0.id == raw.transaction_id }) {
+                if let mapped = PlaidTransactionMapper.map(raw) {
+                    if updateQueuedDecision(at: queuedIndex, with: mapped) {
+                        result.summary.modified += 1
+                    } else {
+                        result.allHandled = false
+                    }
+                } else {
+                    if removeQueuedDecision(at: queuedIndex) {
+                        result.summary.removed += 1
+                    } else {
+                        result.allHandled = false
+                    }
+                }
+                continue
+            }
+
+            // A `modified` event whose new amount is non-positive (review finding 4)
+            // maps to `nil` via `PlaidTransactionMapper.map` before `raw.transaction_id`
+            // is ever looked up — checking `mapped == nil` alone can't distinguish that
+            // from a malformed date, so this checks `raw.amount` directly and, only for
+            // the non-positive-amount case, applies the same delete-or-revert handling
+            // as a genuine `removed` event: the existing row's stale (pre-refund) amount
+            // must not be left in place forever.
+            if raw.amount <= 0 {
+                if let existing = importedByPlaidID[raw.transaction_id] {
+                    let failureMessage = deleteOrRevertExisting(existing)
+                    if let failureMessage {
+                        logger.error("Failed to apply non-positive modified transaction \(raw.transaction_id, privacy: .public): \(failureMessage, privacy: .public)")
+                        result.allHandled = false
+                    } else {
+                        importedByPlaidID.removeValue(forKey: raw.transaction_id)
+                        result.summary.removed += 1
+                    }
+                }
+                continue
+            }
+
             guard let mapped = PlaidTransactionMapper.map(raw) else { continue }
             guard let existing = importedByPlaidID[mapped.plaidTransactionID] else {
                 // Nothing locally to update (e.g. it was a credit we never imported, or
@@ -303,27 +351,24 @@ final class TransactionImportService {
         }
 
         for raw in response.removed {
+            // Same reasoning as the `modified` loop above (review finding 3): a
+            // queued-not-saved decision is invisible to `importedByPlaidID`, so a
+            // `removed` event for it must be checked against `mergeQueue` directly, or
+            // the decision would be left pointing at a since-voided Plaid transaction.
+            if let queuedIndex = mergeQueue.firstIndex(where: { $0.id == raw.transaction_id }) {
+                if removeQueuedDecision(at: queuedIndex) {
+                    result.summary.removed += 1
+                } else {
+                    result.allHandled = false
+                }
+                continue
+            }
+
             guard let existing = importedByPlaidID[raw.transaction_id] else {
                 continue
             }
 
-            let failureMessage: String?
-            if existing.wasMergedFromManual {
-                let original = SnapshotForRollback(existing)
-                failureMessage = PersistenceSaveHelper.saveOrRollback(
-                    modelContext: modelContext,
-                    mutate: {
-                        existing.entryMethod = .manual
-                        existing.plaidTransactionID = nil
-                        existing.wasMergedFromManual = false
-                    },
-                    rollback: { original.restore(to: existing) },
-                    logger: logger
-                )
-            } else {
-                failureMessage = PersistenceSaveHelper.deleteWithRollback(existing, modelContext: modelContext, logger: logger)
-            }
-
+            let failureMessage = deleteOrRevertExisting(existing)
             if let failureMessage {
                 logger.error("Failed to apply removed transaction \(raw.transaction_id, privacy: .public): \(failureMessage, privacy: .public)")
                 result.allHandled = false
@@ -334,6 +379,86 @@ final class TransactionImportService {
         }
 
         return result
+    }
+
+    /// Shared by the `removed` loop and the `modified` loop's non-positive-amount path
+    /// (review finding 4) — both need to either hard-delete a pure import or revert a
+    /// merge-derived row back to `.manual`, identically (STANDARDS §3, no near-duplicate
+    /// logic).
+    private func deleteOrRevertExisting(_ existing: SpendTransaction) -> String? {
+        if existing.wasMergedFromManual {
+            let original = SnapshotForRollback(existing)
+            return PersistenceSaveHelper.saveOrRollback(
+                modelContext: modelContext,
+                mutate: {
+                    existing.entryMethod = .manual
+                    existing.plaidTransactionID = nil
+                    existing.wasMergedFromManual = false
+                },
+                rollback: { original.restore(to: existing) },
+                logger: logger
+            )
+        } else {
+            return PersistenceSaveHelper.deleteWithRollback(existing, modelContext: modelContext, logger: logger)
+        }
+    }
+
+    /// Refreshes a still-queued decision's persisted snapshot with newer Plaid data
+    /// (review finding 3). Returns `false` on a persistence failure (logged; caller
+    /// marks the page unhandled so it's retried), `true` on success — mirrors every
+    /// other `Bool`-via-`failureMessage` handling pattern in this file.
+    private func updateQueuedDecision(at index: Int, with mapped: MappedPlaidTransaction) -> Bool {
+        let decision = mergeQueue[index]
+        guard let record = fetchPendingMerge(plaidTransactionID: decision.id) else {
+            // Persisted row is missing (shouldn't happen outside test doubles/manual DB
+            // surgery) — nothing durable to update; drop the stale in-memory entry too.
+            mergeQueue.remove(at: index)
+            return true
+        }
+
+        let originalAmount = record.incomingAmount
+        let originalDate = record.incomingDate
+        let originalMerchantName = record.incomingMerchantName
+        let failureMessage = PersistenceSaveHelper.saveOrRollback(
+            modelContext: modelContext,
+            mutate: {
+                record.incomingAmount = mapped.amount
+                record.incomingDate = mapped.date
+                record.incomingMerchantName = mapped.merchantName
+            },
+            rollback: {
+                record.incomingAmount = originalAmount
+                record.incomingDate = originalDate
+                record.incomingMerchantName = originalMerchantName
+            },
+            logger: logger
+        )
+        if let failureMessage {
+            logger.error("Failed to update queued merge decision \(decision.id, privacy: .public): \(failureMessage, privacy: .public)")
+            return false
+        }
+        mergeQueue[index] = PendingMergeDecision(id: decision.id, manualTransaction: decision.manualTransaction, incoming: mapped)
+        return true
+    }
+
+    /// Deletes a still-queued decision's persisted row and its in-memory mirror (review
+    /// finding 3) — used when a `modified` (non-positive amount) or `removed` event
+    /// reports that the incoming side of a pending decision is no longer live. Returns
+    /// `false` on a persistence failure (logged; caller marks the page unhandled).
+    private func removeQueuedDecision(at index: Int) -> Bool {
+        let decision = mergeQueue[index]
+        guard let record = fetchPendingMerge(plaidTransactionID: decision.id) else {
+            mergeQueue.remove(at: index)
+            return true
+        }
+
+        let failureMessage = PersistenceSaveHelper.deleteWithRollback(record, modelContext: modelContext, logger: logger)
+        if let failureMessage {
+            logger.error("Failed to clear queued merge decision \(decision.id, privacy: .public): \(failureMessage, privacy: .public)")
+            return false
+        }
+        mergeQueue.remove(at: index)
+        return true
     }
 
     /// Captures the fields `applyModified`/the `removed`-revert path mutate, so a failed
