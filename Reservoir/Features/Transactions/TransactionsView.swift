@@ -41,47 +41,57 @@ struct TransactionsView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
-                if transactions.isEmpty {
-                    ContentUnavailableView(
-                        "No transactions yet",
-                        systemImage: "list.bullet",
-                        description: Text("Add a transaction to get started.")
-                    )
-                    .accessibilityIdentifier("transactions.emptyState")
-                } else {
-                    List {
-                        ForEach(sections) { section in
-                            Section(TransactionsScreenCalculator.sectionTitle(for: section.day, referenceDate: todayClock.referenceDate, calendar: calendar)) {
-                                ForEach(section.transactions, id: \.persistentModelID) { transaction in
-                                    Button {
-                                        transactionPendingEdit = transaction
-                                    } label: {
-                                        TransactionRowView(
-                                            transaction: transaction,
-                                            showGoalLabel: true,
-                                            accessibilityIdentifier: "transactions.row"
-                                        )
-                                    }
-                                    .buttonStyle(.plain)
-                                    .swipeActions {
-                                        Button(role: .destructive) {
-                                            transactionPendingDelete = transaction
+            VStack(spacing: 0) {
+                if let error = importService?.presentedError {
+                    Text(error.userFacingMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .padding(.horizontal)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("transactions.importError")
+                }
+                Group {
+                    if transactions.isEmpty {
+                        ContentUnavailableView(
+                            "No transactions yet",
+                            systemImage: "list.bullet",
+                            description: Text("Add a transaction to get started.")
+                        )
+                        .accessibilityIdentifier("transactions.emptyState")
+                    } else {
+                        List {
+                            ForEach(sections) { section in
+                                Section(TransactionsScreenCalculator.sectionTitle(for: section.day, referenceDate: todayClock.referenceDate, calendar: calendar)) {
+                                    ForEach(section.transactions, id: \.persistentModelID) { transaction in
+                                        Button {
+                                            transactionPendingEdit = transaction
                                         } label: {
-                                            Label("Delete", systemImage: "trash")
+                                            TransactionRowView(
+                                                transaction: transaction,
+                                                showGoalLabel: true,
+                                                accessibilityIdentifier: "transactions.row"
+                                            )
+                                        }
+                                        .buttonStyle(.plain)
+                                        .swipeActions {
+                                            Button(role: .destructive) {
+                                                transactionPendingDelete = transaction
+                                            } label: {
+                                                Label("Delete", systemImage: "trash")
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
-                    }
-                    .accessibilityIdentifier("transactions.list")
-                    .refreshable {
-                        await triggerRefresh()
+                        .accessibilityIdentifier("transactions.list")
+                        .refreshable {
+                            await triggerRefresh()
+                        }
                     }
                 }
-            }
-            .navigationTitle("Transactions")
+                .navigationTitle("Transactions")
             .toolbar {
                 #if DEBUG
                 // reservoir-tq7: debug-only hook so XCUITest can drive the exact same
@@ -124,6 +134,7 @@ struct TransactionsView: View {
                     }
                     .accessibilityIdentifier("transactions.addTransaction")
                 }
+            }
             }
         }
         .sheet(isPresented: $isShowingAddTransaction) {

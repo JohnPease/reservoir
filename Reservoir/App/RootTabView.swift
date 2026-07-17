@@ -66,8 +66,8 @@ struct RootTabView: View {
                 )
             }
         }
-        .onChange(of: scenePhase) { oldPhase, newPhase in
-            Task { await importService?.handleScenePhaseTransition(from: oldPhase, to: newPhase) }
+        .onChange(of: scenePhase) { _, newPhase in
+            Task { await importService?.handleScenePhaseTransition(to: newPhase) }
         }
     }
 

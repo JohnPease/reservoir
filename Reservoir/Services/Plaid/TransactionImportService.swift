@@ -78,6 +78,11 @@ final class TransactionImportService {
     private(set) var mergeQueue: [PendingMergeDecision] = []
     var pendingMergeDecision: PendingMergeDecision? { mergeQueue.first }
 
+    /// Tracks whether a genuine `.background` phase has been observed since the last
+    /// import-triggering `.active` transition — see `handleScenePhaseTransition`'s doc
+    /// comment for why this can't just compare an `(oldPhase, newPhase)` pair directly.
+    private var hasBackgroundedSinceActive = false
+
     struct PendingMergeDecision: Identifiable, Equatable {
         let id: String
         let manualTransaction: SpendTransaction
@@ -129,15 +134,30 @@ final class TransactionImportService {
     /// skipped forever. A page with unhandled failures stops pagination for this run
     /// (later pages would only be re-fetched next run anyway, since the persisted cursor
     /// hasn't moved past the failed page).
-    /// Testable seam for adq.6.4's app-foreground trigger: SwiftUI's initial `scenePhase`
-    /// sequence never passes through `.background` on cold launch (nil/.inactive →
-    /// .active only), so gating on `oldPhase == .background` naturally excludes cold
-    /// launch and only fires on a genuine return from the background. Unit tests call
-    /// this directly with two phases and assert `runImport()` ran, rather than needing an
-    /// XCUITest to actually background/foreground the device.
-    func handleScenePhaseTransition(from oldPhase: ScenePhase?, to newPhase: ScenePhase) async {
-        guard oldPhase == .background, newPhase == .active else { return }
-        await runImport()
+    /// Testable seam for adq.6.4's app-foreground trigger. SwiftUI fires a separate
+    /// `.onChange(of: scenePhase)` callback for each discrete phase change, not one
+    /// coalesced call spanning a multi-step transition — a real return from background
+    /// arrives as two calls, `(.background, .inactive)` then `(.inactive, .active)`, so
+    /// comparing a single call's `(oldPhase, newPhase)` pair against `(.background,
+    /// .active)` can never match (that was this method's original, broken shape).
+    /// Instead this tracks `hasBackgroundedSinceActive` across calls: cold launch's
+    /// `.inactive → .active` sequence never passes through `.background` first, so the
+    /// flag stays unset and correctly excludes it, while a genuine backgrounding sets it
+    /// so the next `.active` transition (regardless of how many intermediate `.inactive`
+    /// calls preceded it) triggers exactly one import. Unit tests drive this by calling
+    /// the method once per phase in the same sequence a real device would produce, rather
+    /// than needing an XCUITest to actually background/foreground the device.
+    func handleScenePhaseTransition(to newPhase: ScenePhase) async {
+        switch newPhase {
+        case .background:
+            hasBackgroundedSinceActive = true
+        case .active:
+            guard hasBackgroundedSinceActive else { return }
+            hasBackgroundedSinceActive = false
+            await runImport()
+        default:
+            break
+        }
     }
 
     func runImport() async {

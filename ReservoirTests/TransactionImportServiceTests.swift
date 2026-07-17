@@ -685,49 +685,87 @@ final class TransactionImportServiceTests: XCTestCase {
     }
 
     // MARK: - handleScenePhaseTransition (adq.6.4 foreground-refresh trigger)
+    //
+    // `handleScenePhaseTransition` takes only the new phase, one call per real
+    // `.onChange(of: scenePhase)` firing — a real device delivers a return from
+    // background as *two* separate calls (`.background`, then `.inactive`, then
+    // `.active`... i.e. `to: .background`, `to: .inactive`, `to: .active` as three
+    // distinct calls), never one call spanning both endpoints. These tests drive the
+    // exact call sequence a real device would produce, not synthetic (old, new) pairs.
 
-    /// The one scene-phase transition adq.6.4's UX spec actually wants: a genuine return
-    /// from the background (not cold launch) must kick off `runImport()`.
-    func testHandleScenePhaseTransition_backgroundToActive_firesRunImport() async {
+    /// The realistic backgrounding-then-foregrounding sequence: `.active -> .inactive ->
+    /// .background -> .inactive -> .active`, delivered as five separate calls. Only the
+    /// final call (landing on `.active` after a genuine `.background` sighting) should
+    /// invoke `runImport()`.
+    func testHandleScenePhaseTransition_realBackgroundForegroundSequence_firesRunImportOnce() async {
         ScriptedSyncURLProtocol.responses = [
             syncResponse(added: [transactionJSON(id: "plaid-1", amount: 12.50)], nextCursor: "cursor-1")
         ]
         let sut = makeSUT()
 
-        await sut.handleScenePhaseTransition(from: .background, to: .active)
+        await sut.handleScenePhaseTransition(to: .inactive)
+        await sut.handleScenePhaseTransition(to: .background)
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 0, "must not import while merely backgrounding, before returning to active.")
 
-        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 1, "background -> active must invoke the import pipeline.")
+        await sut.handleScenePhaseTransition(to: .inactive)
+        await sut.handleScenePhaseTransition(to: .active)
+
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 1, "a genuine return from background must invoke the import pipeline exactly once.")
         XCTAssertEqual(sut.lastImportSummary?.added, 1)
     }
 
-    /// Cold launch's scene-phase sequence goes `.inactive -> .active` (SwiftUI never
-    /// reports an initial `.background` phase), so this transition must NOT be mistaken
-    /// for a return from backgrounding — Link itself just happened in that case per the
-    /// bead's UX notes, and a separate first-launch-import story would own this if wanted.
-    func testHandleScenePhaseTransition_inactiveToActive_doesNotFireRunImport() async {
+    /// Cold launch's scene-phase sequence is `.inactive -> .active` (SwiftUI never
+    /// reports an initial `.background` phase), so it must NOT be mistaken for a return
+    /// from backgrounding — Link itself just happened in that case per the bead's UX
+    /// notes, and a separate first-launch-import story would own this if wanted.
+    func testHandleScenePhaseTransition_coldLaunchSequence_doesNotFireRunImport() async {
         ScriptedSyncURLProtocol.responses = [
             syncResponse(added: [transactionJSON(id: "plaid-1", amount: 12.50)], nextCursor: "cursor-1")
         ]
         let sut = makeSUT()
 
-        await sut.handleScenePhaseTransition(from: .inactive, to: .active)
+        await sut.handleScenePhaseTransition(to: .inactive)
+        await sut.handleScenePhaseTransition(to: .active)
 
-        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 0, "cold-launch's inactive -> active transition must not trigger an import.")
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 0, "cold-launch's inactive -> active sequence must not trigger an import.")
         XCTAssertNil(sut.lastImportSummary)
     }
 
-    /// The app backgrounding (active -> inactive, or any transition landing somewhere
-    /// other than `.active`) must not fire an import — only a transition *into* `.active`
-    /// from `.background` should.
-    func testHandleScenePhaseTransition_activeToInactive_doesNotFireRunImport() async {
+    /// A brief `.inactive` blip that never actually reaches `.background` (e.g. pulling
+    /// down Control Center while already active) must not be mistaken for a real return
+    /// from backgrounding — only an observed `.background` phase should arm the next
+    /// `.active` transition. Distinct from the cold-launch test above: this one starts
+    /// from a genuinely active session, not from app launch.
+    func testHandleScenePhaseTransition_inactiveBlipWithoutBackgrounding_doesNotFireRunImport() async {
+        ScriptedSyncURLProtocol.responses = [
+            syncResponse(added: [transactionJSON(id: "plaid-1", amount: 12.50)], nextCursor: "cursor-1")
+        ]
+        let sut = makeSUT()
+        await sut.handleScenePhaseTransition(to: .inactive)
+        await sut.handleScenePhaseTransition(to: .active)
+        ScriptedSyncURLProtocol.responses = [
+            syncResponse(added: [transactionJSON(id: "plaid-2", amount: 5.00)], nextCursor: "cursor-2")
+        ]
+
+        await sut.handleScenePhaseTransition(to: .inactive)
+        await sut.handleScenePhaseTransition(to: .active)
+
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 0, "an inactive blip that never reaches .background must not trigger an import.")
+        XCTAssertNil(sut.lastImportSummary)
+    }
+
+    /// Backgrounding alone (never returning to `.active`) must not fire an import — only
+    /// the subsequent transition *into* `.active` should.
+    func testHandleScenePhaseTransition_backgroundingAlone_doesNotFireRunImport() async {
         ScriptedSyncURLProtocol.responses = [
             syncResponse(added: [transactionJSON(id: "plaid-1", amount: 12.50)], nextCursor: "cursor-1")
         ]
         let sut = makeSUT()
 
-        await sut.handleScenePhaseTransition(from: .active, to: .inactive)
+        await sut.handleScenePhaseTransition(to: .inactive)
+        await sut.handleScenePhaseTransition(to: .background)
 
-        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 0, "active -> inactive (backgrounding) must not trigger an import.")
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 0, "backgrounding alone (never returning to active) must not trigger an import.")
         XCTAssertNil(sut.lastImportSummary)
     }
 
