@@ -12,7 +12,14 @@ import LinkKit
 /// Production environments (Plaid's own account model, not this app's
 /// choice) — only the `secret` differs per environment, so there is one
 /// `clientID` and two secrets here rather than two full credential pairs.
-private enum PlaidCredentials {
+/// Not `private` — reused by `TransactionImportService` (adq.6.3) for its own direct
+/// `/transactions/sync` call, which needs the same `client_id`/environment-scoped
+/// `secret` this app's other direct-from-device Plaid REST calls use. Keeping credential
+/// reading in this one place (rather than a second copy) is what STANDARDS §3 requires,
+/// even though the two callers' network-call boilerplate itself isn't shared (see
+/// `TransactionImportService`'s own `post(_:body:)` doc comment for why that duplication
+/// is accepted).
+enum PlaidCredentials {
     static var clientID: String {
         Bundle.main.object(forInfoDictionaryKey: "PlaidClientID") as? String ?? ""
     }
@@ -83,6 +90,7 @@ final class PlaidServiceLive: PlaidService {
     private let keychain: KeychainServicing
     private let urlSession: URLSession
     private let environmentStore: PlaidEnvironmentStoring
+    private let cursorStore: PlaidSyncCursorStoring
 
     /// The environment pinned for the Link flow currently in progress (set
     /// by `startLink()`, cleared once that flow settles). `createLinkToken()`
@@ -103,15 +111,27 @@ final class PlaidServiceLive: PlaidService {
     init(
         keychain: KeychainServicing = KeychainService(),
         urlSession: URLSession = .shared,
-        environmentStore: PlaidEnvironmentStoring = PlaidEnvironmentStore()
+        environmentStore: PlaidEnvironmentStoring = PlaidEnvironmentStore(),
+        cursorStore: PlaidSyncCursorStoring = PlaidSyncCursorStore()
     ) {
         self.keychain = keychain
         self.urlSession = urlSession
         self.environmentStore = environmentStore
+        self.cursorStore = cursorStore
         self.linkedItem = Self.loadPersistedLinkedItem()
 
         let keychainForInvalidation = keychain
+        let cursorStoreForInvalidation = cursorStore
         (environmentStore as? PlaidEnvironmentStore)?.onChange = { [weak self] _ in
+            // Invalidate every sync cursor, not just the newly-selected environment's —
+            // a stale cursor left behind for the environment being switched *away from*
+            // would otherwise be reused unmodified the next time that environment is
+            // switched back to, even though the linked item/Keychain token for it was
+            // already cleared here (adq.6.3). One hook, one place — see
+            // PlaidSyncCursorStore's doc comment / the plan's "Item 2" decision.
+            for candidate in PlaidEnvironment.allCases {
+                cursorStoreForInvalidation.clearCursor(for: candidate)
+            }
             Task { @MainActor in
                 self?.linkedItem = nil
                 Self.clearPersistedLinkedItem()

@@ -54,12 +54,6 @@ final class PlaidEnvironmentTests: XCTestCase {
 
     // MARK: - PlaidServiceLive resolves environment at call time
 
-    private final class StubEnvironmentStore: PlaidEnvironmentStoring, @unchecked Sendable {
-        var current: PlaidEnvironment
-        init(_ initial: PlaidEnvironment) { self.current = initial }
-        func set(_ environment: PlaidEnvironment) { current = environment }
-    }
-
     /// Captures the last request's host, letting the test assert which
     /// `PlaidEnvironment` host `PlaidServiceLive` actually dialed without
     /// depending on real network access or real credentials.

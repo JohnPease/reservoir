@@ -62,7 +62,7 @@ Technical details below).
 
 - **Platform**: iOS 17+, Swift + SwiftUI
 - **Persistence**: SwiftData, wrapped in a `VersionedSchema` (currently
-  `SchemaV3`) from day one so migrations don't require retrofitting. Bumping
+  `SchemaV4`) from day one so migrations don't require retrofitting. Bumping
   the schema version (rather than editing the current `VersionedSchema` in
   place) is required any time a `@Model` type's shape changes — see "Data
   model" below
@@ -335,7 +335,8 @@ type (not private to a view) so reservoir-adq.4's Plaid import-time
 auto-tagging can call it directly without reimplementing the match rule.
 
 **Plaid Link + Keychain token storage** (adq.6.1, foundation only —
-transaction import is a separate story, adq.6.3): `Services/Plaid/` is a new
+transaction import itself is documented separately below, adq.6.3):
+`Services/Plaid/` is a new
 architectural boundary isolating the Plaid LinkKit SDK per STANDARDS §4.
 `PlaidService` (`Services/Plaid/PlaidService.swift`) is a LinkKit-free
 protocol — no `LinkKit` type appears in its public surface — exposing
@@ -424,6 +425,74 @@ appears anywhere in the app. It owns two responsibilities:
   end to end. Settings (adq.7) owns the real entry point and this debug view
   is removed once that story ships.
 
+**Transaction import + dedup/merge prompt** (adq.6.3, absorbs adq.4's
+former "MerchantRule auto-tagging at import" scope): pulls transactions from
+the linked Plaid item via `/transactions/sync` (cursor-based, no
+`/transactions/get` fallback), maps them to `SpendTransaction`, and — the
+core trust-preserving mechanic PROJECT_SPEC calls out as non-deferrable for
+MVP — dedups against existing manual entries before saving, so nothing gets
+double-counted.
+  - `TransactionImportService` (`Services/Plaid/TransactionImportService.swift`,
+    `@Observable @MainActor`, same idiom as `PlaidServiceLive`) owns
+    orchestration: it takes a `ModelContext` directly and performs its own
+    `FetchDescriptor` fetches rather than requiring a caller to pass in
+    already-`@Query`'d arrays, since a future story (adq.6.4) will trigger
+    imports from app-lifecycle events with no view necessarily present. It
+    also declares the `/transactions/sync` wire DTOs and makes the direct
+    REST call itself (a small, duplicated `post(_:body:)` helper mirroring
+    `PlaidServiceLive`'s own — accepted boilerplate duplication, not the
+    business-logic duplication STANDARDS §3 targets, with only two Plaid
+    REST call sites in the app today).
+  - `PlaidTransactionMapper` (`Services/PlaidTransactionMapper.swift`, pure)
+    maps Plaid's wire shape to `MappedPlaidTransaction`. Plaid's `amount` is
+    positive for a debit/expense and negative for a credit/income (verified
+    against Plaid's `/transactions/sync` docs) — this app has no
+    income-tracking concept, so a Plaid `amount <= 0` is skipped entirely
+    (`map` returns `nil`) rather than sign-flipped into positive spend.
+  - `TransactionDedupMatcher` (`Services/TransactionDedupMatcher.swift`,
+    pure) finds a same-day (device-local calendar day) + exact-amount +
+    case-insensitive-exact-merchant match against existing *manual* entries
+    (no fuzzy/substring matching, per PROJECT_SPEC), and applies the
+    "Merge" resolution (Plaid's amount/date/merchantName win; `type`/
+    `isManualOverride`/`savingsGoal` are preserved from the manual entry).
+  - On a dedup match, the transaction is queued (`pendingMergeDecision`) and
+    surfaced via `MergePromptConfirmation` (`Shared/MergePromptConfirmation.swift`,
+    a `deleteConfirmation`-style but distinct two-choice — "Merge" / "Keep
+    both" — confirmation, since neither choice is destructive and there's no
+    "Cancel"). On no match (or "Keep both"), the transaction is saved as a
+    new `SpendTransaction` with `entryMethod = .imported`, run through the
+    same `MerchantMatcher` used by manual entry (adq.3), and attributed to a
+    `SavingsGoal` per the existing `TransactionEntryValidator
+    .GoalAttributionRequirement` policy (0 goals → unattributed, 1 active
+    goal → auto-assigned, 2+ → unattributed, no silent guessing).
+  - `/transactions/sync`'s `modified` and `removed` lists are also handled,
+    not just `added`: `modified` upserts Plaid's values (re-running
+    `MerchantMatcher` only when `isManualOverride == false`); `removed`
+    auto-deletes a pure import but *reverts* a merge-derived row back to
+    `entryMethod = .manual` instead of deleting it, protecting the user's
+    original manual entry — distinguished by the new
+    `SpendTransaction.wasMergedFromManual` field (`SchemaV4`, see "Data
+    model" below).
+  - `PlaidSyncCursorStore` (`Services/Plaid/PlaidSyncCursorStore.swift`,
+    `UserDefaults`-backed, behind `PlaidSyncCursorStoring`, mirroring
+    `PlaidEnvironmentStore`'s shape) persists the sync cursor scoped
+    per-`PlaidEnvironment` — Sandbox and Production are unrelated
+    transaction histories — and is invalidated via the same `onChange` hook
+    `PlaidServiceLive` already uses to clear the linked-item/Keychain state
+    on an environment switch (one invalidation path, not two). A sync
+    page's cursor only advances past transactions that saved successfully
+    or were queued for a merge decision (a queued item counts as
+    "handled" — Plaid won't redeliver an already-acknowledged `added` item
+    once the cursor moves past it); a genuine save failure blocks the
+    advance so that item is retried on the next sync. Each write goes
+    through the existing `PersistenceSaveHelper.saveOrRollback`/
+    `deleteWithRollback`, with a failed transaction's save logged and
+    skipped rather than failing the whole import batch.
+  - Same debug-only posture as adq.6.1/6.2: `PlaidDebugLinkView` gets a
+    "Transaction import (debug)" section (manual "Import transactions"
+    trigger, non-blocking summary line, merge prompt wiring). Foreground/
+    pull-to-refresh triggers are adq.6.4, not built here.
+
 ## Technical details
 
 - **Minimum iOS version**: 17.0 (required for SwiftData and `@Observable`)
@@ -490,14 +559,24 @@ appears anywhere in the app. It owns two responsibilities:
   a `#if DEBUG` entry point standing in for Settings (see Architecture
   above) — links an institution (including OAuth institutions) via LinkKit,
   exchanges the resulting token directly from the device, and stores it in
-  Keychain. Transaction import itself is not built yet (adq.6.3).
+  Keychain.
 - **Sandbox/Production environment switching** (adq.6.2): an in-app toggle
   (currently on the same `#if DEBUG` entry point above) switches which
   Plaid credential set/API host `PlaidServiceLive` uses, with no rebuild —
   see "Sandbox/Production environment switching" under Architecture above.
+- **Transaction import + dedup/merge prompt** (adq.6.3, implemented): a
+  debug-triggered `/transactions/sync` pull (same `#if DEBUG` entry point)
+  that dedups new Plaid transactions against manual entries before saving —
+  a matched pair prompts "Merge" (Plaid wins, keeps one row) vs. "Keep both"
+  — auto-tags imports via the existing `MerchantRule`s, attributes them to
+  a `SavingsGoal` under the same rules manual entry uses, and handles
+  upstream `modified`/`removed` transactions too. See "Transaction import +
+  dedup/merge prompt" under Architecture above. Foreground/pull-to-refresh
+  triggers for this pipeline are still to come (adq.6.4).
 - 🚧 Everything else is still in progress. Current state beyond Today,
   Goals, and Transactions: the placeholder Settings tab (linked accounts,
-  starting balances, goal management) and Plaid transaction import.
+  starting balances, goal management) and wiring the import pipeline above
+  to real app-lifecycle triggers (adq.6.4).
 - Planned MVP scope and build order are tracked in
   [`docs/PROJECT_SPEC.md`](docs/PROJECT_SPEC.md) and as beads under the
   `reservoir-adq` epic (`bd show reservoir-adq`).

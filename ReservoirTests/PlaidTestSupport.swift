@@ -10,3 +10,32 @@ final class StubKeychain: KeychainServicing, @unchecked Sendable {
     func read(for key: String) async throws -> String? { nil }
     func delete(for key: String) async throws {}
 }
+
+/// A `KeychainServicing` stub that reports a fixed access token as already stored —
+/// backs `TransactionImportServiceTests`, which needs `runImport()` to get past its
+/// "no linked item, no-op" guard.
+final class StubKeychainWithToken: KeychainServicing, @unchecked Sendable {
+    private let token: String
+    init(token: String = "access-sandbox-test") { self.token = token }
+    func save(_ value: String, for key: String) async throws {}
+    func read(for key: String) async throws -> String? { token }
+    func delete(for key: String) async throws {}
+}
+
+/// A simple in-memory `PlaidEnvironmentStoring` stub — moved here (originally private to
+/// `PlaidEnvironmentTests`) so `TransactionImportServiceTests` can reuse it too, per
+/// STANDARDS' no-duplicated-logic rule.
+final class StubEnvironmentStore: PlaidEnvironmentStoring, @unchecked Sendable {
+    var current: PlaidEnvironment
+    init(_ initial: PlaidEnvironment = .sandbox) { self.current = initial }
+    func set(_ environment: PlaidEnvironment) { current = environment }
+}
+
+/// A simple in-memory `PlaidSyncCursorStoring` stub — backs `TransactionImportServiceTests`
+/// without touching real `UserDefaults`.
+final class StubCursorStore: PlaidSyncCursorStoring, @unchecked Sendable {
+    private var cursors: [PlaidEnvironment: String] = [:]
+    func cursor(for environment: PlaidEnvironment) -> String? { cursors[environment] }
+    func setCursor(_ cursor: String?, for environment: PlaidEnvironment) { cursors[environment] = cursor }
+    func clearCursor(for environment: PlaidEnvironment) { cursors[environment] = nil }
+}
