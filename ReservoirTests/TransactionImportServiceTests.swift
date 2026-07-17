@@ -18,12 +18,14 @@ final class TransactionImportServiceTests: XCTestCase {
         container = try ModelContainer(for: schema, migrationPlan: ReservoirMigrationPlan.self, configurations: [configuration])
         context = ModelContext(container)
         ScriptedSyncURLProtocol.reset()
+        SlowSyncURLProtocol.reset()
     }
 
     override func tearDownWithError() throws {
         context = nil
         container = nil
         ScriptedSyncURLProtocol.reset()
+        SlowSyncURLProtocol.reset()
     }
 
     // MARK: - Test doubles
@@ -64,6 +66,55 @@ final class TransactionImportServiceTests: XCTestCase {
     private func makeScriptedURLSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [ScriptedSyncURLProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+
+    /// Stands in for `/transactions/sync` but blocks `startLoading()` on `gate` until the
+    /// test signals it — lets a test hold `runImport()` mid-flight (`isImporting == true`)
+    /// for as long as needed, to exercise the `handleScenePhaseTransition`/`isImporting`
+    /// interaction (code review finding: a foreground trigger landing while another import
+    /// is already in flight must not silently consume `hasBackgroundedSinceActive`).
+    private final class SlowSyncURLProtocol: URLProtocol {
+        nonisolated(unsafe) static var gate = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) static var response = Data()
+        nonisolated(unsafe) static var callCount = 0
+
+        static func reset() {
+            gate = DispatchSemaphore(value: 0)
+            response = Data()
+            callCount = 0
+        }
+
+        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+        override func startLoading() {
+            // Bounded, not `.wait()` with no timeout: `URLSessionConfiguration.ephemeral`
+            // sessions share a limited, process-wide loading-thread pool, so a genuinely
+            // unbounded wait here (from a test bug that forgets to signal) leaks a blocked
+            // thread that starves every *other* test's network calls in this file, not
+            // just this one -- exactly what happened when this test originally only
+            // signaled the gate once but triggered two real network calls (code review
+            // finding: the retry call blocked forever on an already-exhausted semaphore).
+            _ = Self.gate.wait(timeout: .now() + 5)
+            Self.callCount += 1
+            let response = HTTPURLResponse(
+                url: request.url ?? URL(string: "https://sandbox.plaid.com")!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Self.response)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+
+        override func stopLoading() {}
+    }
+
+    private func makeSlowURLSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [SlowSyncURLProtocol.self]
         return URLSession(configuration: configuration)
     }
 
@@ -767,6 +818,52 @@ final class TransactionImportServiceTests: XCTestCase {
 
         XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 0, "backgrounding alone (never returning to active) must not trigger an import.")
         XCTAssertNil(sut.lastImportSummary)
+    }
+
+    /// Code-review finding: the original fix reset `hasBackgroundedSinceActive` before
+    /// calling `runImport()`, so a foreground trigger landing while another import was
+    /// already in flight silently lost that sync for the whole cycle (`runImport()`'s own
+    /// `guard !isImporting` made the call a no-op, but the flag was already spent). This
+    /// drives that exact scenario with `SlowSyncURLProtocol` gating an in-flight import,
+    /// and confirms the flag survives to retry on the very next `.active` transition.
+    func testHandleScenePhaseTransition_activeWhileAnotherImportInFlight_doesNotConsumeFlag_retriesOnNextActive() async {
+        SlowSyncURLProtocol.response = syncResponse(added: [transactionJSON(id: "plaid-1", amount: 12.50)], nextCursor: "cursor-1")
+        let sut = TransactionImportService(
+            modelContext: context,
+            keychain: StubKeychainWithToken(),
+            urlSession: makeSlowURLSession(),
+            environmentStore: StubEnvironmentStore(.sandbox),
+            cursorStore: StubCursorStore()
+        )
+
+        // Simulate an already-in-flight import (e.g. pull-to-refresh) blocked on the network.
+        let inFlight = Task { await sut.runImport() }
+        var waited = 0
+        while !sut.isImporting, waited < 50 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+            waited += 1
+        }
+        XCTAssertTrue(sut.isImporting, "setup precondition: the in-flight import must actually be running before proceeding.")
+
+        // A foreground return lands while that import is still in flight.
+        await sut.handleScenePhaseTransition(to: .background)
+        await sut.handleScenePhaseTransition(to: .active)
+        XCTAssertEqual(SlowSyncURLProtocol.callCount, 0, "must not have completed a second import yet -- the in-flight one is still gated.")
+
+        // Let the in-flight import finish. The upcoming retry makes its own real network
+        // call through the same slow protocol, so pre-arm a second signal for it now --
+        // otherwise that call blocks on an already-exhausted semaphore (this test's own
+        // original bug, see `SlowSyncURLProtocol.startLoading()`'s comment).
+        SlowSyncURLProtocol.gate.signal()
+        SlowSyncURLProtocol.gate.signal()
+        await inFlight.value
+        XCTAssertEqual(SlowSyncURLProtocol.callCount, 1)
+
+        // The flag must have survived (not been consumed) the earlier no-op attempt --
+        // the very next `.active` transition, with no additional `.background` in between,
+        // must now retry and succeed.
+        await sut.handleScenePhaseTransition(to: .active)
+        XCTAssertEqual(SlowSyncURLProtocol.callCount, 2, "the foreground trigger that landed mid-import must retry once the prior import finishes, not be silently dropped for this cycle.")
     }
 
     // MARK: - presentedErrorDetail (code-review finding: pull-to-refresh failures were silent)

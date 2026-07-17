@@ -153,12 +153,22 @@ final class TransactionImportService {
     /// calls preceded it) triggers exactly one import. Unit tests drive this by calling
     /// the method once per phase in the same sequence a real device would produce, rather
     /// than needing an XCUITest to actually background/foreground the device.
+    ///
+    /// The flag is only consumed once `runImport()` is actually about to run, not merely
+    /// attempted: if a foreground-return lands while another import (pull-to-refresh, the
+    /// debug button, or an earlier scene-phase transition) is already in flight,
+    /// `runImport()`'s own `guard !isImporting` would otherwise silently no-op while this
+    /// method had already reset the flag — losing that foreground-triggered sync until an
+    /// entire extra background/foreground round-trip. Checking `isImporting` here first
+    /// leaves the flag armed so the very next `.active` transition retries instead (code
+    /// review finding: a prior version reset the flag unconditionally before calling
+    /// `runImport()`).
     func handleScenePhaseTransition(to newPhase: ScenePhase) async {
         switch newPhase {
         case .background:
             hasBackgroundedSinceActive = true
         case .active:
-            guard hasBackgroundedSinceActive else { return }
+            guard hasBackgroundedSinceActive, !isImporting else { return }
             hasBackgroundedSinceActive = false
             await runImport()
         default:
