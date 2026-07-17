@@ -6,7 +6,7 @@ final class ModelPersistenceTests: XCTestCase {
     private var container: ModelContainer!
 
     override func setUpWithError() throws {
-        let schema = Schema(versionedSchema: SchemaV4.self)
+        let schema = Schema(versionedSchema: SchemaV5.self)
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         container = try ModelContainer(for: schema, migrationPlan: ReservoirMigrationPlan.self, configurations: [configuration])
     }

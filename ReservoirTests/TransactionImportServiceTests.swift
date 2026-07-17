@@ -12,7 +12,7 @@ final class TransactionImportServiceTests: XCTestCase {
     private var context: ModelContext!
 
     override func setUpWithError() throws {
-        let schema = Schema(versionedSchema: SchemaV4.self)
+        let schema = Schema(versionedSchema: SchemaV5.self)
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         container = try ModelContainer(for: schema, migrationPlan: ReservoirMigrationPlan.self, configurations: [configuration])
         context = ModelContext(container)
@@ -192,6 +192,68 @@ final class TransactionImportServiceTests: XCTestCase {
 
         XCTAssertEqual(sut.mergeQueue.count, 1, "sanity check: the item must actually have been queued for merge, not saved outright.")
         XCTAssertEqual(cursorStore.cursor(for: .sandbox), "cursor-after-queue")
+    }
+
+    // MARK: - Merge-decision persistence (review findings 2+5 -- see SchemaV5's doc comment)
+
+    /// A pending decision must survive process death: `mergeQueue` was previously
+    /// in-memory only, so a killed app or deallocated `TransactionImportService`
+    /// instance lost any unresolved decision for good, since Plaid won't redeliver an
+    /// already-acknowledged `added` item once the cursor moves past its page. Proves the
+    /// fix by constructing a brand-new `TransactionImportService` against the *same*
+    /// `ModelContext` (simulating an app relaunch) with no in-memory knowledge of the
+    /// first instance's `mergeQueue`, and asserting the decision is recovered from the
+    /// persisted `PendingTransactionMerge` row.
+    func testPendingMergeDecision_survivesFreshServiceInstance_simulatingRelaunch() async throws {
+        let manual = SpendTransaction(amount: 12.50, date: matchingFixtureDate, merchantName: "Coffee Shop", type: .variable, entryMethod: .manual)
+        context.insert(manual)
+        try context.save()
+
+        ScriptedSyncURLProtocol.responses = [
+            syncResponse(added: [transactionJSON(id: "plaid-1", amount: 12.50)], nextCursor: "cursor-1")
+        ]
+        let sut = makeSUT()
+        await sut.runImport()
+        XCTAssertEqual(sut.mergeQueue.count, 1, "sanity check: the item must actually have been queued for merge.")
+
+        let relaunchedSUT = makeSUT()
+
+        XCTAssertEqual(relaunchedSUT.mergeQueue.count, 1, "A pending decision must be recoverable on next launch, not lost when the owning service instance is deallocated.")
+        XCTAssertEqual(relaunchedSUT.pendingMergeDecision?.manualTransaction.persistentModelID, manual.persistentModelID)
+        XCTAssertEqual(relaunchedSUT.pendingMergeDecision?.incoming.plaidTransactionID, "plaid-1")
+    }
+
+    /// A second, independent sync run (e.g. a fresh instance after relaunch) must not
+    /// queue a duplicate decision against a manual transaction that already has one
+    /// pending -- the manual transaction is still `entryMethod == .manual` (only
+    /// resolving the decision changes that), so without excluding already-queued
+    /// candidates it would dedup-match again against a *different* incoming transaction.
+    func testRunImport_secondIndependentRun_doesNotDoubleQueueSameManualTransaction() async throws {
+        let manual = SpendTransaction(amount: 12.50, date: matchingFixtureDate, merchantName: "Coffee Shop", type: .variable, entryMethod: .manual)
+        context.insert(manual)
+        try context.save()
+
+        ScriptedSyncURLProtocol.responses = [
+            syncResponse(added: [transactionJSON(id: "plaid-1", amount: 12.50)], nextCursor: "cursor-1")
+        ]
+        let sut = makeSUT()
+        await sut.runImport()
+        XCTAssertEqual(sut.mergeQueue.count, 1, "sanity check: the item must actually have been queued for merge.")
+
+        // A brand-new service instance (simulating a second, independent sync run) sees
+        // another incoming transaction that would also dedup-match the same still-
+        // unresolved manual transaction.
+        ScriptedSyncURLProtocol.responses = [
+            syncResponse(added: [transactionJSON(id: "plaid-2", amount: 12.50)], nextCursor: "cursor-2")
+        ]
+        let secondSUT = makeSUT()
+        await secondSUT.runImport()
+
+        XCTAssertEqual(secondSUT.mergeQueue.count, 1, "The manual transaction already has a pending decision -- a second sync run must not queue a duplicate for it.")
+        XCTAssertEqual(secondSUT.mergeQueue.first?.incoming.plaidTransactionID, "plaid-1", "The original decision must remain untouched.")
+        let fetched = try context.fetch(FetchDescriptor<SpendTransaction>())
+        XCTAssertEqual(fetched.count, 2, "manual (untouched, still pending) + plaid-2 saved directly as a new import (no eligible candidate to match against).")
+        XCTAssertNotNil(fetched.first { $0.plaidTransactionID == "plaid-2" })
     }
 
     // MARK: - resolveMergeDecision(.merge)
@@ -445,7 +507,7 @@ final class TransactionImportServiceTests: XCTestCase {
     /// constraint) was tried first but turned out not to throw: SwiftData resolves that
     /// collision as an upsert rather than a `save()` failure.
     private func makeReadOnlyContext() throws -> (context: ModelContext, storeURL: URL) {
-        let schema = Schema(versionedSchema: SchemaV4.self)
+        let schema = Schema(versionedSchema: SchemaV5.self)
         let storeURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("TransactionImportServiceTests-\(UUID().uuidString)")
             .appendingPathExtension("store")
@@ -505,7 +567,7 @@ final class TransactionImportServiceTests: XCTestCase {
         // directly (SwiftData's in-memory change tracking around a read-only store has
         // sharp edges independent of what this test cares about), but what actually
         // landed on disk is the real question this test needs answered.
-        let verificationSchema = Schema(versionedSchema: SchemaV4.self)
+        let verificationSchema = Schema(versionedSchema: SchemaV5.self)
         let verificationContainer = try ModelContainer(
             for: verificationSchema,
             migrationPlan: ReservoirMigrationPlan.self,

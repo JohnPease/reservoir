@@ -148,11 +148,67 @@ final class MigrationPlanTests: XCTestCase {
             configurations: [v4Configuration]
         )
         let context = ModelContext(v4Container)
-        let fetched = try context.fetch(FetchDescriptor<SpendTransaction>())
+        // Explicitly `SchemaV4.SpendTransaction`, not the bare `SpendTransaction` alias —
+        // that alias now points at `SchemaV5` (see `CurrentSchema.swift`), and this
+        // container was opened `for: v4Schema` only (same pitfall the V1->V2 and
+        // V2->V3 tests above already document).
+        let fetched = try context.fetch(FetchDescriptor<SchemaV4.SpendTransaction>())
 
         XCTAssertEqual(fetched.count, 1)
         XCTAssertEqual(fetched.first?.merchantName, "Grocery Store")
         XCTAssertEqual(fetched.first?.plaidTransactionID, "plaid-txn-existing")
         XCTAssertEqual(fetched.first?.wasMergedFromManual, false)
+    }
+
+    /// Regression coverage for review findings 2+5 (adq.6.3): a store created under
+    /// `SchemaV4` (as any pre-fix build would have on disk) must open cleanly under
+    /// `SchemaV5` via `ReservoirMigrationPlan`, with existing data intact and the new
+    /// `PendingTransactionMerge` model usable — see `SchemaV5`'s doc comment.
+    func testV4StoreMigratesToV5WithDataIntactAndPendingTransactionMergeUsable() throws {
+        let v4Schema = Schema(versionedSchema: SchemaV4.self)
+        let v4Configuration = ModelConfiguration(schema: v4Schema, url: storeURL)
+        do {
+            let v4Container = try ModelContainer(for: v4Schema, configurations: [v4Configuration])
+            let context = ModelContext(v4Container)
+            let transaction = SchemaV4.SpendTransaction(
+                amount: 30.00,
+                date: .now,
+                merchantName: "Hardware Store",
+                type: .variable,
+                entryMethod: .manual
+            )
+            context.insert(transaction)
+            try context.save()
+        }
+
+        let v5Schema = Schema(versionedSchema: SchemaV5.self)
+        let v5Configuration = ModelConfiguration(schema: v5Schema, url: storeURL)
+        let v5Container = try ModelContainer(
+            for: v5Schema,
+            migrationPlan: ReservoirMigrationPlan.self,
+            configurations: [v5Configuration]
+        )
+        let context = ModelContext(v5Container)
+        let fetchedTransactions = try context.fetch(FetchDescriptor<SpendTransaction>())
+
+        XCTAssertEqual(fetchedTransactions.count, 1)
+        XCTAssertEqual(fetchedTransactions.first?.merchantName, "Hardware Store")
+
+        // The new model is usable post-migration: insert and fetch a
+        // PendingTransactionMerge referencing the migrated transaction.
+        let manual = try XCTUnwrap(fetchedTransactions.first)
+        let pending = PendingTransactionMerge(
+            plaidTransactionID: "plaid-new",
+            incomingAmount: 30.00,
+            incomingDate: .now,
+            incomingMerchantName: "Hardware Store",
+            manualTransaction: manual
+        )
+        context.insert(pending)
+        try context.save()
+
+        let fetchedPending = try context.fetch(FetchDescriptor<PendingTransactionMerge>())
+        XCTAssertEqual(fetchedPending.count, 1)
+        XCTAssertEqual(fetchedPending.first?.manualTransaction?.persistentModelID, manual.persistentModelID)
     }
 }

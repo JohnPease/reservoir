@@ -68,6 +68,12 @@ final class TransactionImportService {
     private(set) var isImporting = false
     var presentedError: PlaidErrorCategory?
     private(set) var lastImportSummary: ImportSummary?
+    /// In-memory mirror of the `PendingTransactionMerge` rows in `modelContext` —
+    /// durable persistence (see `SchemaV5`'s doc comment) is what actually survives app
+    /// relaunch; this array is re-hydrated from that store at `init` and at the start of
+    /// every `runImport()` call via `hydrateMergeQueue()`, and kept in sync with it by
+    /// every mutation below (`processPage`'s queueing, `resolveMergeDecision`'s
+    /// deletion). Never mutated independent of the persisted store.
     private(set) var mergeQueue: [PendingMergeDecision] = []
     var pendingMergeDecision: PendingMergeDecision? { mergeQueue.first }
 
@@ -107,6 +113,7 @@ final class TransactionImportService {
         self.environmentStore = environmentStore
         self.cursorStore = cursorStore
         self.logger = logger
+        hydrateMergeQueue()
     }
 
     // MARK: - Import
@@ -137,7 +144,18 @@ final class TransactionImportService {
         let environment = environmentStore.current
         var requestCursor = cursorStore.cursor(for: environment)
         var summary = ImportSummary()
+
+        // Re-hydrate from the persisted store before fetching candidates: another
+        // `TransactionImportService` instance (a prior app session, most likely) may
+        // have queued decisions still unresolved. Excluding their manual transactions
+        // from this run's candidate pool is what stops a second, independent sync from
+        // matching the same manual row into a duplicate pending decision (review
+        // finding 5).
+        hydrateMergeQueue()
         var manualTransactions = fetchManualTransactions()
+        let alreadyQueuedManualIDs = Set(mergeQueue.map(\.manualTransaction.persistentModelID))
+        manualTransactions.removeAll { alreadyQueuedManualIDs.contains($0.persistentModelID) }
+
         var importedByPlaidID = fetchImportedIndex()
         let rules = fetchRules()
         let activeGoals = fetchActiveGoals()
@@ -211,12 +229,37 @@ final class TransactionImportService {
             guard let mapped = PlaidTransactionMapper.map(raw) else { continue }
 
             if let match = TransactionDedupMatcher.findMatch(for: mapped, existingManualTransactions: manualTransactions) {
-                mergeQueue.append(PendingMergeDecision(id: mapped.plaidTransactionID, manualTransaction: match, incoming: mapped))
-                // Remove the matched manual transaction from further matching this run —
-                // a manual entry should be offered for merge against at most one
-                // incoming transaction per import.
-                manualTransactions.removeAll { $0.persistentModelID == match.persistentModelID }
-                result.summary.queuedForMerge += 1
+                // Persist the decision (review findings 2+5) so it survives process
+                // death and can't be independently re-queued by a later sync run — see
+                // `SchemaV5`'s doc comment. Only append to the in-memory `mergeQueue`
+                // (and remove `match` from this run's remaining candidates) once the
+                // persisted row actually saved; a save failure here is handled the same
+                // way a save failure elsewhere in this loop is — logged, counted as
+                // unhandled so the page's cursor doesn't advance, retried next sync.
+                let record = PendingTransactionMerge(
+                    plaidTransactionID: mapped.plaidTransactionID,
+                    incomingAmount: mapped.amount,
+                    incomingDate: mapped.date,
+                    incomingMerchantName: mapped.merchantName,
+                    manualTransaction: match
+                )
+                let failureMessage = PersistenceSaveHelper.saveOrRollback(
+                    modelContext: modelContext,
+                    mutate: { modelContext.insert(record) },
+                    rollback: { modelContext.delete(record) },
+                    logger: logger
+                )
+                if let failureMessage {
+                    logger.error("Failed to queue merge decision for \(mapped.plaidTransactionID, privacy: .public): \(failureMessage, privacy: .public)")
+                    result.allHandled = false
+                } else {
+                    mergeQueue.append(PendingMergeDecision(id: mapped.plaidTransactionID, manualTransaction: match, incoming: mapped))
+                    // Remove the matched manual transaction from further matching this
+                    // run — a manual entry should be offered for merge against at most
+                    // one incoming transaction per import.
+                    manualTransactions.removeAll { $0.persistentModelID == match.persistentModelID }
+                    result.summary.queuedForMerge += 1
+                }
                 continue
             }
 
@@ -342,12 +385,28 @@ final class TransactionImportService {
 
     // MARK: - Merge-decision resolution
 
+    /// Both resolution paths below fold the persisted `PendingTransactionMerge` row's
+    /// deletion into the same `saveOrRollback` transaction as the rest of the
+    /// resolution's mutation — not a separate save afterward — so a failure can't leave
+    /// the manual transaction merged/a new row inserted while the persisted decision
+    /// record is still sitting there (which would resurrect the resolved decision the
+    /// next time `hydrateMergeQueue()` runs). `resolveMergeDecision` has already removed
+    /// `decision` from the in-memory `mergeQueue` before either of these run; on failure
+    /// the persisted row is rolled back (re-inserted), so it's picked back up by the
+    /// next `hydrateMergeQueue()` call rather than silently lost.
     private func applyMergeDecision(_ decision: PendingMergeDecision) {
         let original = SnapshotForRollback(decision.manualTransaction)
+        let record = fetchPendingMerge(plaidTransactionID: decision.id)
         let failureMessage = PersistenceSaveHelper.saveOrRollback(
             modelContext: modelContext,
-            mutate: { TransactionDedupMatcher.applyMerge(to: decision.manualTransaction, incoming: decision.incoming) },
-            rollback: { original.restore(to: decision.manualTransaction) },
+            mutate: {
+                TransactionDedupMatcher.applyMerge(to: decision.manualTransaction, incoming: decision.incoming)
+                if let record { modelContext.delete(record) }
+            },
+            rollback: {
+                original.restore(to: decision.manualTransaction)
+                if let record { modelContext.insert(record) }
+            },
             logger: logger
         )
         if let failureMessage {
@@ -359,10 +418,17 @@ final class TransactionImportService {
         let rules = fetchRules()
         let activeGoals = fetchActiveGoals()
         let newTransaction = buildNewImportedTransaction(from: decision.incoming, rules: rules, activeGoals: activeGoals)
+        let record = fetchPendingMerge(plaidTransactionID: decision.id)
         let failureMessage = PersistenceSaveHelper.saveOrRollback(
             modelContext: modelContext,
-            mutate: { modelContext.insert(newTransaction) },
-            rollback: { modelContext.delete(newTransaction) },
+            mutate: {
+                modelContext.insert(newTransaction)
+                if let record { modelContext.delete(record) }
+            },
+            rollback: {
+                modelContext.delete(newTransaction)
+                if let record { modelContext.insert(record) }
+            },
             logger: logger
         )
         if let failureMessage {
@@ -400,6 +466,39 @@ final class TransactionImportService {
             isManualOverride: false,
             savingsGoal: goal
         )
+    }
+
+    // MARK: - Merge-queue persistence (review findings 2+5 — see `SchemaV5`'s doc comment)
+
+    /// Rebuilds `mergeQueue` from every persisted `PendingTransactionMerge` row. Called
+    /// at `init` (so a relaunch immediately surfaces any decision left unresolved from a
+    /// prior session, without waiting on a network call) and at the start of every
+    /// `runImport()` (so a second, independent sync run sees decisions queued since this
+    /// instance was constructed). A row whose `manualTransaction` relationship has gone
+    /// nil (the referenced `SpendTransaction` was deleted out from under it — not
+    /// expected in normal flow, no UI deletes a manual transaction with an unresolved
+    /// merge prompt) is dropped as orphaned rather than surfaced as an unresolvable
+    /// decision.
+    private func hydrateMergeQueue() {
+        let persisted = (try? modelContext.fetch(FetchDescriptor<PendingTransactionMerge>())) ?? []
+        mergeQueue = persisted.compactMap { record in
+            guard let manual = record.manualTransaction else { return nil }
+            let incoming = MappedPlaidTransaction(
+                plaidTransactionID: record.plaidTransactionID,
+                amount: record.incomingAmount,
+                date: record.incomingDate,
+                merchantName: record.incomingMerchantName
+            )
+            return PendingMergeDecision(id: record.plaidTransactionID, manualTransaction: manual, incoming: incoming)
+        }
+    }
+
+    private func fetchPendingMerge(plaidTransactionID: String) -> PendingTransactionMerge? {
+        var descriptor = FetchDescriptor<PendingTransactionMerge>(
+            predicate: #Predicate { $0.plaidTransactionID == plaidTransactionID }
+        )
+        descriptor.fetchLimit = 1
+        return (try? modelContext.fetch(descriptor))?.first
     }
 
     // MARK: - Fetches (this service owns its own reads — see type doc comment)
