@@ -48,19 +48,23 @@ struct TransactionsView: View {
                         Button {
                             isShowingImportErrorDetail = true
                         } label: {
-                            Text(error.userFacingMessage)
+                            PlaidErrorText(error: error)
                                 .font(.footnote)
-                                .foregroundStyle(.red)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .accessibilityIdentifier("transactions.importError")
                         }
                         .buttonStyle(.plain)
 
-                        Button("Retry") {
-                            Task { await triggerRefresh() }
+                        if importService?.isImporting == true {
+                            ProgressView()
+                                .accessibilityIdentifier("transactions.importErrorRetrying")
+                        } else {
+                            Button("Retry") {
+                                Task { await triggerRefresh() }
+                            }
+                            .font(.footnote)
+                            .accessibilityIdentifier("transactions.importErrorRetry")
                         }
-                        .font(.footnote)
-                        .accessibilityIdentifier("transactions.importErrorRetry")
                     }
                     .padding(.horizontal)
                     .padding(.vertical, 8)

@@ -98,8 +98,7 @@ struct PlaidDebugLinkView: View {
 
                     if let error = service.presentedError {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text(error.userFacingMessage)
-                                .foregroundStyle(.red)
+                            PlaidErrorText(error: error)
                                 .accessibilityIdentifier("plaidDebug.errorMessage")
                             Button("Try again") {
                                 Task { await service.retry() }
@@ -144,9 +143,20 @@ struct PlaidDebugLinkView: View {
                         }
 
                         if let error = importService.presentedError {
-                            Text(error.userFacingMessage)
-                                .foregroundStyle(.red)
+                            PlaidErrorText(error: error)
                                 .accessibilityIdentifier("plaidDebug.importErrorMessage")
+                        }
+
+                        // Always shown (not tap-to-reveal, unlike TransactionsView's
+                        // production banner) since this is a debug-only diagnostic
+                        // screen — the raw detail is exactly what an engineer using it
+                        // wants to see immediately, not an opt-in extra step.
+                        if let detail = importService.presentedErrorDetail {
+                            Text(detail)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                                .accessibilityIdentifier("plaidDebug.importErrorDetail")
                         }
                     } else {
                         ProgressView()

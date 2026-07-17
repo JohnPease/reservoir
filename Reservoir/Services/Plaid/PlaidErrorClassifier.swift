@@ -2,12 +2,15 @@ import Foundation
 
 /// User-facing bucket for a Plaid Link or token-exchange failure. Deliberately
 /// coarse — only this classification drives the default, always-visible on-screen
-/// copy, not any raw Plaid `errorCode`/`errorType` string. The underlying raw error
-/// isn't discarded, though: `TransactionImportService.presentedErrorDetail` retains
-/// it for an explicit, opt-in "technical details" reveal (`TransactionsView`'s error
-/// banner is tappable) rather than showing it by default. User-cancelled Link
-/// sessions are not a case here — they're handled as a silent, non-error exit by the
-/// caller before this classifier is ever consulted.
+/// copy, not any raw Plaid `errorCode`/`errorType` string. This is a claim about the
+/// *default* copy only, not about every consumer of this type: `TransactionImportService`
+/// retains the underlying raw error as `presentedErrorDetail` for an explicit, opt-in
+/// "technical details" reveal (`TransactionsView`'s error banner is tappable), but
+/// `PlaidServiceLive` (the other consumer, for Link/token-exchange failures) has no
+/// equivalent field and discards its raw error at classification time same as before —
+/// don't assume the opt-in reveal exists for both consumers just because they share this
+/// type. User-cancelled Link sessions are not a case here — they're handled as a silent,
+/// non-error exit by the caller before this classifier is ever consulted.
 enum PlaidErrorCategory: Equatable {
     /// No connectivity, or the request to Plaid timed out — a local/network
     /// condition rather than something Plaid's servers did. Only reachable
