@@ -60,7 +60,13 @@ enum PlaidTransactionMapper {
     /// `calendar` sidesteps timezone conversion entirely: `"2026-07-16"` always becomes
     /// local midnight July 16 in whatever calendar is passed in, matching how
     /// `TransactionEntryView`/manual entries date transactions.
-    private static func localDate(from dateString: String, calendar: Calendar) -> Date? {
+    /// `internal` (not `private`) so `UITestSupport.todayForImportTests` can parse its
+    /// scripted date string through the exact same path production code uses, rather
+    /// than re-implementing date parsing a second time — the drift between those two
+    /// implementations (one UTC-pinned `DateFormatter`, one local-calendar
+    /// `DateComponents`) is what caused the merge-prompt dedup match to silently fail
+    /// on UTC-behind devices in the first place.
+    static func localDate(from dateString: String, calendar: Calendar) -> Date? {
         let parts = dateString.split(separator: "-")
         guard parts.count == 3,
               let year = Int(parts[0]), let month = Int(parts[1]), let day = Int(parts[2])

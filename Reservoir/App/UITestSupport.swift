@@ -114,14 +114,18 @@ enum UITestScenario: String {
         return formatter.string(from: .now)
     }
 
-    /// `todayDateString`, parsed back to a `Date` — see that property's doc comment.
+    /// `todayDateString`, parsed back to a `Date` via `PlaidTransactionMapper`'s own
+    /// `localDate(from:calendar:)` — the same local-calendar-midnight parse the
+    /// production import path uses for the scripted transaction's date — rather than a
+    /// second, independent `DateFormatter` parse. Re-implementing the parse here
+    /// previously drifted from the mapper (this parsed UTC-pinned midnight, the mapper
+    /// parses device-local midnight), which on a UTC-behind device put the seeded
+    /// manual transaction and the incoming scripted transaction on different calendar
+    /// days, so `TransactionDedupMatcher.findMatch` never matched them and the merge
+    /// prompt never appeared. Calling the mapper's own helper makes that drift
+    /// structurally impossible.
     static var todayForImportTests: Date {
-        let formatter = DateFormatter()
-        formatter.calendar = Calendar(identifier: .iso8601)
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "UTC")
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.date(from: todayDateString)!
+        PlaidTransactionMapper.localDate(from: todayDateString, calendar: .current)!
     }
 
     /// A stubbed `URLProtocol` answering `/transactions/sync` with one scripted `added`
