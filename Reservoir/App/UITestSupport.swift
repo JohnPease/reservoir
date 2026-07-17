@@ -58,6 +58,24 @@ enum UITestScenario: String {
         ProcessInfo.processInfo.environment["UITEST_SCENARIO"].flatMap(UITestScenario.init(rawValue:))
     }
 
+    /// Whether `TransactionsView` should render its debug-only refresh-trigger hook (see
+    /// `TransactionsView.body`), gated behind `UITEST_ENABLE_REFRESH_HOOK=1` —
+    /// reservoir-tq7: XCUITest's synthetic swipe/pan gestures don't reliably reach the
+    /// `List`'s underlying `UIRefreshControl` in this simulator environment (five
+    /// different gesture techniques tried, all failed to register at all per
+    /// accessibility-tree dumps). Rather than weakening the pull-to-refresh acceptance
+    /// criteria or repointing the test at an unrelated code path (e.g.
+    /// `PlaidDebugLinkView`'s "Import transactions" button, which exercises a different
+    /// view entirely), this hook is a same-view, same-closure seam:
+    /// `TransactionsView.triggerRefresh()` is the one function both `.refreshable` and
+    /// this hook call, so a test driving the hook is genuinely exercising
+    /// `.refreshable`'s code path end to end, not a proxy for it. `.refreshable` itself
+    /// remains the only production-facing trigger; this hook only ever renders under
+    /// `UITEST_ENABLE_REFRESH_HOOK=1`, which no real launch sets.
+    static var isRefreshHookEnabled: Bool {
+        ProcessInfo.processInfo.environment["UITEST_ENABLE_REFRESH_HOOK"] == "1"
+    }
+
     /// A stubbed `URLProtocol` that fails every request with a non-2xx HTTP
     /// response, regardless of what's actually configured in
     /// `Config/Plaid.xcconfig`. Backs `UITestScenario.plaidURLSession` so

@@ -493,6 +493,35 @@ double-counted.
     trigger, non-blocking summary line, merge prompt wiring). Foreground/
     pull-to-refresh triggers are adq.6.4, not built here.
 
+**Foreground refresh + pull-to-refresh triggers** (adq.6.4): wires
+`TransactionImportService` to its two real, permanent triggers per
+PROJECT_SPEC's locked "no webhooks/no background timer" decision — a manual
+debug button is no longer the only way to run an import.
+  - `RootTabView` (`App/RootTabView.swift`) now owns the app's one shared
+    `TransactionImportService` instance (constructed lazily in `.task`, same
+    convention `PlaidDebugLinkView` used previously), injected to every tab
+    via `.environment(_:)`. `PlaidDebugLinkView`'s own standalone instance was
+    removed — there is exactly one `mergeQueue`/`isImporting` for the whole
+    app now, not three independent import paths racing the same persisted
+    store. Its "Import transactions" debug button calls `runImport()` against
+    this shared instance.
+  - `RootTabView` observes `\.scenePhase` and calls
+    `TransactionImportService.handleScenePhaseTransition(from:to:)` on every
+    change. That method (the testable seam for this story) only runs an
+    import on a `.background` → `.active` transition, which naturally
+    excludes cold launch (SwiftUI's initial `scenePhase` sequence never
+    passes through `.background`) — returning to the foreground after
+    backgrounding the app is what triggers a sync.
+  - `TransactionsView` (`Features/Transactions/TransactionsView.swift`) adds
+    `.refreshable { await importService?.runImport() }` on its transaction
+    list — pull-to-refresh calls the exact same `runImport()` entry point,
+    no duplicated import logic.
+  - The merge-prompt confirmation (`mergePromptConfirmation`) moved from
+    `PlaidDebugLinkView` up to `RootTabView`, bound to the shared instance's
+    `pendingMergeDecision`, so a merge prompt raised by a foreground- or
+    pull-to-refresh-triggered import surfaces regardless of which tab is
+    active.
+
 ## Technical details
 
 - **Minimum iOS version**: 17.0 (required for SwiftData and `@Observable`)

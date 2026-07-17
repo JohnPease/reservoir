@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import SwiftData
+import SwiftUI
 import OSLog
 
 // MARK: - /transactions/sync wire types
@@ -128,6 +129,17 @@ final class TransactionImportService {
     /// skipped forever. A page with unhandled failures stops pagination for this run
     /// (later pages would only be re-fetched next run anyway, since the persisted cursor
     /// hasn't moved past the failed page).
+    /// Testable seam for adq.6.4's app-foreground trigger: SwiftUI's initial `scenePhase`
+    /// sequence never passes through `.background` on cold launch (nil/.inactive →
+    /// .active only), so gating on `oldPhase == .background` naturally excludes cold
+    /// launch and only fires on a genuine return from the background. Unit tests call
+    /// this directly with two phases and assert `runImport()` ran, rather than needing an
+    /// XCUITest to actually background/foreground the device.
+    func handleScenePhaseTransition(from oldPhase: ScenePhase?, to newPhase: ScenePhase) async {
+        guard oldPhase == .background, newPhase == .active else { return }
+        await runImport()
+    }
+
     func runImport() async {
         guard !isImporting else { return }
         isImporting = true

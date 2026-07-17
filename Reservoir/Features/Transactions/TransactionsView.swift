@@ -10,6 +10,7 @@ import OSLog
 struct TransactionsView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(TodayClock.self) private var todayClock
+    @Environment(TransactionImportService.self) private var importService: TransactionImportService?
 
     /// Mirrors `TodayView`'s `@Query` sort convention (date desc, `createdAt` desc
     /// same-day tiebreak) so this list's ordering matches the rest of the app.
@@ -75,10 +76,29 @@ struct TransactionsView: View {
                         }
                     }
                     .accessibilityIdentifier("transactions.list")
+                    .refreshable {
+                        await triggerRefresh()
+                    }
                 }
             }
             .navigationTitle("Transactions")
             .toolbar {
+                #if DEBUG
+                // reservoir-tq7: debug-only hook so XCUITest can drive the exact same
+                // `triggerRefresh()` call `.refreshable` makes, without relying on a
+                // synthetic pull gesture that doesn't reliably reach the underlying
+                // `UIRefreshControl` in this simulator environment. Only renders when
+                // `UITEST_ENABLE_REFRESH_HOOK=1` is set — never true outside XCUITest
+                // launches. See `UITestScenario.isRefreshHookEnabled`.
+                if UITestScenario.isRefreshHookEnabled {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Debug Refresh") {
+                            Task { await triggerRefresh() }
+                        }
+                        .accessibilityIdentifier("transactions.debugRefreshTrigger")
+                    }
+                }
+                #endif
                 ToolbarItem(placement: .principal) {
                     Picker("Filter", selection: $filter) {
                         ForEach(TransactionsScreenCalculator.Filter.allCases) { filterOption in
@@ -126,6 +146,14 @@ struct TransactionsView: View {
             modelContext: modelContext,
             logger: logger
         )
+    }
+
+    /// The one place `importService.runImport()` is invoked from this screen — both
+    /// `.refreshable` and the reservoir-tq7 debug refresh hook (see the `#if DEBUG`
+    /// toolbar item above) call this, so the hook genuinely exercises `.refreshable`'s
+    /// code path rather than a separate proxy for it.
+    private func triggerRefresh() async {
+        await importService?.runImport()
     }
 }
 
