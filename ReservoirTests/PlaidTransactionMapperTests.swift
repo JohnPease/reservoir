@@ -56,10 +56,36 @@ final class PlaidTransactionMapperTests: XCTestCase {
     func testMap_parsesDateString() throws {
         let transaction = makeTransaction(date: "2026-03-15")
         let mapped = try XCTUnwrap(PlaidTransactionMapper.map(transaction))
-        let components = Calendar(identifier: .iso8601).dateComponents(in: TimeZone(identifier: "UTC")!, from: mapped.date)
+        let components = Calendar.current.dateComponents([.year, .month, .day], from: mapped.date)
         XCTAssertEqual(components.year, 2026)
         XCTAssertEqual(components.month, 3)
         XCTAssertEqual(components.day, 15)
+    }
+
+    /// Regression test for a UTC-vs-local-calendar dedup bug: the old implementation
+    /// parsed `"yyyy-MM-dd"` via a `DateFormatter` pinned to `TimeZone(identifier:
+    /// "UTC")`, producing a `Date` at UTC midnight. `TransactionDedupMatcher.findMatch`
+    /// then compares via `Calendar.current.startOfDay(for:)` (device-local) — for any
+    /// device timezone behind UTC (all of the Americas), that UTC-midnight `Date`
+    /// converts to the *previous* local calendar day, systematically shifting every
+    /// Plaid transaction's effective date back one day relative to how manual entries
+    /// are dated, and breaking same-day dedup matching for those users. Explicitly
+    /// exercises a non-UTC calendar (`America/Los_Angeles`, fixed rather than
+    /// `Calendar.current` so this test's result doesn't depend on the machine it runs
+    /// on) and asserts the resulting `Date`'s calendar day in *that* calendar matches
+    /// Plaid's reported day exactly — this would fail under the old UTC-anchored
+    /// formatter (July 16 UTC midnight lands on July 15 in Los Angeles).
+    func testMap_parsesDate_asLocalCalendarDay_independentOfDeviceTimezone() throws {
+        var losAngeles = Calendar(identifier: .gregorian)
+        losAngeles.timeZone = try XCTUnwrap(TimeZone(identifier: "America/Los_Angeles"))
+
+        let transaction = makeTransaction(date: "2026-07-16")
+        let mapped = try XCTUnwrap(PlaidTransactionMapper.map(transaction, calendar: losAngeles))
+
+        let components = losAngeles.dateComponents([.year, .month, .day], from: mapped.date)
+        XCTAssertEqual(components.year, 2026)
+        XCTAssertEqual(components.month, 7)
+        XCTAssertEqual(components.day, 16)
     }
 
     func testMap_malformedDate_returnsNil() {

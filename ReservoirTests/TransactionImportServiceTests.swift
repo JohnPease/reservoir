@@ -96,12 +96,14 @@ final class TransactionImportServiceTests: XCTestCase {
     /// happens to be" (which was a real bug caught here: `.now` at test-run time and a
     /// hardcoded JSON date string are almost never the same day).
     private var matchingFixtureDate: Date {
-        let formatter = DateFormatter()
-        formatter.calendar = Calendar(identifier: .iso8601)
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "UTC")
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.date(from: "2026-07-10")!
+        // Built the same way `PlaidTransactionMapper.localDate(from:calendar:)` builds
+        // its `Date` (local calendar-day components, not a UTC-anchored formatter) —
+        // see that type's doc comment for why a UTC anchor breaks dedup matching.
+        var components = DateComponents()
+        components.year = 2026
+        components.month = 7
+        components.day = 10
+        return Calendar.current.date(from: components)!
     }
 
     private func syncResponse(added: [String] = [], modified: [String] = [], removed: [String] = [], nextCursor: String, hasMore: Bool = false) -> Data {

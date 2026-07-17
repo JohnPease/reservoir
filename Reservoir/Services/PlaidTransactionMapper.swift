@@ -25,21 +25,18 @@ struct MappedPlaidTransaction: Equatable {
 /// a refund/paycheck as spend. A positive Plaid `amount` already matches this app's
 /// sign convention directly, with no inversion needed.
 enum PlaidTransactionMapper {
-    private static let dateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.calendar = Calendar(identifier: .iso8601)
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "UTC")
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter
-    }()
-
     /// Returns `nil` when `transaction.amount <= 0` (a credit/income transaction — see
     /// this type's doc comment) or when `transaction.date` isn't parseable as Plaid's
     /// documented `yyyy-MM-dd` date string.
-    static func map(_ transaction: PlaidTransaction) -> MappedPlaidTransaction? {
+    ///
+    /// - Parameter calendar: Defaults to `.current` (device-local). Exposed as a
+    ///   parameter purely so tests can construct a fixed-timezone `Calendar` and prove
+    ///   the year/month/day-component construction below is correct independent of
+    ///   whatever timezone the test machine happens to run in — production call sites
+    ///   should never pass this explicitly.
+    static func map(_ transaction: PlaidTransaction, calendar: Calendar = .current) -> MappedPlaidTransaction? {
         guard transaction.amount > 0 else { return nil }
-        guard let date = dateFormatter.date(from: transaction.date) else { return nil }
+        guard let date = Self.localDate(from: transaction.date, calendar: calendar) else { return nil }
         let merchantName = transaction.merchant_name?.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedName = (merchantName?.isEmpty == false ? merchantName : nil)
             ?? transaction.name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -51,5 +48,29 @@ enum PlaidTransactionMapper {
             date: date,
             merchantName: resolvedName
         )
+    }
+
+    /// Parses Plaid's `yyyy-MM-dd` string into `calendar`'s local midnight for that
+    /// calendar day, via `DateComponents` rather than a `DateFormatter` pinned to a
+    /// specific `TimeZone` — the latter produces a `Date` anchored to *that* timezone's
+    /// midnight, which silently shifts to the *previous* local calendar day once
+    /// converted through `Calendar.current.startOfDay(for:)` (as
+    /// `TransactionDedupMatcher.findMatch` does) for any device timezone behind the
+    /// formatter's. Building the `Date` directly from year/month/day components against
+    /// `calendar` sidesteps timezone conversion entirely: `"2026-07-16"` always becomes
+    /// local midnight July 16 in whatever calendar is passed in, matching how
+    /// `TransactionEntryView`/manual entries date transactions.
+    private static func localDate(from dateString: String, calendar: Calendar) -> Date? {
+        let parts = dateString.split(separator: "-")
+        guard parts.count == 3,
+              let year = Int(parts[0]), let month = Int(parts[1]), let day = Int(parts[2])
+        else {
+            return nil
+        }
+        var components = DateComponents()
+        components.year = year
+        components.month = month
+        components.day = day
+        return calendar.date(from: components)
     }
 }
