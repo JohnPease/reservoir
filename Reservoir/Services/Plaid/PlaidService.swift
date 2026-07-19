@@ -12,6 +12,16 @@ struct LinkedItem: Equatable, Sendable {
     let itemID: String
     let institutionName: String
     let linkedAt: Date
+    /// True whenever the most recent import attempt against this item returned a
+    /// genuine item-level auth error (`ITEM_LOGIN_REQUIRED`, most commonly) —
+    /// reservoir-adq.6.5. Defaults to `false` so every existing call site
+    /// constructing a `LinkedItem` for a fresh successful Link (this file's own
+    /// `handleLinkSuccess`, plus test fixtures) keeps compiling unchanged. Cleared by a
+    /// successful update-mode relink (`PlaidServiceLive.startRelink(for:)`), set by
+    /// `TransactionImportService` when it classifies an import failure as
+    /// `.itemLoginRequired` — both read/write this exclusively through
+    /// `LinkedItemStoring`, never a second parallel mechanism.
+    var needsAttention: Bool = false
 }
 
 /// Keychain key the single linked item's access token is stored under.
@@ -72,4 +82,15 @@ protocol PlaidService: AnyObject {
     /// Clears `presentedError` and re-opens Link — the single "Try again"
     /// affordance the UX spec calls for.
     func retry() async
+
+    /// Fetches a Link token scoped to `item`'s existing `access_token` (Plaid's "update
+    /// mode" — reservoir-adq.6.5) and flips `isPresentingLink` to `true` once ready, same
+    /// as `startLink()`. Used to re-authenticate an already-linked item (most commonly
+    /// after `ITEM_LOGIN_REQUIRED`) without creating a duplicate item/token. On success,
+    /// clears the item's `needsAttention` flag — no token re-exchange is needed, since
+    /// Plaid's `access_token` doesn't change in update mode. A failure fetching the
+    /// update-mode token, or a LinkKit exit error during the update-mode session, is
+    /// classified and surfaced via `presentedError`, same generic-error posture as
+    /// `startLink()`.
+    func startRelink(for item: LinkedItem) async
 }

@@ -20,6 +20,16 @@ struct TodayView: View {
     /// itself business logic — just the clock input to `TodayScreenCalculator`.
     @Environment(TodayClock.self) private var todayClock
 
+    /// The app's single shared tab-selection binding (`RootTabView`) — used only to
+    /// navigate to `.settings` when the connection-status badge is tapped (reservoir-adq.6.5).
+    @Environment(TabSelection.self) private var tabSelection
+
+    /// The app's single shared `TransactionImportService` instance (adq.6.4/RootTabView),
+    /// same optional-until-`.task`-runs pattern `PlaidDebugLinkView` uses. Read here only
+    /// for its `needsAttention` flag (reservoir-adq.6.5) — this view never calls
+    /// `runImport()` itself.
+    @Environment(TransactionImportService.self) private var importService: TransactionImportService?
+
     @Query(sort: \SavingsGoal.targetDate) private var goals: [SavingsGoal]
     /// Sorted so `spentToday`'s filtering doesn't have to fault/sort the whole table on
     /// every body re-evaluation to find today's entries; still unlimited because
@@ -143,10 +153,29 @@ struct TodayView: View {
             .navigationTitle(dateHeaderText)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
+                    // reservoir-adq.6.5: an icon-badge on this gear icon (not a banner,
+                    // per this story's UX section — the hero daily-limit number stays the
+                    // focal point) signals a broken bank connection. Tapping while flagged
+                    // routes to the reconnect flow (PlaidDebugLinkView, this story's
+                    // interim Settings stand-in) via programmatic tab selection instead of
+                    // the normal placeholder Settings sheet.
                     Button {
-                        isShowingSettings = true
+                        if importService?.needsAttention == true {
+                            tabSelection.selected = .settings
+                        } else {
+                            isShowingSettings = true
+                        }
                     } label: {
                         Image(systemName: "gearshape")
+                            .overlay(alignment: .topTrailing) {
+                                if importService?.needsAttention == true {
+                                    Image(systemName: "exclamationmark.circle.fill")
+                                        .font(.caption2)
+                                        .foregroundStyle(.red)
+                                        .offset(x: 6, y: -6)
+                                        .accessibilityIdentifier("today.connectionBadge")
+                                }
+                            }
                     }
                     .accessibilityIdentifier("today.settings")
                 }

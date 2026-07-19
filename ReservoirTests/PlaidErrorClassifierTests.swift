@@ -117,6 +117,39 @@ final class PlaidErrorClassifierTests: XCTestCase {
         XCTAssertEqual(category, .localStorage)
     }
 
+    // MARK: - Item errors (reservoir-adq.6.5 — decoded from a REST call's error body)
+
+    func test_itemError_withItemLoginRequiredCode_classifiesAsItemLoginRequired() {
+        let category = PlaidErrorClassifier.classify(
+            .itemError(errorType: "ITEM_ERROR", errorCode: "ITEM_LOGIN_REQUIRED")
+        )
+        XCTAssertEqual(category, .itemLoginRequired)
+    }
+
+    func test_itemError_withDifferentItemCode_fallsBackToPlaidSide() {
+        // A real item-level failure, just not the well-defined ITEM_LOGIN_REQUIRED case
+        // this story resolves with persistent UI — everything else falls back to the
+        // existing generic-error-plus-retry pattern (bead's NOTES section).
+        let category = PlaidErrorClassifier.classify(
+            .itemError(errorType: "ITEM_ERROR", errorCode: "ITEM_NOT_SUPPORTED")
+        )
+        XCTAssertEqual(category, .plaidSide)
+    }
+
+    func test_itemError_withNilErrorCode_fallsBackToPlaidSide() {
+        let category = PlaidErrorClassifier.classify(
+            .itemError(errorType: "ITEM_ERROR", errorCode: nil)
+        )
+        XCTAssertEqual(category, .plaidSide)
+    }
+
+    func test_itemError_withNilErrorType_stillClassifiesByCode() {
+        let category = PlaidErrorClassifier.classify(
+            .itemError(errorType: nil, errorCode: "ITEM_LOGIN_REQUIRED")
+        )
+        XCTAssertEqual(category, .itemLoginRequired)
+    }
+
     // MARK: - User-facing copy
 
     func test_network_userFacingMessage_matchesUXSpec() {
@@ -137,6 +170,13 @@ final class PlaidErrorClassifierTests: XCTestCase {
         XCTAssertEqual(
             PlaidErrorCategory.localStorage.userFacingMessage,
             "Couldn't save your login. Try again."
+        )
+    }
+
+    func test_itemLoginRequired_userFacingMessage_matchesUXSpec() {
+        XCTAssertEqual(
+            PlaidErrorCategory.itemLoginRequired.userFacingMessage,
+            "Your bank connection needs attention. Reconnect to keep syncing."
         )
     }
 }

@@ -186,6 +186,37 @@ enum UITestScenario: String {
         override func stopLoading() {}
     }
 
+    /// A stubbed `URLProtocol` answering `/transactions/sync` with a non-2xx response
+    /// carrying an `ITEM_LOGIN_REQUIRED` error body — backs `PlaidRelinkUITests`
+    /// (reservoir-adq.6.5), letting it drive the real classification/`needsAttention`
+    /// pipeline (`TransactionImportService.post(_:body:baseURL:)`'s body-decoding fix,
+    /// `PlaidErrorClassifier`) end to end without depending on Plaid's actual Sandbox API
+    /// or a real `ITEM_LOGIN_REQUIRED` test item, same reasoning as
+    /// `PlaidForcedFailureURLProtocol`/`PlaidImportMergePromptURLProtocol` above.
+    private final class PlaidItemLoginRequiredURLProtocol: URLProtocol {
+        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+        override func startLoading() {
+            let isSync = request.url?.path.contains("transactions/sync") ?? false
+            let statusCode = isSync ? 400 : 200
+            let body: Data = isSync
+                ? Data(#"{"error_type": "ITEM_ERROR", "error_code": "ITEM_LOGIN_REQUIRED", "error_message": "the login details of this item have changed"}"#.utf8)
+                : Data(#"{}"#.utf8)
+            let response = HTTPURLResponse(
+                url: request.url ?? URL(string: "https://sandbox.plaid.com")!,
+                statusCode: statusCode,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: body)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+
+        override func stopLoading() {}
+    }
+
     /// The `URLSession` `PlaidDebugLinkView` should hand to `PlaidServiceLive` and
     /// `TransactionImportService`. Under normal (non-UI-test) launches this is just
     /// `.shared`. Launched under XCUITest with `UITEST_FORCE_PLAID_ERROR=1` set, every
@@ -193,7 +224,10 @@ enum UITestScenario: String {
     /// `PlaidForcedFailureURLProtocol`. Launched with
     /// `UITEST_PLAID_IMPORT_SCENARIO=mergePrompt` set, `/transactions/sync` calls are
     /// intercepted and answered with the scripted merge-prompt fixture above — see
-    /// `PlaidImportMergePromptURLProtocol`.
+    /// `PlaidImportMergePromptURLProtocol`. Launched with
+    /// `UITEST_PLAID_IMPORT_SCENARIO=itemLoginRequired` set, `/transactions/sync` calls
+    /// are answered with a scripted `ITEM_LOGIN_REQUIRED` error — see
+    /// `PlaidItemLoginRequiredURLProtocol`.
     static var plaidURLSession: URLSession {
         if ProcessInfo.processInfo.environment["UITEST_FORCE_PLAID_ERROR"] == "1" {
             let configuration = URLSessionConfiguration.ephemeral
@@ -203,6 +237,11 @@ enum UITestScenario: String {
         if ProcessInfo.processInfo.environment["UITEST_PLAID_IMPORT_SCENARIO"] == "mergePrompt" {
             let configuration = URLSessionConfiguration.ephemeral
             configuration.protocolClasses = [PlaidImportMergePromptURLProtocol.self]
+            return URLSession(configuration: configuration)
+        }
+        if ProcessInfo.processInfo.environment["UITEST_PLAID_IMPORT_SCENARIO"] == "itemLoginRequired" {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [PlaidItemLoginRequiredURLProtocol.self]
             return URLSession(configuration: configuration)
         }
         return .shared
@@ -220,10 +259,18 @@ enum UITestScenario: String {
     /// and this only needs to write the same two, already-documented storage locations.
     static func seedPlaidLinkedItemIfRequested() {
         guard ProcessInfo.processInfo.environment["UITEST_SEED_PLAID_LINKED_ITEM"] == "1" else { return }
+        // `UITEST_SEED_PLAID_NEEDS_ATTENTION=1` (reservoir-adq.6.5) seeds the same
+        // linked-item dict with `needsAttention: true` — backs `PlaidRelinkUITests`'
+        // Today-screen badge test with a deterministic starting state, without needing to
+        // drive a real import to get there first (this app's existing scene-phase/
+        // foreground-trigger tests already flagged that kind of timing as flaky — see
+        // reservoir-bdy/tq7).
+        let needsAttention = ProcessInfo.processInfo.environment["UITEST_SEED_PLAID_NEEDS_ATTENTION"] == "1"
         let dict: [String: Any] = [
             "itemID": "uitest-item",
             "institutionName": "UITest Bank",
             "linkedAt": Date().timeIntervalSince1970,
+            "needsAttention": needsAttention,
         ]
         UserDefaults.standard.set(dict, forKey: "plaid.linkedItem")
     }
