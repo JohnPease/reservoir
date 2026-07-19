@@ -96,6 +96,20 @@ final class PlaidServiceLive: PlaidService {
     /// re-sync it. A plain closure rather than a Combine publisher or a hard dependency on
     /// `TransactionImportService` — this class has no business knowing that type exists;
     /// the caller decides what "notify on relink success" means.
+    ///
+    /// **A single-slot, opt-in hook, not enforced at compile time** (code review finding):
+    /// whichever view presents the relink affordance MUST wire this in `onAppear`/`init` or
+    /// a successful relink won't refresh the badge immediately. `PlaidDebugLinkView` does
+    /// this today; when Settings (reservoir-adq.7) replaces it as the relink UI's home, that
+    /// screen must wire this too, or relink will *appear* to leave the badge stuck. It isn't
+    /// permanently stuck either way — `TransactionImportService.runImport()` already calls
+    /// `refreshNeedsAttention()` at the start of every run (see that method's doc comment),
+    /// so the very next foreground/pull-to-refresh trigger self-heals it regardless of
+    /// whether this closure was wired — but a forgotten wire-up means losing the "clears
+    /// immediately" guarantee this story's acceptance criteria call for, not a permanent
+    /// break. Kept as an explicit opt-in rather than a reactive `LinkedItemStore` observer
+    /// (a deeper, correct-by-construction fix) since there's only one caller today and no
+    /// second one to design against yet — revisit if/when adq.7 actually needs it.
     var onRelinkSuccess: (() -> Void)?
 
     private let keychain: KeychainServicing
@@ -155,29 +169,39 @@ final class PlaidServiceLive: PlaidService {
         }
     }
 
-    func startLink() async {
-        guard !isStartingLink else { return }
-        isStartingLink = true
-        defer { isStartingLink = false }
-
+    /// Shared tail of `startLink()`/`startRelink(for:)` (code review finding: this
+    /// environment-pin/token-creation/session-presentation/error-classify sequence was
+    /// duplicated nearly verbatim between the two). Each caller supplies only its own
+    /// token-creation step and whether the resulting session is update-mode — the
+    /// reentrancy guard stays in each caller since `startRelink(for:)` needs to check it
+    /// before its own Keychain pre-check runs, not just before this shared tail.
+    private func beginLinkFlow(isRelink: Bool, makeToken: () async throws -> String) async {
         // Pin the environment for the duration of this Link flow — read
         // fresh here (a new flow always picks up the latest toggle value,
         // per reservoir-adq.6.2), then held steady through
         // `handleLinkSuccess()`'s `exchangePublicToken()` call even if the
         // toggle changes while LinkKit's sheet is up. See `pinnedEnvironment`.
         pinnedEnvironment = environmentStore.current
-
         presentedError = nil
+
         do {
-            let token = try await createLinkToken()
+            let token = try await makeToken()
             linkToken = token
-            linkSession = try makeSession(token: token)
+            linkSession = try makeSession(token: token, isRelink: isRelink)
             isPresentingLink = true
         } catch {
             presentedError = PlaidErrorClassifier.classify(.exchangeError(error))
             // Flow ended before Link ever presented — nothing left to pin for.
             pinnedEnvironment = nil
         }
+    }
+
+    func startLink() async {
+        guard !isStartingLink else { return }
+        isStartingLink = true
+        defer { isStartingLink = false }
+
+        await beginLinkFlow(isRelink: false) { try await self.createLinkToken() }
     }
 
     /// The shared "Try again" affordance's action — retries whichever flow the last
@@ -264,29 +288,20 @@ final class PlaidServiceLive: PlaidService {
         isStartingLink = true
         defer { isStartingLink = false }
 
-        pinnedEnvironment = environmentStore.current
         presentedError = nil
-
         guard let accessToken = try? await keychain.read(for: PlaidKeychainKey.accessToken) else {
             // No access token to relink — nothing Plaid-side has been attempted yet, so
             // this classifies the same generic way a pre-flight local failure would.
             // Not expected in normal use (a `LinkedItem` only ever exists because a token
             // was saved for it), but guards against an inconsistent Keychain/UserDefaults
-            // state rather than crashing or silently no-oping.
+            // state rather than crashing or silently no-oping. Checked before
+            // `beginLinkFlow` (and thus before any environment pinning) since there's
+            // nothing to pin an environment for yet — this failure never reaches Plaid.
             presentedError = PlaidErrorClassifier.classify(.exchangeError(URLError(.badServerResponse)))
-            pinnedEnvironment = nil
             return
         }
 
-        do {
-            let token = try await createRelinkToken(accessToken: accessToken)
-            linkToken = token
-            linkSession = try makeSession(token: token, isRelink: true)
-            isPresentingLink = true
-        } catch {
-            presentedError = PlaidErrorClassifier.classify(.exchangeError(error))
-            pinnedEnvironment = nil
-        }
+        await beginLinkFlow(isRelink: true) { try await self.createRelinkToken(accessToken: accessToken) }
     }
 
     /// Update-mode Link's `onSuccess` completion — clears `needsAttention` and nothing

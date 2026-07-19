@@ -76,9 +76,31 @@ enum UITestScenario: String {
         ProcessInfo.processInfo.environment["UITEST_ENABLE_REFRESH_HOOK"] == "1"
     }
 
-    /// A stubbed `URLProtocol` that fails every request with a non-2xx HTTP
-    /// response, regardless of what's actually configured in
-    /// `Config/Plaid.xcconfig`. Backs `UITestScenario.plaidURLSession` so
+    /// Shared boilerplate for every stubbed `URLProtocol` below (code review finding:
+    /// `canInit`/`canonicalRequest`/`stopLoading`, plus the didReceive/didLoad/
+    /// didFinishLoading response-finishing sequence, were duplicated verbatim across three
+    /// near-identical stub classes). Subclasses implement only `startLoading()`'s actual
+    /// response-shaping logic, calling `respond(statusCode:body:headers:)` to finish it.
+    private class StubURLProtocol: URLProtocol {
+        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+        override func stopLoading() {}
+
+        func respond(statusCode: Int, body: Data, headers: [String: String]? = ["Content-Type": "application/json"]) {
+            let response = HTTPURLResponse(
+                url: request.url ?? URL(string: "https://sandbox.plaid.com")!,
+                statusCode: statusCode,
+                httpVersion: nil,
+                headerFields: headers
+            )!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: body)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+
+    /// Fails every request with a non-2xx HTTP response, regardless of what's actually
+    /// configured in `Config/Plaid.xcconfig`. Backs `UITestScenario.plaidURLSession` so
     /// `PlaidDebugLinkUITests`' error-classification test is deterministic —
     /// it must not depend on whether the developer's local xcconfig happens
     /// to hold valid or invalid Sandbox credentials (see reservoir-z0o: the
@@ -86,27 +108,15 @@ enum UITestScenario: String {
     /// accident" by getting rejected outright; the https universal-link
     /// redirect_uri Plaid now requires no longer does that when credentials
     /// are valid).
-    private final class PlaidForcedFailureURLProtocol: URLProtocol {
-        override class func canInit(with request: URLRequest) -> Bool { true }
-        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-
+    private final class PlaidForcedFailureURLProtocol: StubURLProtocol {
         override func startLoading() {
             // Any non-2xx status makes PlaidServiceLive.post(_:body:) throw
             // URLError(.badServerResponse), which PlaidErrorClassifier maps
             // to .plaidSide — the same real, non-network failure path a
             // genuine Plaid-side rejection takes, just without depending on
             // Plaid's actual Sandbox API or real credentials.
-            let response = HTTPURLResponse(
-                url: request.url ?? URL(string: "https://sandbox.plaid.com")!,
-                statusCode: 400,
-                httpVersion: nil,
-                headerFields: nil
-            )!
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocolDidFinishLoading(self)
+            respond(statusCode: 400, body: Data(), headers: nil)
         }
-
-        override func stopLoading() {}
     }
 
     /// Fixture constants shared between `.transactionImportMergePrompt`'s seeded manual
@@ -152,10 +162,7 @@ enum UITestScenario: String {
     /// pipeline (`TransactionImportService.runImport()`, `TransactionDedupMatcher`, the
     /// merge prompt) end to end without depending on Plaid's actual Sandbox API or local
     /// credentials, same reasoning as `PlaidForcedFailureURLProtocol` above.
-    private final class PlaidImportMergePromptURLProtocol: URLProtocol {
-        override class func canInit(with request: URLRequest) -> Bool { true }
-        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-
+    private final class PlaidImportMergePromptURLProtocol: StubURLProtocol {
         override func startLoading() {
             let isSync = request.url?.path.contains("transactions/sync") ?? false
             let body: Data
@@ -172,18 +179,8 @@ enum UITestScenario: String {
             } else {
                 body = Data(#"{}"#.utf8)
             }
-            let response = HTTPURLResponse(
-                url: request.url ?? URL(string: "https://sandbox.plaid.com")!,
-                statusCode: 200,
-                httpVersion: nil,
-                headerFields: ["Content-Type": "application/json"]
-            )!
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: body)
-            client?.urlProtocolDidFinishLoading(self)
+            respond(statusCode: 200, body: body)
         }
-
-        override func stopLoading() {}
     }
 
     /// A stubbed `URLProtocol` answering `/transactions/sync` with a non-2xx response
@@ -193,28 +190,15 @@ enum UITestScenario: String {
     /// `PlaidErrorClassifier`) end to end without depending on Plaid's actual Sandbox API
     /// or a real `ITEM_LOGIN_REQUIRED` test item, same reasoning as
     /// `PlaidForcedFailureURLProtocol`/`PlaidImportMergePromptURLProtocol` above.
-    private final class PlaidItemLoginRequiredURLProtocol: URLProtocol {
-        override class func canInit(with request: URLRequest) -> Bool { true }
-        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-
+    private final class PlaidItemLoginRequiredURLProtocol: StubURLProtocol {
         override func startLoading() {
             let isSync = request.url?.path.contains("transactions/sync") ?? false
             let statusCode = isSync ? 400 : 200
             let body: Data = isSync
                 ? Data(#"{"error_type": "ITEM_ERROR", "error_code": "ITEM_LOGIN_REQUIRED", "error_message": "the login details of this item have changed"}"#.utf8)
                 : Data(#"{}"#.utf8)
-            let response = HTTPURLResponse(
-                url: request.url ?? URL(string: "https://sandbox.plaid.com")!,
-                statusCode: statusCode,
-                httpVersion: nil,
-                headerFields: ["Content-Type": "application/json"]
-            )!
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: body)
-            client?.urlProtocolDidFinishLoading(self)
+            respond(statusCode: statusCode, body: body)
         }
-
-        override func stopLoading() {}
     }
 
     /// The `URLSession` `PlaidDebugLinkView` should hand to `PlaidServiceLive` and
@@ -260,19 +244,23 @@ enum UITestScenario: String {
     static func seedPlaidLinkedItemIfRequested() {
         guard ProcessInfo.processInfo.environment["UITEST_SEED_PLAID_LINKED_ITEM"] == "1" else { return }
         // `UITEST_SEED_PLAID_NEEDS_ATTENTION=1` (reservoir-adq.6.5) seeds the same
-        // linked-item dict with `needsAttention: true` — backs `PlaidRelinkUITests`'
+        // linked-item with `needsAttention: true` — backs `PlaidRelinkUITests`'
         // Today-screen badge test with a deterministic starting state, without needing to
         // drive a real import to get there first (this app's existing scene-phase/
         // foreground-trigger tests already flagged that kind of timing as flaky — see
         // reservoir-bdy/tq7).
+        //
+        // Goes through `LinkedItemStore` (code review finding) rather than hand-building
+        // the persisted dict directly — that store is the single owner of this schema as
+        // of this same story; writing around it here would let this seeding path silently
+        // desync from production persistence the next time `LinkedItem` gains a field.
         let needsAttention = ProcessInfo.processInfo.environment["UITEST_SEED_PLAID_NEEDS_ATTENTION"] == "1"
-        let dict: [String: Any] = [
-            "itemID": "uitest-item",
-            "institutionName": "UITest Bank",
-            "linkedAt": Date().timeIntervalSince1970,
-            "needsAttention": needsAttention,
-        ]
-        UserDefaults.standard.set(dict, forKey: "plaid.linkedItem")
+        LinkedItemStore().save(LinkedItem(
+            itemID: "uitest-item",
+            institutionName: "UITest Bank",
+            linkedAt: Date(),
+            needsAttention: needsAttention
+        ))
     }
 
     /// See `seedPlaidLinkedItemIfRequested()` above. Blocks synchronously, same

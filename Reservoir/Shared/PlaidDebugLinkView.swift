@@ -85,7 +85,17 @@ struct PlaidDebugLinkView: View {
                         // (code review finding) rather than a second hardcoded string, so
                         // this and the Today badge never drift into showing different
                         // wording for the same state.
-                        if linkedItem.needsAttention {
+                        //
+                        // Deliberately reads `importService?.needsAttention`, NOT
+                        // `linkedItem.needsAttention` (code review finding): the latter is
+                        // `PlaidServiceLive`'s own cached copy, only reassigned in
+                        // init/handleLinkSuccess/handleRelinkSuccess/the Keychain-
+                        // invalidation hook — it never learns about a `TransactionImportService`-
+                        // detected `ITEM_LOGIN_REQUIRED` (set via a *different* service
+                        // instance writing straight to the shared `LinkedItemStore`), so it
+                        // went stale while the Today badge (reading the same source this
+                        // does) was already correct. One source of truth for both surfaces.
+                        if importService?.needsAttention == true {
                             PlaidErrorText(error: .itemLoginRequired)
                                 .font(.footnote)
                                 .accessibilityIdentifier("plaidDebug.needsAttention")

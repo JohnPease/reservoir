@@ -105,6 +105,42 @@ final class PlaidRelinkUITests: XCTestCase {
         XCTAssertTrue(errorMessage.waitForExistence(timeout: 15))
         XCTAssertEqual(errorMessage.label, "Couldn't connect to your bank. Try again.")
     }
+
+    // MARK: - PlaidDebugLinkView's needsAttention text tracks a live import failure
+
+    /// Code-review regression test: `PlaidDebugLinkView`'s "Needs attention" text must
+    /// read the same source the Today badge does (`TransactionImportService.needsAttention`),
+    /// not `PlaidServiceLive`'s own separately-cached `linkedItem.needsAttention` — the
+    /// latter is never written to by an import-time classification (a different service
+    /// instance), so it went stale while the badge correctly lit up. Starts with
+    /// `needsAttention` explicitly unset, drives a real import through the scripted
+    /// `ITEM_LOGIN_REQUIRED` protocol (not the seeded starting state used by the Today
+    /// badge test above, which wouldn't exercise this write path at all), then confirms
+    /// the debug view — not just the badge — reflects it.
+    func testDebugViewNeedsAttentionText_reflectsLiveImportFailure_notJustCachedLinkedItem() {
+        let app = launchedApp { app in
+            app.launchEnvironment["UITEST_SCENARIO"] = "normal"
+            app.launchEnvironment["UITEST_SEED_PLAID_LINKED_ITEM"] = "1"
+            app.launchEnvironment["UITEST_SEED_PLAID_TOKEN"] = "1"
+            app.launchEnvironment["UITEST_PLAID_IMPORT_SCENARIO"] = "itemLoginRequired"
+            app.launchEnvironment["UITEST_ENABLE_REFRESH_HOOK"] = "1"
+        }
+
+        app.tabBars.buttons["Settings"].tap()
+        XCTAssertFalse(app.staticTexts["plaidDebug.needsAttention"].exists, "sanity check: must not already show needs-attention before any import has run.")
+
+        // Drive a real import via the Transactions tab's debug refresh hook (same
+        // mechanism TransactionImportUITests uses) so TransactionImportService itself
+        // classifies ITEM_LOGIN_REQUIRED and writes needsAttention through the shared
+        // LinkedItemStore — not a value seeded directly into PlaidServiceLive's own copy.
+        app.tabBars.buttons["Transactions"].tap()
+        let debugRefreshTrigger = app.buttons["transactions.debugRefreshTrigger"]
+        XCTAssertTrue(debugRefreshTrigger.waitForExistence(timeout: 5))
+        debugRefreshTrigger.tap()
+
+        app.tabBars.buttons["Settings"].tap()
+        XCTAssertTrue(app.staticTexts["plaidDebug.needsAttention"].waitForExistence(timeout: 10), "PlaidDebugLinkView must reflect a live import-time ITEM_LOGIN_REQUIRED classification, not just its own separately-cached linkedItem state.")
+    }
 }
 
 // MARK: - Manual verification (not automated — see suite doc comment)

@@ -51,8 +51,9 @@ final class LinkedItemStore: LinkedItemStoring, @unchecked Sendable {
             return nil
         }
         // `needsAttention` defaults to `false` when reading a dict written before this
-        // story (or by UITestSupport's seeding helper, which doesn't set it) — an item
-        // linked/seeded before this field existed is assumed healthy, not flagged.
+        // story added the field — an item linked before it existed is assumed healthy,
+        // not flagged. (UITestSupport's seeding helper always sets it explicitly now,
+        // via this same store's `save(_:)`, so this fallback is only for pre-story data.)
         let needsAttention = dict["needsAttention"] as? Bool ?? false
         return LinkedItem(
             itemID: itemID,
