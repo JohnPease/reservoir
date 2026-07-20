@@ -35,10 +35,16 @@ final class TransactionImportServiceTests: XCTestCase {
     /// responses were scripted.
     private final class ScriptedSyncURLProtocol: URLProtocol {
         nonisolated(unsafe) static var responses: [Data] = []
+        /// Status code for each scripted response — defaults to 200 for every existing
+        /// test that never touches this. `reservoir-adq.6.5`'s item-error tests script a
+        /// 400 alongside an `ITEM_LOGIN_REQUIRED` body to exercise
+        /// `TransactionImportService.post(_:body:baseURL:)`'s non-2xx body-decoding path.
+        nonisolated(unsafe) static var statusCodes: [Int] = []
         nonisolated(unsafe) static var callCount = 0
 
         static func reset() {
             responses = []
+            statusCodes = []
             callCount = 0
         }
 
@@ -49,6 +55,63 @@ final class TransactionImportServiceTests: XCTestCase {
             let index = min(Self.callCount, max(Self.responses.count - 1, 0))
             Self.callCount += 1
             let body = Self.responses.isEmpty ? Data() : Self.responses[index]
+            let statusCode = Self.statusCodes.isEmpty ? 200 : Self.statusCodes[min(index, Self.statusCodes.count - 1)]
+            let response = HTTPURLResponse(
+                url: request.url ?? URL(string: "https://sandbox.plaid.com")!,
+                statusCode: statusCode,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: body)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+
+        override func stopLoading() {}
+    }
+
+    /// Fails every request outright with a genuine `URLError` (rather than an HTTP
+    /// response) — stands in for a real network/transport failure (no connectivity, DNS
+    /// failure, etc.), distinct from `ScriptedSyncURLProtocol`'s HTTP-level failures.
+    /// Backs `reservoir-adq.6.5`'s "transient/network error must not set needsAttention"
+    /// coverage — the acceptance criterion explicitly calls for this alongside the
+    /// existing malformed-JSON-body coverage.
+    private final class NetworkFailureURLProtocol: URLProtocol {
+        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+        override func startLoading() {
+            client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
+        }
+
+        override func stopLoading() {}
+    }
+
+    private func makeNetworkFailureURLSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [NetworkFailureURLProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+
+    /// Reports a fixed access token as already stored — backs the
+    /// `PlaidServiceLive.startRelink` integration test below, which needs
+    /// `keychain.read(for:)` to succeed before `startRelink` attempts its network call.
+    private final class StubKeychainWithAccessToken: KeychainServicing, @unchecked Sendable {
+        func save(_ value: String, for key: String) async throws {}
+        func read(for key: String) async throws -> String? { "access-sandbox-relink-test" }
+        func delete(for key: String) async throws {}
+    }
+
+    /// Answers any request (`/link/token/create` included) with a fixed successful
+    /// `{"link_token": ...}` body — backs the same integration test, which only needs
+    /// `startRelink(for:)`'s token-creation call to succeed, not to inspect its body (that's
+    /// covered separately in `PlaidServiceLiveTests`).
+    private final class LinkTokenURLProtocol: URLProtocol {
+        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+        override func startLoading() {
+            let body = Data(#"{"link_token": "link-sandbox-relink-integration-test"}"#.utf8)
             let response = HTTPURLResponse(
                 url: request.url ?? URL(string: "https://sandbox.plaid.com")!,
                 statusCode: 200,
@@ -61,6 +124,12 @@ final class TransactionImportServiceTests: XCTestCase {
         }
 
         override func stopLoading() {}
+    }
+
+    private func makeLinkTokenURLSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [LinkTokenURLProtocol.self]
+        return URLSession(configuration: configuration)
     }
 
     private func makeScriptedURLSession() -> URLSession {
@@ -120,14 +189,17 @@ final class TransactionImportServiceTests: XCTestCase {
 
     private func makeSUT(
         keychain: KeychainServicing = StubKeychainWithToken(),
-        cursorStore: PlaidSyncCursorStoring = StubCursorStore()
+        cursorStore: PlaidSyncCursorStoring = StubCursorStore(),
+        linkedItemStore: LinkedItemStoring = StubLinkedItemStore(),
+        urlSession: URLSession? = nil
     ) -> TransactionImportService {
         TransactionImportService(
             modelContext: context,
             keychain: keychain,
-            urlSession: makeScriptedURLSession(),
+            urlSession: urlSession ?? makeScriptedURLSession(),
             environmentStore: StubEnvironmentStore(.sandbox),
-            cursorStore: cursorStore
+            cursorStore: cursorStore,
+            linkedItemStore: linkedItemStore
         )
     }
 
@@ -163,6 +235,12 @@ final class TransactionImportServiceTests: XCTestCase {
         {"added": [\(added.joined(separator: ","))], "modified": [\(modified.joined(separator: ","))], "removed": [\(removed.joined(separator: ","))], "next_cursor": "\(nextCursor)", "has_more": \(hasMore)}
         """
         return Data(json.utf8)
+    }
+
+    /// Plaid's documented non-2xx error-body shape (reservoir-adq.6.5) — used with
+    /// `ScriptedSyncURLProtocol.statusCodes` set to a matching non-2xx status.
+    private func itemErrorResponse(errorType: String = "ITEM_ERROR", errorCode: String) -> Data {
+        Data(#"{"error_type": "\#(errorType)", "error_code": "\#(errorCode)", "error_message": "test"}"#.utf8)
     }
 
     // MARK: - Fixtures
@@ -902,6 +980,183 @@ final class TransactionImportServiceTests: XCTestCase {
 
         XCTAssertNil(sut.presentedError)
         XCTAssertNil(sut.presentedErrorDetail)
+    }
+
+    // MARK: - needsAttention (reservoir-adq.6.5 — ITEM_LOGIN_REQUIRED classification)
+
+    /// A genuine `ITEM_LOGIN_REQUIRED` error body decoded from a non-2xx `/transactions/
+    /// sync` response must set `needsAttention` (both the in-memory published property
+    /// and the persisted `linkedItemStore`), and classify `presentedError` distinctly from
+    /// every other failure category — this is the acceptance criterion's core assertion,
+    /// and only reachable now that `post(_:body:baseURL:)` decodes the failure body
+    /// instead of discarding it.
+    func testRunImport_itemLoginRequiredError_setsNeedsAttentionAndClassifiesDistinctly() async {
+        ScriptedSyncURLProtocol.responses = [itemErrorResponse(errorCode: "ITEM_LOGIN_REQUIRED")]
+        ScriptedSyncURLProtocol.statusCodes = [400]
+        let linkedItemStore = StubLinkedItemStore(initial: LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now))
+        let sut = makeSUT(linkedItemStore: linkedItemStore)
+
+        await sut.runImport()
+
+        XCTAssertEqual(sut.presentedError, .itemLoginRequired)
+        XCTAssertTrue(sut.needsAttention, "the in-memory flag must be set so the Today-screen badge (bound to it) reacts immediately.")
+        XCTAssertEqual(linkedItemStore.setNeedsAttentionCalls, [true], "the persisted flag must also be set, so it survives past this TransactionImportService instance.")
+        XCTAssertEqual(linkedItemStore.load()?.needsAttention, true)
+    }
+
+    /// A different (non-`ITEM_LOGIN_REQUIRED`) item-level error still falls back to
+    /// `.plaidSide` (see `PlaidErrorClassifierTests`) and must NOT set `needsAttention` —
+    /// only the well-defined case this story resolves gets the persistent-UI treatment.
+    func testRunImport_otherItemError_doesNotSetNeedsAttention() async {
+        ScriptedSyncURLProtocol.responses = [itemErrorResponse(errorCode: "ITEM_NOT_SUPPORTED")]
+        ScriptedSyncURLProtocol.statusCodes = [400]
+        let linkedItemStore = StubLinkedItemStore(initial: LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now))
+        let sut = makeSUT(linkedItemStore: linkedItemStore)
+
+        await sut.runImport()
+
+        XCTAssertEqual(sut.presentedError, .plaidSide)
+        XCTAssertFalse(sut.needsAttention)
+        XCTAssertTrue(linkedItemStore.setNeedsAttentionCalls.isEmpty)
+    }
+
+    /// A malformed (non-Plaid-error-shaped) non-2xx body — e.g. an HTML error page, an
+    /// empty body — falls back to the pre-existing `URLError(.badServerResponse)` ->
+    /// `.plaidSide` path (see `post(_:body:baseURL:)`'s doc comment on preserved
+    /// behavior) and must not set `needsAttention` either.
+    func testRunImport_malformedNon2xxBody_classifiesAsPlaidSide_doesNotSetNeedsAttention() async {
+        ScriptedSyncURLProtocol.responses = [Data("<html>not json</html>".utf8)]
+        ScriptedSyncURLProtocol.statusCodes = [500]
+        let linkedItemStore = StubLinkedItemStore(initial: LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now))
+        let sut = makeSUT(linkedItemStore: linkedItemStore)
+
+        await sut.runImport()
+
+        XCTAssertEqual(sut.presentedError, .plaidSide)
+        XCTAssertFalse(sut.needsAttention)
+        XCTAssertTrue(linkedItemStore.setNeedsAttentionCalls.isEmpty)
+    }
+
+    /// A genuine transport/network failure (no HTTP response at all) must not set
+    /// needsAttention — the acceptance criterion's explicit "a flaky connection during a
+    /// foreground refresh must not falsely trigger the persistent UI" case.
+    func testRunImport_genuineNetworkError_doesNotSetNeedsAttention() async {
+        let linkedItemStore = StubLinkedItemStore(initial: LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now))
+        let sut = makeSUT(linkedItemStore: linkedItemStore, urlSession: makeNetworkFailureURLSession())
+
+        await sut.runImport()
+
+        XCTAssertEqual(sut.presentedError, .network)
+        XCTAssertFalse(sut.needsAttention)
+        XCTAssertTrue(linkedItemStore.setNeedsAttentionCalls.isEmpty)
+    }
+
+    /// `needsAttention` must be readable immediately at construction (not only after a
+    /// `runImport()` call) — the Today-screen badge binds to a `TransactionImportService`
+    /// instance that may render before any import has run this session, e.g. right after
+    /// app launch with a flag already set from a prior session.
+    func testInit_syncsNeedsAttentionFromPersistedStore() {
+        let linkedItemStore = StubLinkedItemStore(initial: LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now, needsAttention: true))
+        let sut = makeSUT(linkedItemStore: linkedItemStore)
+
+        XCTAssertTrue(sut.needsAttention)
+    }
+
+    /// `refreshNeedsAttention()` re-reads the persisted flag on demand — used by
+    /// `PlaidDebugLinkView` right after a successful relink so the badge clears
+    /// immediately rather than waiting for the next `runImport()` call.
+    func testRefreshNeedsAttention_reReadsFromStore() {
+        let linkedItemStore = StubLinkedItemStore(initial: LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now, needsAttention: true))
+        let sut = makeSUT(linkedItemStore: linkedItemStore)
+        XCTAssertTrue(sut.needsAttention, "sanity check: seeded true at init.")
+
+        linkedItemStore.setNeedsAttention(false)
+        sut.refreshNeedsAttention()
+
+        XCTAssertFalse(sut.needsAttention)
+    }
+
+    /// Code-review finding (reservoir-adq.6.5): `runImport()`'s no-access-token guard used
+    /// to `return` before `refreshNeedsAttention()` ran. A Plaid environment switch clears
+    /// both the Keychain token and the persisted linked item (`PlaidEnvironmentStore
+    /// .onChange`), but without resyncing here, `needsAttention` would stay stuck at its
+    /// last in-memory value from *before* the switch — e.g. `true` from a flagged item that
+    /// no longer exists — permanently showing the Today-screen badge with nothing to
+    /// reconnect. `runImport()` must resync `needsAttention` on this early-return path too,
+    /// not just on the paths that reach a real sync attempt.
+    func testRunImport_noAccessToken_stillResyncsNeedsAttentionFromStore() async {
+        let linkedItemStore = StubLinkedItemStore(initial: nil) // env switch already cleared it.
+        let sut = makeSUT(keychain: StubKeychain(), linkedItemStore: linkedItemStore)
+        // Simulate the stale in-memory flag a prior session (before the environment
+        // switch) would have left behind — `needsAttention` is `private(set)`, so drive it
+        // the same way the app would: seed a flagged item, sync it in, then clear the
+        // store out from under the instance (exactly what `PlaidEnvironmentStore.onChange`
+        // does to `LinkedItemStore` without this instance's knowledge).
+        linkedItemStore.save(LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now, needsAttention: true))
+        sut.refreshNeedsAttention()
+        XCTAssertTrue(sut.needsAttention, "sanity check: starts stale-true, matching a flagged item from before the switch.")
+        linkedItemStore.clear()
+
+        await sut.runImport()
+
+        XCTAssertFalse(
+            sut.needsAttention,
+            "the no-access-token early return must still resync from the store, which now reports nothing linked."
+        )
+    }
+
+    /// Reproduces `PlaidDebugLinkView`'s Relink flow — a real `PlaidServiceLive` sharing
+    /// the same `LinkedItemStoring` backing as this `TransactionImportService`, the way the
+    /// two are actually wired via DI in the app — and asserts the fixed (reservoir-1nn)
+    /// behavior: `TransactionImportService.needsAttention` (what the Today-screen badge is
+    /// bound to) only clears once relink has *genuinely* completed, and does so promptly
+    /// at that point with no further trigger needed.
+    ///
+    /// `startRelink(for:)` only *awaits* through token creation and setting
+    /// `isPresentingLink = true` — it returns as soon as the update-mode Link sheet is
+    /// handed to SwiftUI, well before the user has done anything in it.
+    /// `handleRelinkSuccess()` — which actually clears `needsAttention` — only runs later,
+    /// from LinkKit's `onSuccess` closure, once the user completes the sheet. The fix wires
+    /// `PlaidServiceLive.onRelinkSuccess` (fired from inside `handleRelinkSuccess()`, after
+    /// the flag is cleared) to `TransactionImportService.refreshNeedsAttention()` —
+    /// `PlaidDebugLinkView` sets this closure, but the mechanism itself lives on
+    /// `PlaidServiceLive` and is exercised directly here, with no view in the loop.
+    func testRelinkSuccess_refreshesNeedsAttentionOnceRelinkActuallyCompletes() async {
+        let linkedItemStore = StubLinkedItemStore(
+            initial: LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now, needsAttention: true)
+        )
+        let plaidService = PlaidServiceLive(
+            keychain: StubKeychainWithAccessToken(),
+            urlSession: makeLinkTokenURLSession(),
+            linkedItemStore: linkedItemStore
+        )
+        let sut = makeSUT(linkedItemStore: linkedItemStore)
+        XCTAssertTrue(sut.needsAttention, "sanity check: both services start in sync, seeded from the shared store.")
+        let item = try! XCTUnwrap(plaidService.linkedItem)
+
+        // Exactly what PlaidDebugLinkView wires on appear (reservoir-1nn's fix).
+        plaidService.onRelinkSuccess = { sut.refreshNeedsAttention() }
+
+        // Exactly PlaidDebugLinkView's Relink-button Task body.
+        await plaidService.startRelink(for: item)
+
+        XCTAssertTrue(
+            sut.needsAttention,
+            "startRelink's own await only covers token creation + presenting the Link " +
+            "sheet — the user hasn't done anything in it yet, so the badge must not have " +
+            "cleared."
+        )
+
+        // Now the user actually finishes the update-mode Link sheet (LinkKit's onSuccess
+        // closure firing, asynchronously, well after startRelink's own await returned).
+        plaidService.handleRelinkSuccess()
+
+        XCTAssertFalse(
+            sut.needsAttention,
+            "handleRelinkSuccess() fires onRelinkSuccess after clearing the flag, which " +
+            "refreshes TransactionImportService.needsAttention immediately — no further " +
+            "runImport() or app relaunch required."
+        )
     }
 
     // MARK: - Multi-page pagination

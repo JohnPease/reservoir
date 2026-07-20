@@ -404,11 +404,19 @@ appears anywhere in the app. It owns two responsibilities:
   (survives background refresh, never iCloud-synced/exportable), keyed by a
   single fixed identifier — one linked item for now, multi-account linking is
   deferred (see `docs/PROJECT_SPEC.md`/adq.6 breakdown). Non-secret linked-item
-  metadata (institution name, item ID) lives in `UserDefaults`, consistent
-  with PROJECT_SPEC's "no `User` entity" note that app-wide settings outside
-  SwiftData belong there — not a storage decision for Settings' eventual real
-  account list (adq.7/adq.6.3), which may need a SwiftData model once more
-  than metadata display is needed.
+  metadata (institution name, item ID, linked date, and — since adq.6.5 —
+  a `needsAttention` flag) lives in `UserDefaults` behind `LinkedItemStore`
+  (`Services/Plaid/LinkedItemStore.swift`, a `LinkedItemStoring` protocol +
+  `UserDefaults`-backed live implementation, same pattern as
+  `KeychainServicing`/`PlaidSyncCursorStoring`), consistent with PROJECT_SPEC's
+  "no `User` entity" note that app-wide settings outside SwiftData belong
+  there — not a storage decision for Settings' eventual real account list
+  (adq.7/adq.6.3), which may need a SwiftData model once more than metadata
+  display is needed. Both `PlaidServiceLive` (owns *when* to read/write it —
+  init, a successful Link/relink, an environment change) and
+  `TransactionImportService` (sets `needsAttention` on a classified item-auth
+  error, reads it for the Today-screen badge) depend on this one store via
+  constructor-parameter DI — see "Item relink / connection-status UX" below.
 
   `PlaidErrorClassifier` (`Services/Plaid/PlaidErrorClassifier.swift`) is a
   pure function classifying any Link or exchange failure into `.network` vs
@@ -538,6 +546,76 @@ debug button is no longer the only way to run an import.
     `pendingMergeDecision`, so a merge prompt raised by a foreground- or
     pull-to-refresh-triggered import surfaces regardless of which tab is
     active.
+
+**Item relink / update-mode + connection-status UX** (adq.6.5): without
+webhooks, this app only discovers a broken bank connection (most commonly
+Plaid's `ITEM_LOGIN_REQUIRED` — the bank requires re-authentication after a
+password change, MFA re-verification, etc.) the next time it tries to fetch,
+so a persistent "needs attention" state is required rather than a one-time
+error toast a flaky connection would falsely trigger.
+  - **Bug fix, not just a classifier extension**: `TransactionImportService
+    .post(_:body:baseURL:)` previously discarded the response body on any
+    non-2xx status, throwing a bare `URLError(.badServerResponse)` — this
+    made `ITEM_LOGIN_REQUIRED` (carried in that JSON body) unreachable. It
+    now decodes the body as `PlaidAPIErrorBody` on failure and throws a
+    `PlaidAPIError(errorType:errorCode:)` when at least one of those fields
+    is present, preserving the old `URLError(.badServerResponse)` behavior
+    exactly for every other failure shape (malformed JSON, an HTML error
+    page, a genuine network/transport error never reaching this method at
+    all).
+  - `PlaidErrorClassifier` gained a new `.itemLoginRequired` category and
+    `.itemError(errorType:errorCode:)` input case: `errorCode ==
+    "ITEM_LOGIN_REQUIRED"` classifies distinctly (drives the persistent UI
+    below); any other item-level code falls back to the existing
+    `.plaidSide` generic-error-plus-retry treatment — this story only
+    resolves the one well-defined case Plaid's own model requires user
+    action for.
+  - `TransactionImportService.needsAttention` (published, synced from
+    `LinkedItemStore` at init and at the start of every `runImport()`) is set
+    `true` only when a genuine `ITEM_LOGIN_REQUIRED` is classified — a
+    transient/network error during a foreground or pull-to-refresh import
+    never sets it, so a flaky connection can't falsely trip the persistent
+    UI. A `refreshNeedsAttention()` method re-reads the flag on demand, used
+    right after a successful relink so the UI clears immediately rather than
+    waiting for the next import.
+  - **Reconnect flow**: `PlaidService`/`PlaidServiceLive` gained
+    `startRelink(for:) async`, opening Plaid Link in **update mode** — a
+    `link_token` scoped to the existing item's `access_token`, with
+    `products` omitted entirely, per Plaid's update-mode API contract. No
+    `LinkKit` client-side changes were needed: the existing
+    `PlaidLinkPresentationView` `.sheet()` wiring works unchanged once handed
+    an update-mode-flavored token. On success, `handleRelinkSuccess()` clears
+    `needsAttention` via `LinkedItemStore` — no token re-exchange, since
+    Plaid's `access_token` doesn't change in update mode.
+  - **UI**: per the build-config decision that JP runs Debug via Xcode only,
+    the reconnect affordance lives in the existing `#if DEBUG`-gated
+    `PlaidDebugLinkView` (interim home until Settings/adq.7 ships) — its
+    "Relink" button, previously mis-wired to call `startLink()` (which would
+    have created a duplicate item/token rather than repairing the existing
+    one), now calls `startRelink(for:)`. The Today screen (`TodayView`) gets
+    an icon-badge on its existing top-right gear icon — not a banner, so it
+    doesn't compete with the hero daily-limit number — visible whenever
+    `needsAttention` is true; tapping it navigates to the reconnect flow via
+    a new `TabSelection` (`App/RootTabView.swift`, `@Observable`, injected
+    via `.environment(_:)`) that lets `TodayView` programmatically switch
+    `RootTabView`'s `TabView` to the Settings tab, instead of the normal
+    placeholder Settings sheet.
+  - **Testing**: `ITEM_LOGIN_REQUIRED` classification and the
+    `needsAttention`-setting/not-setting behavior (item error vs. transient/
+    network error) are unit tested (`PlaidErrorClassifierTests`,
+    `TransactionImportServiceTests`). `startRelink(for:)`'s exact update-mode
+    request shape (`access_token` present, `products` absent) is unit tested
+    against `PlaidServiceLive` (`PlaidServiceLiveTests`). Tapping "Relink"
+    and the Today-screen badge/navigation are covered by
+    `ReservoirUITests/PlaidRelinkUITests.swift` via a new scripted
+    `URLProtocol` (`UITEST_PLAID_IMPORT_SCENARIO=itemLoginRequired`,
+    consistent with the existing `PlaidForcedFailureURLProtocol`/
+    `PlaidImportMergePromptURLProtocol` convention). The full "reconnect
+    clears needsAttention, next refresh resumes normally" round trip against
+    Plaid Sandbox is **manual verification only** (matches the existing
+    posture for transient-error coverage; this test area already has two
+    flakiness beads, reservoir-bdy/reservoir-tq7) — see the manual-steps
+    comment at the bottom of `PlaidRelinkUITests.swift`.
 
 ## Technical details
 

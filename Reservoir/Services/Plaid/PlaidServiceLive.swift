@@ -87,10 +87,36 @@ final class PlaidServiceLive: PlaidService {
     /// LinkKit 7.x's session-based API; LinkKit does not retain it itself.
     private(set) var linkSession: PlaidLinkSession?
 
+    /// Fires once `handleRelinkSuccess()` actually runs — i.e. once the update-mode Link
+    /// session the user is shown has genuinely completed, not once `startRelink(for:)`'s
+    /// `await` merely returns (that only covers token creation + presenting the sheet; see
+    /// reservoir-1nn). `PlaidDebugLinkView` wires this to
+    /// `TransactionImportService.refreshNeedsAttention()` so the Today-screen badge clears
+    /// the moment relink succeeds, without needing another `runImport()` or app relaunch to
+    /// re-sync it. A plain closure rather than a Combine publisher or a hard dependency on
+    /// `TransactionImportService` — this class has no business knowing that type exists;
+    /// the caller decides what "notify on relink success" means.
+    ///
+    /// **A single-slot, opt-in hook, not enforced at compile time** (code review finding):
+    /// whichever view presents the relink affordance MUST wire this in `onAppear`/`init` or
+    /// a successful relink won't refresh the badge immediately. `PlaidDebugLinkView` does
+    /// this today; when Settings (reservoir-adq.7) replaces it as the relink UI's home, that
+    /// screen must wire this too, or relink will *appear* to leave the badge stuck. It isn't
+    /// permanently stuck either way — `TransactionImportService.runImport()` already calls
+    /// `refreshNeedsAttention()` at the start of every run (see that method's doc comment),
+    /// so the very next foreground/pull-to-refresh trigger self-heals it regardless of
+    /// whether this closure was wired — but a forgotten wire-up means losing the "clears
+    /// immediately" guarantee this story's acceptance criteria call for, not a permanent
+    /// break. Kept as an explicit opt-in rather than a reactive `LinkedItemStore` observer
+    /// (a deeper, correct-by-construction fix) since there's only one caller today and no
+    /// second one to design against yet — revisit if/when adq.7 actually needs it.
+    var onRelinkSuccess: (() -> Void)?
+
     private let keychain: KeychainServicing
     private let urlSession: URLSession
     private let environmentStore: PlaidEnvironmentStoring
     private let cursorStore: PlaidSyncCursorStoring
+    private let linkedItemStore: LinkedItemStoring
 
     /// The environment pinned for the Link flow currently in progress (set
     /// by `startLink()`, cleared once that flow settles). `createLinkToken()`
@@ -112,16 +138,19 @@ final class PlaidServiceLive: PlaidService {
         keychain: KeychainServicing = KeychainService(),
         urlSession: URLSession = .shared,
         environmentStore: PlaidEnvironmentStoring = PlaidEnvironmentStore(),
-        cursorStore: PlaidSyncCursorStoring = PlaidSyncCursorStore()
+        cursorStore: PlaidSyncCursorStoring = PlaidSyncCursorStore(),
+        linkedItemStore: LinkedItemStoring = LinkedItemStore()
     ) {
         self.keychain = keychain
         self.urlSession = urlSession
         self.environmentStore = environmentStore
         self.cursorStore = cursorStore
-        self.linkedItem = Self.loadPersistedLinkedItem()
+        self.linkedItemStore = linkedItemStore
+        self.linkedItem = linkedItemStore.load()
 
         let keychainForInvalidation = keychain
         let cursorStoreForInvalidation = cursorStore
+        let linkedItemStoreForInvalidation = linkedItemStore
         (environmentStore as? PlaidEnvironmentStore)?.onChange = { [weak self] _ in
             // Invalidate every sync cursor, not just the newly-selected environment's —
             // a stale cursor left behind for the environment being switched *away from*
@@ -134,29 +163,31 @@ final class PlaidServiceLive: PlaidService {
             }
             Task { @MainActor in
                 self?.linkedItem = nil
-                Self.clearPersistedLinkedItem()
+                linkedItemStoreForInvalidation.clear()
                 try? await keychainForInvalidation.delete(for: PlaidKeychainKey.accessToken)
             }
         }
     }
 
-    func startLink() async {
-        guard !isStartingLink else { return }
-        isStartingLink = true
-        defer { isStartingLink = false }
-
+    /// Shared tail of `startLink()`/`startRelink(for:)` (code review finding: this
+    /// environment-pin/token-creation/session-presentation/error-classify sequence was
+    /// duplicated nearly verbatim between the two). Each caller supplies only its own
+    /// token-creation step and whether the resulting session is update-mode — the
+    /// reentrancy guard stays in each caller since `startRelink(for:)` needs to check it
+    /// before its own Keychain pre-check runs, not just before this shared tail.
+    private func beginLinkFlow(isRelink: Bool, makeToken: () async throws -> String) async {
         // Pin the environment for the duration of this Link flow — read
         // fresh here (a new flow always picks up the latest toggle value,
         // per reservoir-adq.6.2), then held steady through
         // `handleLinkSuccess()`'s `exchangePublicToken()` call even if the
         // toggle changes while LinkKit's sheet is up. See `pinnedEnvironment`.
         pinnedEnvironment = environmentStore.current
-
         presentedError = nil
+
         do {
-            let token = try await createLinkToken()
+            let token = try await makeToken()
             linkToken = token
-            linkSession = try makeSession(token: token)
+            linkSession = try makeSession(token: token, isRelink: isRelink)
             isPresentingLink = true
         } catch {
             presentedError = PlaidErrorClassifier.classify(.exchangeError(error))
@@ -165,9 +196,27 @@ final class PlaidServiceLive: PlaidService {
         }
     }
 
+    func startLink() async {
+        guard !isStartingLink else { return }
+        isStartingLink = true
+        defer { isStartingLink = false }
+
+        await beginLinkFlow(isRelink: false) { try await self.createLinkToken() }
+    }
+
+    /// The shared "Try again" affordance's action — retries whichever flow the last
+    /// `presentedError` came from. Must stay relink-aware (reservoir-adq.6.5 code review):
+    /// if a `startRelink(for:)` attempt fails (e.g. a transient network error creating the
+    /// update-mode token) and the user taps "Try again", retrying via `startLink()` would
+    /// silently create a brand-new item/token instead of repairing the existing one —
+    /// exactly the bug the Relink button itself was fixed to avoid.
     func retry() async {
         presentedError = nil
-        await startLink()
+        if let item = linkedItem {
+            await startRelink(for: item)
+        } else {
+            await startLink()
+        }
     }
 
     func handleLinkSuccess(publicToken: String, institutionName: String) async {
@@ -206,7 +255,7 @@ final class PlaidServiceLive: PlaidService {
 
         let item = LinkedItem(itemID: exchange.itemID, institutionName: institutionName, linkedAt: Date())
         linkedItem = item
-        Self.persist(item)
+        linkedItemStore.save(item)
     }
 
     func handleLinkExit(errorType: String?, errorCode: String?) {
@@ -224,16 +273,79 @@ final class PlaidServiceLive: PlaidService {
         )
     }
 
+    // MARK: - Update-mode relink (reservoir-adq.6.5)
+
+    /// Re-authenticates `item` via Plaid's update-mode Link (a `link_token` scoped to the
+    /// existing item's `access_token`, per `createRelinkToken(accessToken:)`) rather than
+    /// creating a brand-new item/token. Mirrors `startLink()`'s shape (reentrancy guard,
+    /// environment pinning, `presentedError` classification on failure) so
+    /// `PlaidLinkPresentationView`'s existing `.sheet()` wiring works unchanged — the only
+    /// difference is which token-creation call is made and, on success, which completion
+    /// path runs (`handleRelinkSuccess()`, not `handleLinkSuccess(publicToken:institutionName:)`
+    /// — no token re-exchange, since the access_token doesn't change in update mode).
+    func startRelink(for item: LinkedItem) async {
+        guard !isStartingLink else { return }
+        isStartingLink = true
+        defer { isStartingLink = false }
+
+        presentedError = nil
+        guard let accessToken = try? await keychain.read(for: PlaidKeychainKey.accessToken) else {
+            // No access token to relink — nothing Plaid-side has been attempted yet, so
+            // this classifies the same generic way a pre-flight local failure would.
+            // Not expected in normal use (a `LinkedItem` only ever exists because a token
+            // was saved for it), but guards against an inconsistent Keychain/UserDefaults
+            // state rather than crashing or silently no-oping. Checked before
+            // `beginLinkFlow` (and thus before any environment pinning) since there's
+            // nothing to pin an environment for yet — this failure never reaches Plaid.
+            presentedError = PlaidErrorClassifier.classify(.exchangeError(URLError(.badServerResponse)))
+            return
+        }
+
+        await beginLinkFlow(isRelink: true) { try await self.createRelinkToken(accessToken: accessToken) }
+    }
+
+    /// Update-mode Link's `onSuccess` completion — clears `needsAttention` and nothing
+    /// else. No `handleLinkSuccess`-style token exchange: Plaid's `access_token` doesn't
+    /// change in update mode, so there is nothing new to persist to Keychain, and the
+    /// `LinkedItem`'s `itemID`/`institutionName`/`linkedAt` are all unchanged too — only
+    /// the flag this story added is ever touched here.
+    func handleRelinkSuccess() {
+        isPresentingLink = false
+        linkSession = nil
+        pinnedEnvironment = nil
+        if var item = linkedItem {
+            item.needsAttention = false
+            linkedItem = item
+            linkedItemStore.save(item)
+        } else {
+            linkedItemStore.setNeedsAttention(false)
+        }
+        // Notify after the flag is actually cleared (both in-memory and in the store) —
+        // reservoir-1nn. This is the one point that genuinely marks relink completion;
+        // startRelink(for:)'s own await returns far earlier, before the user has done
+        // anything in the Link sheet.
+        onRelinkSuccess?()
+    }
+
     // MARK: - LinkKit session creation
 
-    private func makeSession(token: String) throws -> PlaidLinkSession {
+    /// `isRelink` selects which completion path `onSuccess` runs — `handleRelinkSuccess()`
+    /// (update mode) or `handleLinkSuccess(publicToken:institutionName:)` (a fresh Link).
+    /// `onExit`'s error handling is identical either way (same `PlaidErrorClassifier`
+    /// categories, same generic-error UX posture per this story's UX section), so it's
+    /// shared rather than branched.
+    private func makeSession(token: String, isRelink: Bool = false) throws -> PlaidLinkSession {
         let configuration = LinkTokenConfiguration(
             token: token,
             onSuccess: { [weak self] success in
                 let publicToken = success.publicToken
                 let institutionName = success.metadata.institution.name
                 Task { @MainActor in
-                    await self?.handleLinkSuccess(publicToken: publicToken, institutionName: institutionName)
+                    if isRelink {
+                        self?.handleRelinkSuccess()
+                    } else {
+                        await self?.handleLinkSuccess(publicToken: publicToken, institutionName: institutionName)
+                    }
                 }
             },
             onExit: { [weak self] exit in
@@ -305,6 +417,47 @@ final class PlaidServiceLive: PlaidService {
         return response.link_token
     }
 
+    /// Plaid's update-mode `/link/token/create` shape (reservoir-adq.6.5): includes the
+    /// existing item's `access_token` and **omits `products` entirely** — both required by
+    /// Plaid's own update-mode API contract, not this app's choice. `RequestBody` is a
+    /// deliberately separate type from `createLinkToken()`'s (rather than one shared
+    /// struct with an optional `access_token`/optional `products`) so a fresh Link request
+    /// can never accidentally carry a stale `access_token`, and an update-mode request can
+    /// never accidentally carry `products` — the type system enforces the two shapes stay
+    /// distinct rather than relying on call-site discipline.
+    private func createRelinkToken(accessToken: String) async throws -> String {
+        struct RequestBody: Encodable {
+            let client_id: String
+            let secret: String
+            let client_name: String
+            let user: RequestUser
+            let country_codes: [String]
+            let language: String
+            let redirect_uri: String
+            let access_token: String
+
+            struct RequestUser: Encodable { let client_user_id: String }
+        }
+        struct ResponseBody: Decodable { let link_token: String }
+
+        let body = RequestBody(
+            client_id: PlaidCredentials.clientID,
+            secret: PlaidCredentials.secret(
+                for: environment,
+                sandboxSecret: PlaidCredentials.sandboxSecret,
+                productionSecret: PlaidCredentials.productionSecret
+            ),
+            client_name: "Reservoir",
+            user: .init(client_user_id: Self.clientUserID),
+            country_codes: ["US"],
+            language: "en",
+            redirect_uri: PlaidOAuthRedirect.url.absoluteString,
+            access_token: accessToken
+        )
+        let response: ResponseBody = try await post("/link/token/create", body: body)
+        return response.link_token
+    }
+
     private func exchangePublicToken(_ publicToken: String) async throws -> (accessToken: String, itemID: String) {
         struct RequestBody: Encodable {
             let client_id: String
@@ -342,7 +495,7 @@ final class PlaidServiceLive: PlaidService {
         return try JSONDecoder().decode(Response.self, from: data)
     }
 
-    // MARK: - client_user_id / linked-item persistence
+    // MARK: - client_user_id
 
     /// A stable per-device identifier Plaid's `/link/token/create` requires
     /// as `user.client_user_id`. This app has no `User` entity (single-
@@ -360,42 +513,8 @@ final class PlaidServiceLive: PlaidService {
         return generated
     }
 
-    /// Non-secret linked-item metadata (institution name, item ID, linked
-    /// date) — the `access_token` itself lives only in Keychain, never here.
-    /// This is a `UserDefaults` convenience so the debug entry point can
-    /// show "already linked" state across launches; it is not the storage
-    /// decision for Settings' real account list (reservoir-adq.7/6.3), which
-    /// may need a SwiftData model once more than metadata display is needed.
-    private static let linkedItemDefaultsKey = "plaid.linkedItem"
-
-    private static func persist(_ item: LinkedItem) {
-        let dict: [String: Any] = [
-            "itemID": item.itemID,
-            "institutionName": item.institutionName,
-            "linkedAt": item.linkedAt.timeIntervalSince1970,
-        ]
-        UserDefaults.standard.set(dict, forKey: linkedItemDefaultsKey)
-    }
-
-    /// Clears the persisted linked-item metadata — used when the Plaid
-    /// environment changes, since a linked item is only ever valid for the
-    /// environment it was linked under (see `onChange` wiring in `init`).
-    private static func clearPersistedLinkedItem() {
-        UserDefaults.standard.removeObject(forKey: linkedItemDefaultsKey)
-    }
-
-    private static func loadPersistedLinkedItem() -> LinkedItem? {
-        guard let dict = UserDefaults.standard.dictionary(forKey: linkedItemDefaultsKey),
-              let itemID = dict["itemID"] as? String,
-              let institutionName = dict["institutionName"] as? String,
-              let linkedAtInterval = dict["linkedAt"] as? TimeInterval
-        else {
-            return nil
-        }
-        return LinkedItem(
-            itemID: itemID,
-            institutionName: institutionName,
-            linkedAt: Date(timeIntervalSince1970: linkedAtInterval)
-        )
-    }
+    // Linked-item metadata persistence (institution name, item ID, linked date,
+    // needsAttention) moved to `LinkedItemStore` (reservoir-adq.6.5) — this type now only
+    // owns *when* to read/write it (init, a successful Link/relink, an environment
+    // change), not the storage mechanism itself. See `linkedItemStore`'s doc comment.
 }

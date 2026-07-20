@@ -27,6 +27,15 @@ enum PlaidErrorCategory: Equatable {
     /// told "couldn't connect to your bank" for a failure that has nothing
     /// to do with the bank.
     case localStorage
+    /// An already-linked item's most recent import attempt failed with Plaid's
+    /// `ITEM_LOGIN_REQUIRED` error — the bank requires re-authentication (a password
+    /// change, MFA re-verification, etc.), which Plaid's own model requires resolving via
+    /// an update-mode Link session, not a silent retry (reservoir-adq.6.5). Distinct from
+    /// `.plaidSide` so the UI can drive a persistent "needs attention" affordance rather
+    /// than a one-time transient error banner — an unresolved `ITEM_LOGIN_REQUIRED` stays
+    /// true until the user reconnects, unlike every other `.plaidSide` failure, which is
+    /// just "try again."
+    case itemLoginRequired
 }
 
 /// Input to `PlaidErrorClassifier`, shaped to keep the classifier free of any
@@ -50,6 +59,13 @@ enum PlaidFailureInput {
     /// `KeychainError` case is a local storage condition, never a
     /// network/Plaid-side one.
     case localStorageError(Error)
+    /// An item-level error decoded from a Plaid REST call's non-2xx JSON error body —
+    /// reservoir-adq.6.5. `errorType`/`errorCode` mirror Plaid's own `error_type`/
+    /// `error_code` response fields verbatim (e.g. `"ITEM_ERROR"`/`"ITEM_LOGIN_REQUIRED"`).
+    /// Only reachable once the response body is actually decoded on failure — see
+    /// `TransactionImportService.post(_:body:baseURL:)`'s doc comment for why that wasn't
+    /// previously possible.
+    case itemError(errorType: String?, errorCode: String?)
 }
 
 /// Pure function mapping a Plaid Link or token-exchange failure into a
@@ -85,6 +101,15 @@ enum PlaidErrorClassifier {
 
         case .localStorageError:
             return .localStorage
+
+        case .itemError(_, let errorCode):
+            // ITEM_LOGIN_REQUIRED is the well-defined, expected case this story resolves
+            // with a persistent UI (see reservoir-adq.6.5's NOTES: "everything else falls
+            // back to adq.6.1's existing generic-error-plus-retry pattern"). Any other
+            // item-level code (a still-real Plaid/institution-side failure) falls back to
+            // .plaidSide rather than getting its own persistent-UI treatment — that's
+            // deliberately out of this story's scope.
+            return errorCode == "ITEM_LOGIN_REQUIRED" ? .itemLoginRequired : .plaidSide
         }
     }
 
@@ -119,6 +144,8 @@ extension PlaidErrorCategory {
             return "Couldn't connect to your bank. Try again."
         case .localStorage:
             return "Couldn't save your login. Try again."
+        case .itemLoginRequired:
+            return "Your bank connection needs attention. Reconnect to keep syncing."
         }
     }
 }

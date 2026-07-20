@@ -40,6 +40,26 @@ struct PlaidSyncResponseBody: Decodable {
     let has_more: Bool
 }
 
+/// Plaid's documented shape for a REST call's JSON error body (`/transactions/sync`
+/// included) — `error_type`/`error_code` are the two fields `PlaidErrorClassifier`'s
+/// `.itemError` case matches against (e.g. `"ITEM_ERROR"`/`"ITEM_LOGIN_REQUIRED"`).
+/// Decoded by `post(_:body:baseURL:)` on a non-2xx response (reservoir-adq.6.5) — see
+/// that method's doc comment for why decoding the body on failure wasn't happening before.
+struct PlaidAPIErrorBody: Decodable {
+    let error_type: String?
+    let error_code: String?
+}
+
+/// Thrown by `post(_:body:baseURL:)` when a non-2xx response's body decodes as a
+/// recognizable Plaid error (`error_type`/`error_code` present) — carries those two
+/// fields through to `runImport()`'s `catch`, which routes it to
+/// `PlaidErrorClassifier.classify(.itemError(errorType:errorCode:))` instead of the
+/// generic `.exchangeError(_:)` path every other failure still takes.
+struct PlaidAPIError: Error {
+    let errorType: String?
+    let errorCode: String?
+}
+
 /// A lightweight, non-blocking summary of what one `runImport()` call did — this story's
 /// UX section calls for a brief confirmation ("3 new transactions") rather than a
 /// dedicated summary screen; this is the data backing that copy.
@@ -68,6 +88,15 @@ struct ImportSummary: Equatable {
 final class TransactionImportService {
     private(set) var isImporting = false
     var presentedError: PlaidErrorCategory?
+    /// Mirrors the linked item's `needsAttention` flag (reservoir-adq.6.5) — `true`
+    /// whenever the most recent import attempt classified as `.itemLoginRequired`. Synced
+    /// from `linkedItemStore` at `init` and at the start of every `runImport()` (alongside
+    /// `hydrateMergeQueue()`), so a fresh instance picks up whatever the last session (or a
+    /// completed relink) left behind. Also refreshable on demand via
+    /// `refreshNeedsAttention()` — `PlaidDebugLinkView` calls that right after a successful
+    /// relink so the Today-screen badge (bound to this property) clears immediately rather
+    /// than waiting for the next import.
+    private(set) var needsAttention: Bool
     /// The raw underlying error behind `presentedError`, kept alongside the coarse
     /// category (rather than discarded at classification time) so the UI can offer an
     /// optional "technical details" reveal for a technically-inclined user, without
@@ -109,6 +138,7 @@ final class TransactionImportService {
     private let urlSession: URLSession
     private let environmentStore: PlaidEnvironmentStoring
     private let cursorStore: PlaidSyncCursorStoring
+    private let linkedItemStore: LinkedItemStoring
     private let logger: Logger
 
     init(
@@ -117,6 +147,7 @@ final class TransactionImportService {
         urlSession: URLSession = .shared,
         environmentStore: PlaidEnvironmentStoring = PlaidEnvironmentStore(),
         cursorStore: PlaidSyncCursorStoring = PlaidSyncCursorStore(),
+        linkedItemStore: LinkedItemStoring = LinkedItemStore(),
         logger: Logger = Logger(subsystem: "com.reservoir.app", category: "TransactionImportService")
     ) {
         self.modelContext = modelContext
@@ -124,8 +155,17 @@ final class TransactionImportService {
         self.urlSession = urlSession
         self.environmentStore = environmentStore
         self.cursorStore = cursorStore
+        self.linkedItemStore = linkedItemStore
         self.logger = logger
+        self.needsAttention = linkedItemStore.load()?.needsAttention ?? false
         hydrateMergeQueue()
+    }
+
+    /// Re-reads `needsAttention` from `linkedItemStore` on demand — see the property's
+    /// doc comment for why this exists alongside the automatic sync at the start of every
+    /// `runImport()`.
+    func refreshNeedsAttention() {
+        needsAttention = linkedItemStore.load()?.needsAttention ?? false
     }
 
     // MARK: - Import
@@ -186,7 +226,13 @@ final class TransactionImportService {
 
         guard let accessToken = try? await keychain.read(for: PlaidKeychainKey.accessToken) else {
             // No linked item yet, or the keychain read failed — nothing to import,
-            // not an error surfaced to the user (background operation).
+            // not an error surfaced to the user (background operation). Still resync
+            // needsAttention before returning (code review finding, reservoir-adq.6.5):
+            // an environment switch clears both the Keychain token and the persisted
+            // linked item via `PlaidEnvironmentStore.onChange`, but without this the
+            // in-memory flag from a stale linked item would stay stuck `true` forever,
+            // since every earlier return path in this method skipped the sync below.
+            refreshNeedsAttention()
             return
         }
 
@@ -201,6 +247,7 @@ final class TransactionImportService {
         // matching the same manual row into a duplicate pending decision (review
         // finding 5).
         hydrateMergeQueue()
+        refreshNeedsAttention()
         var manualTransactions = fetchManualTransactions()
         let alreadyQueuedManualIDs = Set(mergeQueue.map(\.manualTransaction.persistentModelID))
         manualTransactions.removeAll { alreadyQueuedManualIDs.contains($0.persistentModelID) }
@@ -215,7 +262,23 @@ final class TransactionImportService {
             do {
                 response = try await syncPage(accessToken: accessToken, cursor: requestCursor, environment: environment)
             } catch {
-                presentedError = PlaidErrorClassifier.classify(.exchangeError(error))
+                // A decoded Plaid item-level error body (reservoir-adq.6.5) is classified
+                // distinctly from every other failure here — a genuine ITEM_LOGIN_REQUIRED
+                // sets the persistent needsAttention flag; a plain network/transport error
+                // or an unrecognized error shape (still `.exchangeError`, same as before
+                // this story) must NOT, so a flaky connection during a foreground refresh
+                // doesn't falsely trip the "needs attention" UI (see this story's UX
+                // section / Out of scope).
+                if let apiError = error as? PlaidAPIError {
+                    let category = PlaidErrorClassifier.classify(.itemError(errorType: apiError.errorType, errorCode: apiError.errorCode))
+                    presentedError = category
+                    if category == .itemLoginRequired {
+                        needsAttention = true
+                        linkedItemStore.setNeedsAttention(true)
+                    }
+                } else {
+                    presentedError = PlaidErrorClassifier.classify(.exchangeError(error))
+                }
                 presentedErrorDetail = String(describing: error)
                 break
             }
@@ -718,7 +781,9 @@ final class TransactionImportService {
     /// request, POST, decode, map non-2xx to `URLError`) rather than extracting a shared
     /// client — this is boilerplate glue, not the business-logic duplication STANDARDS §3
     /// is aimed at, and there are only two Plaid REST call sites in the app today (rule
-    /// of three). Revisit extraction if a third shows up (e.g. adq.6.5's relink flow).
+    /// of three — a third now exists, `PlaidServiceLive.createRelinkToken`, but that one
+    /// doesn't need this method's non-2xx body-decoding behavior below, so extraction
+    /// still isn't a clear win; revisit if a fourth call site needs the same decoding).
     private func syncPage(accessToken: String, cursor: String?, environment: PlaidEnvironment) async throws -> PlaidSyncResponseBody {
         let body = PlaidSyncRequestBody(
             client_id: PlaidCredentials.clientID,
@@ -734,6 +799,19 @@ final class TransactionImportService {
         return try await post("/transactions/sync", body: body, baseURL: environment.baseURL)
     }
 
+    /// **Behavior change (reservoir-adq.6.5)**: on a non-2xx response, this now attempts
+    /// to decode the body as `PlaidAPIErrorBody` before falling back to the old
+    /// `URLError(.badServerResponse)`. Previously the body was discarded outright on any
+    /// non-2xx status, which made `ITEM_LOGIN_REQUIRED` (carried in that body)
+    /// unreachable — `runImport()`'s catch block had no way to distinguish a genuine item
+    /// auth error from a transient/network one. Every other non-2xx failure path is
+    /// unchanged: a body that fails to decode as `PlaidAPIErrorBody`, or one that decodes
+    /// but has both `error_type`/`error_code` nil (not a recognizable Plaid error shape —
+    /// an HTML error page, an empty body, a malformed JSON blob), still throws
+    /// `URLError(.badServerResponse)` exactly as before, which `PlaidErrorClassifier`
+    /// still classifies as `.plaidSide` via the `.exchangeError(_:)` path in `runImport()`.
+    /// Only a body that decodes with at least one of those two fields present takes the
+    /// new `PlaidAPIError` path.
     private func post<Body: Encodable, Response: Decodable>(_ path: String, body: Body, baseURL: URL) async throws -> Response {
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
         request.httpMethod = "POST"
@@ -742,6 +820,10 @@ final class TransactionImportService {
 
         let (data, response) = try await urlSession.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            if let errorBody = try? JSONDecoder().decode(PlaidAPIErrorBody.self, from: data),
+               errorBody.error_type != nil || errorBody.error_code != nil {
+                throw PlaidAPIError(errorType: errorBody.error_type, errorCode: errorBody.error_code)
+            }
             throw URLError(.badServerResponse)
         }
         return try JSONDecoder().decode(Response.self, from: data)

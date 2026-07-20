@@ -1,6 +1,24 @@
 import SwiftUI
 
+/// Identifies each of `RootTabView`'s tabs — reservoir-adq.6.5 needs a way for
+/// `TodayView`'s connection-status badge to programmatically switch to the Settings tab
+/// (currently `PlaidDebugLinkView`, the interim reconnect-flow host) when tapped, which a
+/// bare `TabView` with no `selection:` binding can't do.
+enum AppTab: Hashable {
+    case today, goals, transactions, settings
+}
+
+/// The one shared, `@Observable` tab-selection binding — owned by `RootTabView`, injected
+/// down to every tab via `.environment(_:)` (same idiom as `TodayClock`/
+/// `TransactionImportService`) so `TodayView` can navigate to `.settings` without
+/// `RootTabView` needing to hand it a closure or reach down into a child's state directly.
+@Observable
+final class TabSelection {
+    var selected: AppTab = .today
+}
+
 struct RootTabView: View {
+    @State private var tabSelection = TabSelection()
     /// Owns the app's one shared `TodayClock`, kept current by the one
     /// `ReferenceDateKeeper` applied below — see `TodayClock`'s doc comment for why this
     /// replaced each tab independently scheduling its own midnight-refresh `Task`.
@@ -20,15 +38,18 @@ struct RootTabView: View {
     @State private var importService: TransactionImportService?
 
     var body: some View {
-        TabView {
+        TabView(selection: Bindable(tabSelection).selected) {
             TodayView()
                 .tabItem { Label("Today", systemImage: "sun.max") }
+                .tag(AppTab.today)
 
             GoalsView()
                 .tabItem { Label("Goals", systemImage: "target") }
+                .tag(AppTab.goals)
 
             TransactionsView()
                 .tabItem { Label("Transactions", systemImage: "list.bullet") }
+                .tag(AppTab.transactions)
 
             #if DEBUG
             // Temporary stand-in for Settings (reservoir-adq.7, not yet
@@ -37,13 +58,16 @@ struct RootTabView: View {
             // Settings tab with its own "Link a bank account" entry point.
             PlaidDebugLinkView()
                 .tabItem { Label("Settings", systemImage: "gearshape") }
+                .tag(AppTab.settings)
             #else
             Text("Settings")
                 .tabItem { Label("Settings", systemImage: "gearshape") }
+                .tag(AppTab.settings)
             #endif
         }
         .keepingReferenceDateCurrent($todayClock.referenceDate, calendar: calendar)
         .environment(todayClock)
+        .environment(tabSelection)
         .environment(importService)
         .mergePromptConfirmation(
             pendingItem: mergeDecisionBinding,

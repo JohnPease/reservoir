@@ -77,6 +77,29 @@ struct PlaidDebugLinkView: View {
                     if let linkedItem = service.linkedItem {
                         LabeledContent("Linked institution", value: linkedItem.institutionName)
                         LabeledContent("Item ID", value: linkedItem.itemID)
+                        // reservoir-adq.6.5: surfaces the same needsAttention flag the
+                        // Today-screen gear-icon badge reads, so this interim Settings
+                        // stand-in doesn't silently omit the state Settings/adq.7 will
+                        // eventually own as a real "Needs attention" row treatment.
+                        // Reuses the shared `PlaidErrorText`/`.itemLoginRequired` copy
+                        // (code review finding) rather than a second hardcoded string, so
+                        // this and the Today badge never drift into showing different
+                        // wording for the same state.
+                        //
+                        // Deliberately reads `importService?.needsAttention`, NOT
+                        // `linkedItem.needsAttention` (code review finding): the latter is
+                        // `PlaidServiceLive`'s own cached copy, only reassigned in
+                        // init/handleLinkSuccess/handleRelinkSuccess/the Keychain-
+                        // invalidation hook — it never learns about a `TransactionImportService`-
+                        // detected `ITEM_LOGIN_REQUIRED` (set via a *different* service
+                        // instance writing straight to the shared `LinkedItemStore`), so it
+                        // went stale while the Today badge (reading the same source this
+                        // does) was already correct. One source of truth for both surfaces.
+                        if importService?.needsAttention == true {
+                            PlaidErrorText(error: .itemLoginRequired)
+                                .font(.footnote)
+                                .accessibilityIdentifier("plaidDebug.needsAttention")
+                        }
                     } else {
                         Text("No account linked yet.")
                             .foregroundStyle(.secondary)
@@ -90,7 +113,33 @@ struct PlaidDebugLinkView: View {
                         .accessibilityIdentifier("plaidDebug.exchanging")
                     } else {
                         Button(service.linkedItem == nil ? "Link a bank account" : "Relink") {
-                            Task { await service.startLink() }
+                            // reservoir-adq.6.5: "Relink" now opens Plaid's update-mode
+                            // Link for the existing item (re-authenticates in place,
+                            // clears needsAttention on success) instead of the plain
+                            // startLink() a prior story mis-wired this button to, which
+                            // would have created a duplicate item/token rather than
+                            // repairing the existing one.
+                            //
+                            // The Today-screen badge refresh is NOT done inline here after
+                            // the await below — that await only covers token creation +
+                            // presenting the update-mode Link sheet, and returns well before
+                            // the user has actually done anything in it (reservoir-1nn).
+                            // Instead, `service.onRelinkSuccess` (wired below) fires once
+                            // `handleRelinkSuccess()` genuinely runs, from LinkKit's
+                            // `onSuccess` closure — that's the only point relink has
+                            // actually completed.
+                            //
+                            // This remains the interim home for the reconnect affordance
+                            // until Settings (reservoir-adq.7) ships its own linked-account
+                            // row — same "temporary, debug-only" framing as the rest of
+                            // this file (see its top-level doc comment).
+                            Task {
+                                if let linkedItem = service.linkedItem {
+                                    await service.startRelink(for: linkedItem)
+                                } else {
+                                    await service.startLink()
+                                }
+                            }
                         }
                         .disabled(service.isStartingLink)
                         .accessibilityIdentifier("plaidDebug.linkButton")
@@ -165,6 +214,16 @@ struct PlaidDebugLinkView: View {
             }
             .navigationTitle("Plaid (Debug)")
             .plaidLinkPresentation(service: service)
+        }
+        // Wired here (not in init()) because `importService` is an @Environment value —
+        // not yet populated at struct init time. Reassigned on every appearance, which is
+        // harmless (idempotent) and keeps the closure pointed at whichever
+        // TransactionImportService instance is current in the environment. See
+        // reservoir-1nn / `PlaidServiceLive.onRelinkSuccess`'s doc comment.
+        .onAppear {
+            service.onRelinkSuccess = { [importService] in
+                importService?.refreshNeedsAttention()
+            }
         }
     }
 

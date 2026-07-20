@@ -39,3 +39,25 @@ final class StubCursorStore: PlaidSyncCursorStoring, @unchecked Sendable {
     func setCursor(_ cursor: String?, for environment: PlaidEnvironment) { cursors[environment] = cursor }
     func clearCursor(for environment: PlaidEnvironment) { cursors[environment] = nil }
 }
+
+/// A simple in-memory `LinkedItemStoring` stub (reservoir-adq.6.5) — backs
+/// `TransactionImportServiceTests` and `PlaidServiceLiveTests` without touching real
+/// `UserDefaults`. Records every `setNeedsAttention(_:)` call (not just the final state)
+/// so a test can assert *that* the flag was set, distinct from asserting its final value —
+/// useful for proving a transient/network error path never calls it at all.
+final class StubLinkedItemStore: LinkedItemStoring, @unchecked Sendable {
+    private var current: LinkedItem?
+    private(set) var setNeedsAttentionCalls: [Bool] = []
+
+    init(initial: LinkedItem? = nil) {
+        self.current = initial
+    }
+
+    func load() -> LinkedItem? { current }
+    func save(_ item: LinkedItem) { current = item }
+    func clear() { current = nil }
+    func setNeedsAttention(_ needsAttention: Bool) {
+        setNeedsAttentionCalls.append(needsAttention)
+        current?.needsAttention = needsAttention
+    }
+}
