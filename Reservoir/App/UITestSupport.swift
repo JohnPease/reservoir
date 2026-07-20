@@ -64,9 +64,8 @@ enum UITestScenario: String {
     /// `List`'s underlying `UIRefreshControl` in this simulator environment (five
     /// different gesture techniques tried, all failed to register at all per
     /// accessibility-tree dumps). Rather than weakening the pull-to-refresh acceptance
-    /// criteria or repointing the test at an unrelated code path (e.g.
-    /// `PlaidDebugLinkView`'s "Import transactions" button, which exercises a different
-    /// view entirely), this hook is a same-view, same-closure seam:
+    /// criteria or repointing the test at an unrelated code path (e.g. a manual import
+    /// trigger on a different view entirely), this hook is a same-view, same-closure seam:
     /// `TransactionsView.triggerRefresh()` is the one function both `.refreshable` and
     /// this hook call, so a test driving the hook is genuinely exercising
     /// `.refreshable`'s code path end to end, not a proxy for it. `.refreshable` itself
@@ -201,7 +200,7 @@ enum UITestScenario: String {
         }
     }
 
-    /// The `URLSession` `PlaidDebugLinkView` should hand to `PlaidServiceLive` and
+    /// The `URLSession` `SettingsView` should hand to `PlaidServiceLive` and
     /// `TransactionImportService`. Under normal (non-UI-test) launches this is just
     /// `.shared`. Launched under XCUITest with `UITEST_FORCE_PLAID_ERROR=1` set, every
     /// Plaid REST call is intercepted and deterministically failed — see
@@ -233,9 +232,9 @@ enum UITestScenario: String {
 
     /// Seeds a fake linked-item + Keychain access token before the app finishes
     /// launching, when `UITEST_SEED_PLAID_LINKED_ITEM=1` / `UITEST_SEED_PLAID_TOKEN=1`
-    /// are set — `TransactionImportUITests` needs both so `PlaidDebugLinkView`'s
-    /// "Import transactions" button is enabled (`service.linkedItem != nil`) and
-    /// `TransactionImportService.runImport()` gets past its "no stored token, no-op"
+    /// are set — `TransactionImportUITests` needs both so a linked item is present
+    /// (`service.linkedItem != nil`) and `TransactionImportService.runImport()` gets past
+    /// its "no stored token, no-op"
     /// guard, without ever driving a real Plaid Link session. Mirrors
     /// `resetPlaidKeychainIfRequested()`'s persistence shapes exactly (see
     /// `PlaidServiceLive.persist(_:)`/`PlaidKeychainKey`) — duplicated here rather than

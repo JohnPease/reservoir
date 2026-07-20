@@ -93,9 +93,9 @@ final class TransactionImportService {
     /// from `linkedItemStore` at `init` and at the start of every `runImport()` (alongside
     /// `hydrateMergeQueue()`), so a fresh instance picks up whatever the last session (or a
     /// completed relink) left behind. Also refreshable on demand via
-    /// `refreshNeedsAttention()` — `PlaidDebugLinkView` calls that right after a successful
-    /// relink so the Today-screen badge (bound to this property) clears immediately rather
-    /// than waiting for the next import.
+    /// `refreshNeedsAttention()` — `SettingsView` calls that right after a successful
+    /// relink or unlink so the Today-screen badge (bound to this property) clears
+    /// immediately rather than waiting for the next import.
     private(set) var needsAttention: Bool
     /// The raw underlying error behind `presentedError`, kept alongside the coarse
     /// category (rather than discarded at classification time) so the UI can offer an

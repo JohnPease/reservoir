@@ -23,7 +23,7 @@ enum KeychainError: Error, Equatable {
 ///
 /// `async`: the underlying `Security` calls are synchronous and can block
 /// for a noticeable moment (device state, Keychain contention). Every call
-/// site is `@MainActor` (`PlaidServiceLive`, `PlaidDebugLinkView`), so a
+/// site is `@MainActor` (`PlaidServiceLive`, `SettingsView`), so a
 /// synchronous protocol here would block the main actor on every Keychain
 /// touch — this `async` surface exists so `KeychainService`'s implementation
 /// can hop off main, and so every future call site (reservoir-adq.6.4,

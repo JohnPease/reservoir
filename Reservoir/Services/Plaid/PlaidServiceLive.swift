@@ -75,7 +75,7 @@ final class PlaidServiceLive: PlaidService {
     /// against a double-tap race: two concurrent `startLink()` calls would
     /// otherwise both create link tokens/sessions and race to set
     /// `linkToken`/`linkSession`/`isPresentingLink`, silently discarding
-    /// whichever session lost. `PlaidDebugLinkView` also disables its "Link a
+    /// whichever session lost. `SettingsView` also disables its "Link a
     /// bank account" button while this is true, but the guard here is the
     /// actual fix — belt and suspenders against any other future call site.
     private(set) var isStartingLink = false
@@ -90,7 +90,7 @@ final class PlaidServiceLive: PlaidService {
     /// Fires once `handleRelinkSuccess()` actually runs — i.e. once the update-mode Link
     /// session the user is shown has genuinely completed, not once `startRelink(for:)`'s
     /// `await` merely returns (that only covers token creation + presenting the sheet; see
-    /// reservoir-1nn). `PlaidDebugLinkView` wires this to
+    /// reservoir-1nn). `SettingsView` wires this to
     /// `TransactionImportService.refreshNeedsAttention()` so the Today-screen badge clears
     /// the moment relink succeeds, without needing another `runImport()` or app relaunch to
     /// re-sync it. A plain closure rather than a Combine publisher or a hard dependency on
@@ -99,9 +99,8 @@ final class PlaidServiceLive: PlaidService {
     ///
     /// **A single-slot, opt-in hook, not enforced at compile time** (code review finding):
     /// whichever view presents the relink affordance MUST wire this in `onAppear`/`init` or
-    /// a successful relink won't refresh the badge immediately. `PlaidDebugLinkView` does
-    /// this today; when Settings (reservoir-adq.7) replaces it as the relink UI's home, that
-    /// screen must wire this too, or relink will *appear* to leave the badge stuck. It isn't
+    /// a successful relink won't refresh the badge immediately. `SettingsView` (reservoir-
+    /// adq.7) does this today. It isn't
     /// permanently stuck either way — `TransactionImportService.runImport()` already calls
     /// `refreshNeedsAttention()` at the start of every run (see that method's doc comment),
     /// so the very next foreground/pull-to-refresh trigger self-heals it regardless of
@@ -325,6 +324,32 @@ final class PlaidServiceLive: PlaidService {
         // startRelink(for:)'s own await returns far earlier, before the user has done
         // anything in the Link sheet.
         onRelinkSuccess?()
+    }
+
+    // MARK: - Unlink (reservoir-adq.7)
+
+    /// Severs the Plaid connection for the current `linkedItem` — Settings' "Unlink"
+    /// action. Deliberately narrow, matching this story's explicit acceptance criterion:
+    /// clears only `LinkedItemStore` (linked-item metadata) and the Keychain access
+    /// token, the same two things `PlaidEnvironmentStore.onChange`'s existing
+    /// invalidation hook clears on an environment switch. It never touches
+    /// `SpendTransaction` rows — previously imported transaction history survives an
+    /// unlink untouched.
+    ///
+    /// Does **not** clear the Plaid sync cursor (`PlaidSyncCursorStore`), unlike that
+    /// same environment-switch hook: an environment switch permanently invalidates the
+    /// environment's whole data scope, but relinking the *same* institution after an
+    /// unlink should resume `/transactions/sync` from wherever it left off rather than
+    /// re-pulling full history and re-running dedup against everything again.
+    ///
+    /// Resets `linkedItem`/`presentedError` the same way `handleRelinkSuccess()` resets
+    /// its own state on success — no half-unlinked state left behind for the UI to
+    /// misrender.
+    func unlink() async {
+        linkedItem = nil
+        presentedError = nil
+        linkedItemStore.clear()
+        try? await keychain.delete(for: PlaidKeychainKey.accessToken)
     }
 
     // MARK: - LinkKit session creation

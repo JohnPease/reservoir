@@ -1,10 +1,14 @@
 import XCTest
 
-/// Manual/functional coverage for reservoir-adq.6.1's debug Plaid entry
-/// point, standing in for the parts of the acceptance criteria that need an
-/// actual running app rather than a unit test: the entry point rendering,
-/// the tap-through to `startLink()`, and the error-classification UI wiring
-/// (`PlaidErrorCategory.userFacingMessage` actually reaching the screen).
+/// Functional coverage for `SettingsView`'s (reservoir-adq.7) linked-account entry point:
+/// the screen rendering, the tap-through to `startLink()`, and the error-classification UI
+/// wiring (`PlaidErrorCategory.userFacingMessage` actually reaching the screen).
+///
+/// Ported from `PlaidDebugLinkUITests` (originally covering the `#if DEBUG`-only
+/// `PlaidDebugLinkView`, deleted this story) — same scenarios/structure, rewritten against
+/// `SettingsView`'s own accessibility identifiers (`settings.*` instead of `plaidDebug.*`).
+/// The underlying behavior these tests exercise (startLink()/error classification) is
+/// unchanged by this story; only the hosting view moved.
 ///
 /// This suite intentionally does *not* attempt a real Plaid Sandbox Link
 /// session (institution search, `user_good`/`pass_good`, an OAuth
@@ -19,7 +23,7 @@ import XCTest
 /// legitimate https universal link, that test started succeeding or failing
 /// depending on whether the developer's local xcconfig held real, valid
 /// Sandbox credentials. It now forces the failure deterministically via
-/// `UITEST_FORCE_PLAID_ERROR=1`, which makes `PlaidDebugLinkView` hand
+/// `UITEST_FORCE_PLAID_ERROR=1`, which makes `SettingsView` hand
 /// `PlaidServiceLive` a `URLSession` that intercepts every Plaid REST call
 /// and fails it with a non-2xx response (see `UITestScenario.plaidURLSession`
 /// in `UITestSupport.swift`) — the full real code path (network round-trip,
@@ -45,49 +49,32 @@ final class PlaidDebugLinkUITests: XCTestCase {
         return app
     }
 
-    func testDebugEntryPointRendersLinkButton() {
-        let app = launchedApp()
+    func testSettingsEntryPointRendersLinkButton() {
+        let app = launchedApp(resetPlaidKeychain: true)
         app.tabBars.buttons["Settings"].tap()
 
-        XCTAssertTrue(app.buttons["plaidDebug.linkButton"].waitForExistence(timeout: 5))
-        XCTAssertEqual(app.buttons["plaidDebug.linkButton"].label, "Link a bank account")
+        XCTAssertTrue(app.buttons["settings.linkButton"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.buttons["settings.linkButton"].label, "Link a bank account")
         XCTAssertTrue(app.staticTexts["No account linked yet."].exists)
     }
 
     func testTappingLinkButtonWithForcedFailureSurfacesClassifiedError() {
-        let app = launchedApp(forcePlaidError: true)
+        let app = launchedApp(forcePlaidError: true, resetPlaidKeychain: true)
         app.tabBars.buttons["Settings"].tap()
 
-        XCTAssertTrue(app.buttons["plaidDebug.linkButton"].waitForExistence(timeout: 5))
-        app.buttons["plaidDebug.linkButton"].tap()
+        XCTAssertTrue(app.buttons["settings.linkButton"].waitForExistence(timeout: 5))
+        app.buttons["settings.linkButton"].tap()
 
         // UITEST_FORCE_PLAID_ERROR makes startLink()'s own token-creation
         // call fail deterministically before Link ever presents (see the
         // suite-level doc comment), independent of whatever's in
         // Config/Plaid.xcconfig locally. PlaidErrorClassifier maps the
         // resulting non-2xx response to .plaidSide, surfaced via
-        // PlaidDebugLinkView's error banner and "Try again" affordance.
-        let errorMessage = app.staticTexts["plaidDebug.errorMessage"]
+        // SettingsView's error banner and "Try again" affordance.
+        let errorMessage = app.staticTexts["settings.errorMessage"]
         XCTAssertTrue(errorMessage.waitForExistence(timeout: 15))
         XCTAssertEqual(errorMessage.label, "Couldn't connect to your bank. Try again.")
-        XCTAssertTrue(app.buttons["plaidDebug.tryAgain"].exists)
-    }
-
-    func testVerifyTokenStoredReportsNoTokenWhenNothingLinked() {
-        // Reads the real, unnamespaced production Keychain service (unlike
-        // KeychainServiceTests, which namespaces per-test). UITEST_RESET_PLAID_KEYCHAIN
-        // clears that entry at launch (see UITestScenario.resetPlaidKeychainIfRequested)
-        // so this assertion doesn't depend on whatever a prior real Sandbox Link
-        // session, or leftover simulator state, may have left stored.
-        let app = launchedApp(resetPlaidKeychain: true)
-        app.tabBars.buttons["Settings"].tap()
-
-        XCTAssertTrue(app.buttons["plaidDebug.verifyTokenStored"].waitForExistence(timeout: 5))
-        app.buttons["plaidDebug.verifyTokenStored"].tap()
-
-        let result = app.staticTexts["plaidDebug.verifyTokenResult"]
-        XCTAssertTrue(result.waitForExistence(timeout: 5))
-        XCTAssertEqual(result.label, "No token found in Keychain.")
+        XCTAssertTrue(app.buttons["settings.tryAgain"].exists)
     }
 
     // MARK: - reservoir-adq.6.2: Sandbox/Production environment toggle
@@ -99,7 +86,7 @@ final class PlaidDebugLinkUITests: XCTestCase {
         let app = launchedApp(resetPlaidEnvironment: true)
         app.tabBars.buttons["Settings"].tap()
 
-        let picker = app.segmentedControls["plaidDebug.environmentPicker"]
+        let picker = app.segmentedControls["settings.environmentPicker"]
         XCTAssertTrue(picker.waitForExistence(timeout: 5))
         XCTAssertTrue(picker.buttons["Sandbox"].isSelected)
         XCTAssertTrue(app.staticTexts["Using Sandbox credentials — test data only."].exists)
@@ -109,14 +96,14 @@ final class PlaidDebugLinkUITests: XCTestCase {
         let app = launchedApp(resetPlaidEnvironment: true)
         app.tabBars.buttons["Settings"].tap()
 
-        let picker = app.segmentedControls["plaidDebug.environmentPicker"]
+        let picker = app.segmentedControls["settings.environmentPicker"]
         XCTAssertTrue(picker.waitForExistence(timeout: 5))
         picker.buttons["Production"].tap()
 
         // A bare tap must not flip the environment by itself — the
         // real-money blast radius of Production requires the confirmation
         // dialog below (reservoir-adq.6.2's acceptance criteria).
-        let cancelButton = app.buttons["plaidDebug.cancelProductionSwitch"]
+        let cancelButton = app.buttons["settings.cancelProductionSwitch"]
         XCTAssertTrue(cancelButton.waitForExistence(timeout: 5))
         cancelButton.tap()
 
@@ -132,11 +119,11 @@ final class PlaidDebugLinkUITests: XCTestCase {
         let app = launchedApp(resetPlaidEnvironment: true)
         app.tabBars.buttons["Settings"].tap()
 
-        let picker = app.segmentedControls["plaidDebug.environmentPicker"]
+        let picker = app.segmentedControls["settings.environmentPicker"]
         XCTAssertTrue(picker.waitForExistence(timeout: 5))
         picker.buttons["Production"].tap()
 
-        let confirmButton = app.buttons["plaidDebug.confirmProductionSwitch"]
+        let confirmButton = app.buttons["settings.confirmProductionSwitch"]
         XCTAssertTrue(confirmButton.waitForExistence(timeout: 5))
         confirmButton.tap()
 

@@ -25,7 +25,7 @@ struct TodayView: View {
     @Environment(TabSelection.self) private var tabSelection
 
     /// The app's single shared `TransactionImportService` instance (adq.6.4/RootTabView),
-    /// same optional-until-`.task`-runs pattern `PlaidDebugLinkView` uses. Read here only
+    /// same optional-until-`.task`-runs pattern `SettingsView` uses. Read here only
     /// for its `needsAttention` flag (reservoir-adq.6.5) — this view never calls
     /// `runImport()` itself.
     @Environment(TransactionImportService.self) private var importService: TransactionImportService?
@@ -57,7 +57,6 @@ struct TodayView: View {
 
     @State private var isShowingAddTransaction = false
     @State private var isShowingCreateGoal = false
-    @State private var isShowingSettings = false
     @State private var dismissError: String?
 
     private let calendar: Calendar = .current
@@ -155,16 +154,13 @@ struct TodayView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     // reservoir-adq.6.5: an icon-badge on this gear icon (not a banner,
                     // per this story's UX section — the hero daily-limit number stays the
-                    // focal point) signals a broken bank connection. Tapping while flagged
-                    // routes to the reconnect flow (PlaidDebugLinkView, this story's
-                    // interim Settings stand-in) via programmatic tab selection instead of
-                    // the normal placeholder Settings sheet.
+                    // focal point) signals a broken bank connection. reservoir-adq.7
+                    // collapsed the tap behavior to always navigate to the real Settings
+                    // tab (`SettingsView`) via programmatic tab selection, regardless of
+                    // `needsAttention` — Settings now exists as a real screen, so there's
+                    // no longer a placeholder sheet to fall back to for the unflagged case.
                     Button {
-                        if importService?.needsAttention == true {
-                            tabSelection.selected = .settings
-                        } else {
-                            isShowingSettings = true
-                        }
+                        tabSelection.selected = .settings
                     } label: {
                         Image(systemName: "gearshape")
                             .overlay(alignment: .topTrailing) {
@@ -186,14 +182,6 @@ struct TodayView: View {
         }
         .sheet(isPresented: $isShowingCreateGoal) {
             GoalFormView(mode: .create, accessibilityIdentifier: "today.createGoalSheet")
-        }
-        .sheet(isPresented: $isShowingSettings) {
-            StubSheet(
-                title: "Settings",
-                icon: "gearshape",
-                description: "Settings are coming in a future story.",
-                accessibilityIdentifier: "today.settingsSheet"
-            )
         }
         .saveErrorAlert($dismissError)
     }

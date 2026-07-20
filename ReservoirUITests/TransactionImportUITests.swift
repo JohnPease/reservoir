@@ -17,15 +17,23 @@ final class TransactionImportUITests: XCTestCase {
         app.launchEnvironment["UITEST_SEED_PLAID_LINKED_ITEM"] = "1"
         app.launchEnvironment["UITEST_SEED_PLAID_TOKEN"] = "1"
         app.launchEnvironment["UITEST_PLAID_IMPORT_SCENARIO"] = "mergePrompt"
+        // reservoir-adq.7: SettingsView (which replaced PlaidDebugLinkView) deliberately
+        // doesn't reproduce the old "Transaction import (debug)" button — no shipped-UX
+        // value, per that view's doc comment. This suite now drives an import the same way
+        // testPullToRefresh_seededSandboxTransaction_appearsInList already does: the
+        // Transactions tab's debug refresh-trigger hook, which calls the exact same
+        // triggerRefresh() -> importService.runImport() the real .refreshable and (deleted)
+        // debug button both used.
+        app.launchEnvironment["UITEST_ENABLE_REFRESH_HOOK"] = "1"
         app.launch()
         return app
     }
 
     private func triggerImport(_ app: XCUIApplication) {
-        app.tabBars.buttons["Settings"].tap()
-        let importButton = app.buttons["plaidDebug.importButton"]
-        XCTAssertTrue(importButton.waitForExistence(timeout: 5))
-        importButton.tap()
+        app.tabBars.buttons["Transactions"].tap()
+        let debugRefreshTrigger = app.buttons["transactions.debugRefreshTrigger"]
+        XCTAssertTrue(debugRefreshTrigger.waitForExistence(timeout: 5))
+        debugRefreshTrigger.tap()
     }
 
     private func coffeeShopRowCount(_ app: XCUIApplication) -> Int {

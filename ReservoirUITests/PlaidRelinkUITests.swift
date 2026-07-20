@@ -2,8 +2,17 @@ import XCTest
 
 /// Functional coverage for reservoir-adq.6.5's item-relink / connection-status UX:
 /// the Today-screen gear-icon badge and its navigation to the reconnect flow, and tapping
-/// "Relink" in `PlaidDebugLinkView` actually invoking the update-mode Link entry point
+/// "Relink" in `SettingsView` actually invoking the update-mode Link entry point
 /// (`PlaidServiceLive.startRelink(for:)`) rather than the old, mis-wired `startLink()`.
+///
+/// Ported from the original `PlaidRelinkUITests` (which targeted the interim
+/// `PlaidDebugLinkView`, deleted in reservoir-adq.7) — rewritten against `SettingsView`'s
+/// own accessibility identifiers (`settings.*`). The Today-badge-navigates-to-Settings
+/// scenario is also updated: the gear icon now routes to `.settings` unconditionally
+/// (reservoir-adq.7 removed the old placeholder-Settings-sheet/needsAttention branch), so
+/// the "gear opens placeholder sheet when nothing needs attention" case this suite used to
+/// cover no longer exists as a distinct behavior — see
+/// `testTodayGearAlwaysNavigatesToSettings_regardlessOfNeedsAttention` below.
 ///
 /// Per this story's resolved test-scope decision, the full "reconnect clears
 /// needsAttention + resumes import" round trip against Plaid Sandbox is **manual
@@ -45,15 +54,18 @@ final class PlaidRelinkUITests: XCTestCase {
 
         app.buttons["today.settings"].tap()
 
-        // Tapping while flagged routes to the reconnect flow (PlaidDebugLinkView, this
-        // story's interim Settings stand-in) via programmatic tab selection, not the
-        // normal placeholder Settings sheet.
-        XCTAssertTrue(app.buttons["plaidDebug.linkButton"].waitForExistence(timeout: 5))
-        XCTAssertEqual(app.buttons["plaidDebug.linkButton"].label, "Relink")
-        XCTAssertFalse(app.otherElements["today.settingsSheet"].exists, "must not have shown the placeholder Settings sheet instead.")
+        // Tapping while flagged routes to the real Settings tab (SettingsView), showing
+        // "Relink" since an item is already linked.
+        XCTAssertTrue(app.buttons["settings.linkButton"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.buttons["settings.linkButton"].label, "Relink")
     }
 
-    func testTodayBadgeAbsentWhenNoAttentionNeeded_gearOpensPlaceholderSettingsSheet() {
+    /// reservoir-adq.7: the gear tap always routes to `.settings` now — the old
+    /// needsAttention-gated branch (real Settings vs. a placeholder sheet) was removed
+    /// along with `TodayStubSheets.swift`. This is a regression guard for that collapse:
+    /// even with nothing needing attention, the gear must still reach the real
+    /// `SettingsView`, not a dead/removed sheet.
+    func testTodayGearAlwaysNavigatesToSettings_regardlessOfNeedsAttention() {
         let app = launchedApp { app in
             app.launchEnvironment["UITEST_SCENARIO"] = "normal"
             app.launchEnvironment["UITEST_SEED_PLAID_LINKED_ITEM"] = "1"
@@ -63,10 +75,8 @@ final class PlaidRelinkUITests: XCTestCase {
 
         app.buttons["today.settings"].tap()
 
-        // Existing (pre-adq.6.5) behavior must be unaffected when nothing needs attention.
-        // `StubSheet`'s accessibilityIdentifier is on its containing NavigationStack (an
-        // "Other" element), not a StaticText.
-        XCTAssertTrue(app.otherElements["today.settingsSheet"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["settings.linkButton"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.buttons["settings.linkButton"].label, "Relink")
     }
 
     // MARK: - Tapping "Relink" calls the update-mode entry point
@@ -77,8 +87,8 @@ final class PlaidRelinkUITests: XCTestCase {
         }
         app.tabBars.buttons["Settings"].tap()
 
-        XCTAssertTrue(app.buttons["plaidDebug.linkButton"].waitForExistence(timeout: 5))
-        XCTAssertEqual(app.buttons["plaidDebug.linkButton"].label, "Relink", "the button must read \"Relink\", not \"Link a bank account\", once an item is already linked.")
+        XCTAssertTrue(app.buttons["settings.linkButton"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.buttons["settings.linkButton"].label, "Relink", "the button must read \"Relink\", not \"Link a bank account\", once an item is already linked.")
     }
 
     func testTappingRelink_reachesUpdateModeEntryPoint_surfacesClassifiedErrorOnFailure() {
@@ -89,26 +99,22 @@ final class PlaidRelinkUITests: XCTestCase {
         }
         app.tabBars.buttons["Settings"].tap()
 
-        XCTAssertTrue(app.buttons["plaidDebug.linkButton"].waitForExistence(timeout: 5))
-        XCTAssertEqual(app.buttons["plaidDebug.linkButton"].label, "Relink")
-        app.buttons["plaidDebug.linkButton"].tap()
+        XCTAssertTrue(app.buttons["settings.linkButton"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.buttons["settings.linkButton"].label, "Relink")
+        app.buttons["settings.linkButton"].tap()
 
         // UITEST_FORCE_PLAID_ERROR makes startRelink()'s update-mode token-creation call
         // fail deterministically (same forced-failure stub as PlaidDebugLinkUITests' original
         // Link-flow test), proving the button reaches a real network call through
-        // startRelink() rather than being a dead/no-op tap — the old, mis-wired button
-        // called startLink() instead, which this forced failure would surface identically,
-        // but that old call site is gone entirely now (see PlaidDebugLinkView's Relink
-        // button doc comment) and startRelink()'s own request-shape correctness is proven
-        // separately by the unit tests above.
-        let errorMessage = app.staticTexts["plaidDebug.errorMessage"]
+        // startRelink() rather than being a dead/no-op tap.
+        let errorMessage = app.staticTexts["settings.errorMessage"]
         XCTAssertTrue(errorMessage.waitForExistence(timeout: 15))
         XCTAssertEqual(errorMessage.label, "Couldn't connect to your bank. Try again.")
     }
 
-    // MARK: - PlaidDebugLinkView's needsAttention text tracks a live import failure
+    // MARK: - SettingsView's needsAttention text tracks a live import failure
 
-    /// Code-review regression test: `PlaidDebugLinkView`'s "Needs attention" text must
+    /// Code-review regression test: `SettingsView`'s "Needs attention" text must
     /// read the same source the Today badge does (`TransactionImportService.needsAttention`),
     /// not `PlaidServiceLive`'s own separately-cached `linkedItem.needsAttention` — the
     /// latter is never written to by an import-time classification (a different service
@@ -116,8 +122,8 @@ final class PlaidRelinkUITests: XCTestCase {
     /// `needsAttention` explicitly unset, drives a real import through the scripted
     /// `ITEM_LOGIN_REQUIRED` protocol (not the seeded starting state used by the Today
     /// badge test above, which wouldn't exercise this write path at all), then confirms
-    /// the debug view — not just the badge — reflects it.
-    func testDebugViewNeedsAttentionText_reflectsLiveImportFailure_notJustCachedLinkedItem() {
+    /// Settings — not just the badge — reflects it.
+    func testSettingsNeedsAttentionText_reflectsLiveImportFailure_notJustCachedLinkedItem() {
         let app = launchedApp { app in
             app.launchEnvironment["UITEST_SCENARIO"] = "normal"
             app.launchEnvironment["UITEST_SEED_PLAID_LINKED_ITEM"] = "1"
@@ -127,7 +133,7 @@ final class PlaidRelinkUITests: XCTestCase {
         }
 
         app.tabBars.buttons["Settings"].tap()
-        XCTAssertFalse(app.staticTexts["plaidDebug.needsAttention"].exists, "sanity check: must not already show needs-attention before any import has run.")
+        XCTAssertFalse(app.staticTexts["settings.needsAttention"].exists, "sanity check: must not already show needs-attention before any import has run.")
 
         // Drive a real import via the Transactions tab's debug refresh hook (same
         // mechanism TransactionImportUITests uses) so TransactionImportService itself
@@ -139,14 +145,62 @@ final class PlaidRelinkUITests: XCTestCase {
         debugRefreshTrigger.tap()
 
         app.tabBars.buttons["Settings"].tap()
-        XCTAssertTrue(app.staticTexts["plaidDebug.needsAttention"].waitForExistence(timeout: 10), "PlaidDebugLinkView must reflect a live import-time ITEM_LOGIN_REQUIRED classification, not just its own separately-cached linkedItem state.")
+        XCTAssertTrue(app.staticTexts["settings.needsAttention"].waitForExistence(timeout: 10), "SettingsView must reflect a live import-time ITEM_LOGIN_REQUIRED classification, not just its own separately-cached linkedItem state.")
+    }
+
+    // MARK: - Unlink (reservoir-adq.7 — genuinely new behavior)
+
+    /// Confirms the full unlink UI flow end to end: tapping "Unlink" requires confirmation
+    /// (destructive, real-account-severing action), cancelling leaves the linked item
+    /// intact, and confirming clears it back to the "No account linked yet." empty state
+    /// with a fresh "Link a bank account" button (not "Relink").
+    func testUnlink_requiresConfirmation_cancelLeavesLinkedItemIntact() {
+        let app = launchedApp { app in
+            app.launchEnvironment["UITEST_SEED_PLAID_LINKED_ITEM"] = "1"
+            app.launchEnvironment["UITEST_SEED_PLAID_TOKEN"] = "1"
+        }
+        app.tabBars.buttons["Settings"].tap()
+
+        XCTAssertTrue(app.buttons["settings.unlinkButton"].waitForExistence(timeout: 5))
+        app.buttons["settings.unlinkButton"].tap()
+
+        let cancelButton = app.buttons["settings.cancelUnlink"]
+        XCTAssertTrue(cancelButton.waitForExistence(timeout: 5))
+        cancelButton.tap()
+
+        // Cancelling must leave the linked item exactly as it was — still "Relink", still
+        // an Unlink button present.
+        XCTAssertEqual(app.buttons["settings.linkButton"].label, "Relink")
+        XCTAssertTrue(app.buttons["settings.unlinkButton"].exists)
+    }
+
+    func testConfirmingUnlink_clearsLinkedItem_returnsToEmptyState() {
+        let app = launchedApp { app in
+            app.launchEnvironment["UITEST_SEED_PLAID_LINKED_ITEM"] = "1"
+            app.launchEnvironment["UITEST_SEED_PLAID_TOKEN"] = "1"
+        }
+        app.tabBars.buttons["Settings"].tap()
+
+        XCTAssertTrue(app.buttons["settings.unlinkButton"].waitForExistence(timeout: 5))
+        app.buttons["settings.unlinkButton"].tap()
+
+        let confirmButton = app.buttons["settings.confirmUnlink"]
+        XCTAssertTrue(confirmButton.waitForExistence(timeout: 5))
+        confirmButton.tap()
+
+        // Back to the empty state — no linked item, a fresh "Link a bank account" button,
+        // and the Unlink button itself gone (it's only shown when an item is linked).
+        XCTAssertTrue(app.staticTexts["No account linked yet."].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["settings.linkButton"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.buttons["settings.linkButton"].label, "Link a bank account")
+        XCTAssertFalse(app.buttons["settings.unlinkButton"].exists)
     }
 }
 
 // MARK: - Manual verification (not automated — see suite doc comment)
 //
 // Before merging, JP should verify the full reconnect round trip against Plaid Sandbox:
-//   1. Launch the app (Debug, Xcode), go to the Settings tab (PlaidDebugLinkView).
+//   1. Launch the app (Debug, Xcode), go to the Settings tab (SettingsView).
 //   2. Tap "Link a bank account", complete a real Sandbox Link session
 //      (institution search -> user_good/pass_good), confirm "Linked institution" appears.
 //   3. In the Plaid dashboard (or via curl), call Sandbox's
@@ -154,7 +208,7 @@ final class PlaidRelinkUITests: XCTestCase {
 //      ITEM_LOGIN_REQUIRED.
 //   4. Trigger an import (foreground the app, pull-to-refresh, or the debug "Import
 //      transactions" button) — confirm the import error banner and/or the
-//      "Needs attention" text under "Linked institution" in PlaidDebugLinkView appears,
+//      "Needs attention" text under "Linked institution" in SettingsView appears,
 //      and the Today-screen gear badge appears.
 //   5. Tap the Today badge (or the "Relink" button in Settings) — confirm Plaid Link opens
 //      in update mode (same institution, no account-selection/consent screens repeated
@@ -163,3 +217,8 @@ final class PlaidRelinkUITests: XCTestCase {
 //      completes, without needing to background/foreground the app.
 //   7. Trigger another import — confirm it resumes normally (no duplicate transactions,
 //      cursor picks up where it left off).
+//   8. Tap "Unlink", confirm the dialog, verify the app returns to the empty
+//      "No account linked yet." state, and confirm previously imported transactions are
+//      still visible on the Transactions tab (the automated unit test
+//      `test_unlink_doesNotDeleteOrModifySpendTransactions` covers this at the service
+//      layer; this step confirms it end to end through the real UI/persisted store).
