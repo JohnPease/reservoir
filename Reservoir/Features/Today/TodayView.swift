@@ -3,9 +3,8 @@ import SwiftData
 import OSLog
 
 /// The Today tab — the app's launch screen and the home of the core mechanic. Layout
-/// per `docs/PROJECT_SPEC.md` "UX design — Today screen": date header with settings
-/// icon, hero daily-limit number, two-stat row, recent transactions, single "Add
-/// transaction" primary action.
+/// per `docs/PROJECT_SPEC.md` "UX design — Today screen": date header, hero daily-limit
+/// number, two-stat row, recent transactions, single "Add transaction" primary action.
 ///
 /// All calculation (goal lifecycle, the `SavingsGoal`/`SpendTransaction` ->
 /// `GoalCarryForwardInput` mapping, the spent/remaining summary) lives in
@@ -19,16 +18,6 @@ struct TodayView: View {
     /// replaced a local `@State` + per-view `.keepingReferenceDateCurrent(...)`. Not
     /// itself business logic — just the clock input to `TodayScreenCalculator`.
     @Environment(TodayClock.self) private var todayClock
-
-    /// The app's single shared tab-selection binding (`RootTabView`) — used only to
-    /// navigate to `.settings` when the connection-status badge is tapped (reservoir-adq.6.5).
-    @Environment(TabSelection.self) private var tabSelection
-
-    /// The app's single shared `TransactionImportService` instance (adq.6.4/RootTabView),
-    /// same optional-until-`.task`-runs pattern `SettingsView` uses. Read here only
-    /// for its `needsAttention` flag (reservoir-adq.6.5) — this view never calls
-    /// `runImport()` itself.
-    @Environment(TransactionImportService.self) private var importService: TransactionImportService?
 
     @Query(sort: \SavingsGoal.targetDate) private var goals: [SavingsGoal]
     /// Sorted so `spentToday`'s filtering doesn't have to fault/sort the whole table on
@@ -150,32 +139,6 @@ struct TodayView: View {
                 .padding()
             }
             .navigationTitle(dateHeaderText)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    // reservoir-adq.6.5: an icon-badge on this gear icon (not a banner,
-                    // per this story's UX section — the hero daily-limit number stays the
-                    // focal point) signals a broken bank connection. reservoir-adq.7
-                    // collapsed the tap behavior to always navigate to the real Settings
-                    // tab (`SettingsView`) via programmatic tab selection, regardless of
-                    // `needsAttention` — Settings now exists as a real screen, so there's
-                    // no longer a placeholder sheet to fall back to for the unflagged case.
-                    Button {
-                        tabSelection.selected = .settings
-                    } label: {
-                        Image(systemName: "gearshape")
-                            .overlay(alignment: .topTrailing) {
-                                if importService?.needsAttention == true {
-                                    Image(systemName: "exclamationmark.circle.fill")
-                                        .font(.caption2)
-                                        .foregroundStyle(.red)
-                                        .offset(x: 6, y: -6)
-                                        .accessibilityIdentifier("today.connectionBadge")
-                                }
-                            }
-                    }
-                    .accessibilityIdentifier("today.settings")
-                }
-            }
         }
         .sheet(isPresented: $isShowingAddTransaction) {
             TransactionEntryView(mode: .create, accessibilityIdentifier: "today.addTransactionSheet")

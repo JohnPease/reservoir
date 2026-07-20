@@ -55,6 +55,14 @@ struct RootTabView: View {
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(AppTab.settings)
+                // A broken bank connection (adq.6.5's needsAttention) now surfaces as a
+                // native tab-bar badge instead of a separate gear-icon overlay on the
+                // Today screen (code review follow-up, reservoir-adq.7) — Settings already
+                // has its own tab-bar entry point, so a second, redundant navigation
+                // affordance on Today added nothing; only the status signal itself was
+                // worth keeping, and a badge on the tab that actually owns this state is
+                // the more direct place for it.
+                .badge(importService?.needsAttention == true ? "!" : nil)
         }
         .keepingReferenceDateCurrent($todayClock.referenceDate, calendar: calendar)
         .environment(todayClock)

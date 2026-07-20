@@ -580,25 +580,27 @@ error toast a flaky connection would falsely trigger.
   - **UI**: the reconnect affordance is a "Relink" button on the Settings
     tab (`SettingsView`, adq.7 — see "Settings tab" below), which calls
     `startRelink(for:)` (not `startLink()`, which would create a duplicate
-    item/token rather than repairing the existing one). The Today screen
-    (`TodayView`) gets an icon-badge on its existing top-right gear icon —
-    not a banner, so it doesn't compete with the hero daily-limit number —
-    visible whenever `needsAttention` is true. Tapping the gear icon always
-    navigates to the Settings tab via `TabSelection`
-    (`App/RootTabView.swift`, `@Observable`, injected via `.environment(_:)`)
-    regardless of `needsAttention`, letting `TodayView` programmatically
-    switch `RootTabView`'s `TabView` to Settings.
+    item/token rather than repairing the existing one). `needsAttention`
+    surfaces as a native `.badge(_:)` on the Settings tab item itself
+    (`App/RootTabView.swift`) rather than a separate indicator elsewhere —
+    Settings already has its own tab-bar entry point, so a second gear-icon
+    overlay on the Today screen (this story's original design, since removed
+    as a code-review follow-up) was a redundant navigation affordance with
+    only its status-signal half actually earning its place; a badge on the
+    tab that owns the state is the more direct home for it.
   - **Testing**: `ITEM_LOGIN_REQUIRED` classification and the
     `needsAttention`-setting/not-setting behavior (item error vs. transient/
     network error) are unit tested (`PlaidErrorClassifierTests`,
     `TransactionImportServiceTests`). `startRelink(for:)`'s exact update-mode
     request shape (`access_token` present, `products` absent) is unit tested
     against `PlaidServiceLive` (`PlaidServiceLiveTests`). Tapping "Relink"
-    and the Today-screen badge/navigation are covered by
+    and the Settings tab-bar badge are covered by
     `ReservoirUITests/PlaidRelinkUITests.swift` via a new scripted
     `URLProtocol` (`UITEST_PLAID_IMPORT_SCENARIO=itemLoginRequired`,
     consistent with the existing `PlaidForcedFailureURLProtocol`/
-    `PlaidImportMergePromptURLProtocol` convention). The full "reconnect
+    `PlaidImportMergePromptURLProtocol` convention) — XCUITest exposes a
+    SwiftUI tab-bar badge as the tab button's `.value` (`"!"` when set,
+    `""` when absent, confirmed empirically). The full "reconnect
     clears needsAttention, next refresh resumes normally" round trip against
     Plaid Sandbox is **manual verification only** (matches the existing
     posture for transient-error coverage; this test area already has two
@@ -635,10 +637,13 @@ app-wide setting.
     afterward resumes `/transactions/sync` from wherever it left off rather
     than re-pulling full history.
   - Both "Relink" and "Unlink" call `TransactionImportService
-    .refreshNeedsAttention()` on success so the Today-screen gear badge
+    .refreshNeedsAttention()` on success so the Settings tab-bar badge
     clears immediately rather than waiting for the next import.
-  - The Today screen's gear icon (`TodayView`) always navigates to this tab
-    on tap — the placeholder `StubSheet` it previously fell back to when
+  - The Today screen no longer has a Settings entry point of its own — the
+    tab bar's Settings tab is the only way in, and (code-review follow-up)
+    it now also carries the `needsAttention` badge directly, replacing the
+    Today-screen gear icon this story originally shipped with. The
+    placeholder `StubSheet` this tab previously fell back to when
     `needsAttention == false` is gone, along with `StubSheet` itself
     (`Features/Today/TodayStubSheets.swift`, now unused and removed — its
     other two call sites, goal creation and add-transaction, were already

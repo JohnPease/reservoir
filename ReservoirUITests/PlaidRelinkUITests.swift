@@ -1,18 +1,18 @@
 import XCTest
 
 /// Functional coverage for reservoir-adq.6.5's item-relink / connection-status UX:
-/// the Today-screen gear-icon badge and its navigation to the reconnect flow, and tapping
+/// the Settings tab's native tab-bar badge signaling a broken bank connection, and tapping
 /// "Relink" in `SettingsView` actually invoking the update-mode Link entry point
 /// (`PlaidServiceLive.startRelink(for:)`) rather than the old, mis-wired `startLink()`.
 ///
 /// Ported from the original `PlaidRelinkUITests` (which targeted the interim
 /// `PlaidDebugLinkView`, deleted in reservoir-adq.7) — rewritten against `SettingsView`'s
-/// own accessibility identifiers (`settings.*`). The Today-badge-navigates-to-Settings
-/// scenario is also updated: the gear icon now routes to `.settings` unconditionally
-/// (reservoir-adq.7 removed the old placeholder-Settings-sheet/needsAttention branch), so
-/// the "gear opens placeholder sheet when nothing needs attention" case this suite used to
-/// cover no longer exists as a distinct behavior — see
-/// `testTodayGearAlwaysNavigatesToSettings_regardlessOfNeedsAttention` below.
+/// own accessibility identifiers (`settings.*`). Code-review follow-up on reservoir-adq.7:
+/// the connection-status indicator moved off a separate gear-icon overlay on the Today
+/// screen (a redundant navigation affordance once Settings already had its own tab-bar
+/// entry point) onto a native `.badge(_:)` on the Settings tab item itself — see
+/// `RootTabView.swift`. XCUITest exposes a SwiftUI tab-bar badge as the tab button's
+/// `.value` (confirmed empirically: `"!"` when set, `""` — not `nil` — when absent).
 ///
 /// Per this story's resolved test-scope decision, the full "reconnect clears
 /// needsAttention + resumes import" round trip against Plaid Sandbox is **manual
@@ -38,45 +38,38 @@ final class PlaidRelinkUITests: XCTestCase {
         return app
     }
 
-    // MARK: - Today-screen connection-status badge
+    // MARK: - Settings tab-bar connection-status badge
 
-    func testTodayBadgeAppearsWhenNeedsAttention_navigatesToReconnectFlow() {
+    private func settingsTabBadge(_ app: XCUIApplication) -> String? {
+        let value = app.tabBars.buttons["Settings"].value as? String
+        return (value?.isEmpty ?? true) ? nil : value
+    }
+
+    func testSettingsTabBadge_appearsWhenNeedsAttention() {
         let app = launchedApp { app in
             app.launchEnvironment["UITEST_SCENARIO"] = "normal"
             app.launchEnvironment["UITEST_SEED_PLAID_LINKED_ITEM"] = "1"
             app.launchEnvironment["UITEST_SEED_PLAID_NEEDS_ATTENTION"] = "1"
         }
 
-        // Today is the default/launch tab — the badge must be visible without navigating
-        // anywhere first (this story's UX section: "surface on Today ... since Settings is
-        // not the launch screen").
-        XCTAssertTrue(app.images["today.connectionBadge"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.tabBars.buttons["Settings"].waitForExistence(timeout: 5))
+        XCTAssertEqual(settingsTabBadge(app), "!", "the Settings tab must carry a badge as soon as a needs-attention item is seeded, without requiring navigation to Settings first.")
 
-        app.buttons["today.settings"].tap()
+        app.tabBars.buttons["Settings"].tap()
 
-        // Tapping while flagged routes to the real Settings tab (SettingsView), showing
-        // "Relink" since an item is already linked.
+        // Tapping through shows "Relink" since an item is already linked.
         XCTAssertTrue(app.buttons["settings.linkButton"].waitForExistence(timeout: 5))
         XCTAssertEqual(app.buttons["settings.linkButton"].label, "Relink")
     }
 
-    /// reservoir-adq.7: the gear tap always routes to `.settings` now — the old
-    /// needsAttention-gated branch (real Settings vs. a placeholder sheet) was removed
-    /// along with `TodayStubSheets.swift`. This is a regression guard for that collapse:
-    /// even with nothing needing attention, the gear must still reach the real
-    /// `SettingsView`, not a dead/removed sheet.
-    func testTodayGearAlwaysNavigatesToSettings_regardlessOfNeedsAttention() {
+    func testSettingsTabBadge_absentWhenNothingNeedsAttention() {
         let app = launchedApp { app in
             app.launchEnvironment["UITEST_SCENARIO"] = "normal"
             app.launchEnvironment["UITEST_SEED_PLAID_LINKED_ITEM"] = "1"
         }
 
-        XCTAssertFalse(app.images["today.connectionBadge"].waitForExistence(timeout: 3))
-
-        app.buttons["today.settings"].tap()
-
-        XCTAssertTrue(app.buttons["settings.linkButton"].waitForExistence(timeout: 5))
-        XCTAssertEqual(app.buttons["settings.linkButton"].label, "Relink")
+        XCTAssertTrue(app.tabBars.buttons["Settings"].waitForExistence(timeout: 5))
+        XCTAssertNil(settingsTabBadge(app), "must not show a badge when nothing needs attention.")
     }
 
     // MARK: - Tapping "Relink" calls the update-mode entry point
@@ -206,13 +199,13 @@ final class PlaidRelinkUITests: XCTestCase {
 //   3. In the Plaid dashboard (or via curl), call Sandbox's
 //      `/sandbox/item/reset_login` for the linked item's item_id to force it into
 //      ITEM_LOGIN_REQUIRED.
-//   4. Trigger an import (foreground the app, pull-to-refresh, or the debug "Import
-//      transactions" button) — confirm the import error banner and/or the
-//      "Needs attention" text under "Linked institution" in SettingsView appears,
-//      and the Today-screen gear badge appears.
-//   5. Tap the Today badge (or the "Relink" button in Settings) — confirm Plaid Link opens
-//      in update mode (same institution, no account-selection/consent screens repeated
-//      unnecessarily) and completes successfully with user_good/pass_good.
+//   4. Trigger an import (foreground the app or pull-to-refresh on the Transactions tab)
+//      — confirm the import error banner and/or the "Needs attention" text under "Linked
+//      institution" in SettingsView appears, and the Settings tab-bar item shows its
+//      badge.
+//   5. Tap "Relink" in Settings — confirm Plaid Link opens in update mode (same
+//      institution, no account-selection/consent screens repeated unnecessarily) and
+//      completes successfully with user_good/pass_good.
 //   6. Confirm "Needs attention" disappears (both surfaces) immediately after the relink
 //      completes, without needing to background/foreground the app.
 //   7. Trigger another import — confirm it resumes normally (no duplicate transactions,
