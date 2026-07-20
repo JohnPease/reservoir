@@ -91,8 +91,8 @@ final class PlaidServiceLive: PlaidService {
     /// session the user is shown has genuinely completed, not once `startRelink(for:)`'s
     /// `await` merely returns (that only covers token creation + presenting the sheet; see
     /// reservoir-1nn). `SettingsView` wires this to
-    /// `TransactionImportService.refreshNeedsAttention()` so the Today-screen badge clears
-    /// the moment relink succeeds, without needing another `runImport()` or app relaunch to
+    /// `TransactionImportService.refreshNeedsAttention()` so the Settings tab's `.badge(_:)`
+    /// clears the moment relink succeeds, without needing another `runImport()` or app relaunch to
     /// re-sync it. A plain closure rather than a Combine publisher or a hard dependency on
     /// `TransactionImportService` — this class has no business knowing that type exists;
     /// the caller decides what "notify on relink success" means.

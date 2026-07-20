@@ -1,17 +1,20 @@
 import SwiftUI
 
-/// Identifies each of `RootTabView`'s tabs — reservoir-adq.6.5 needs a way for
-/// `TodayView`'s connection-status badge to programmatically switch to the Settings tab
-/// (`SettingsView`, the reconnect-flow host) when tapped, which a bare `TabView` with no
-/// `selection:` binding can't do.
+/// Identifies each of `RootTabView`'s tabs, so its `TabView` can bind `selection:` to
+/// `TabSelection.selected` below rather than relying on index-based selection. Originally
+/// added (reservoir-adq.6.5) so `TodayView`'s connection-status badge could programmatically
+/// switch to Settings on tap; that badge moved onto the Settings tab item itself as a
+/// native `.badge(_:)` (code review follow-up on reservoir-adq.7), so `TodayView` no longer
+/// consumes this — `RootTabView`'s own `selection:` binding is the sole remaining consumer.
 enum AppTab: Hashable {
     case today, goals, transactions, settings
 }
 
 /// The one shared, `@Observable` tab-selection binding — owned by `RootTabView`, injected
 /// down to every tab via `.environment(_:)` (same idiom as `TodayClock`/
-/// `TransactionImportService`) so `TodayView` can navigate to `.settings` without
-/// `RootTabView` needing to hand it a closure or reach down into a child's state directly.
+/// `TransactionImportService`). Backs `RootTabView`'s own `TabView(selection:)` binding;
+/// no other view currently reads it (`TodayView`'s prior consumption, described in
+/// `AppTab`'s doc comment above, was removed).
 @Observable
 final class TabSelection {
     var selected: AppTab = .today

@@ -109,7 +109,7 @@ Single `TabView`, four tabs:
 
 The Today tab is the launch screen and carries the core mechanic. Layout, top to bottom:
 
-- **Date header** with settings icon (top-right, quick access without leaving the tab)
+- **Date header**
 - **Daily limit — the hero element.** Large (44px), centered, single number. Subtext breaks it down as `$base + $carried forward` so the rolling mechanic stays visible instead of feeling like a mystery number.
 - **Two-stat row**: spent today / remaining, in muted metric cards — supporting context, not competing with the hero number.
 - **Recent transactions** (last 2-3): icon, merchant, tag (variable/fixed) + timestamp, amount. Fixed expenses (e.g. rent) render muted with "excluded from limit" so users understand why they don't eat into the daily number, without cluttering the variable-spend view.

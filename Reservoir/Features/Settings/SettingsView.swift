@@ -76,8 +76,9 @@ struct SettingsView: View {
                         LabeledContent("Item ID", value: linkedItem.itemID)
 
                         // Reuses the shared `PlaidErrorText`/`.itemLoginRequired` copy (not a
-                        // second hardcoded string) so this and the Today-screen gear badge
-                        // never drift into different wording for the same state. Deliberately
+                        // second hardcoded string) so this and the Settings tab's own
+                        // `.badge(_:)` (RootTabView.swift) never drift into different wording
+                        // for the same state. Deliberately
                         // reads `importService?.needsAttention`, not `linkedItem.needsAttention`
                         // — see `PlaidDebugLinkView`'s equivalent (now-removed) comment: the
                         // latter is `PlaidServiceLive`'s own cached copy, which never learns
