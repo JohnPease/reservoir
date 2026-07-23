@@ -4,8 +4,9 @@ import SwiftUI
 /// was copy-pasted across `GoalsView`, `TransactionsView`, and `MerchantRulesView`,
 /// differing only in the pending item's type/title (STANDARDS.md §3, no copy-paste).
 /// Originally delete-only; generalized (PR #12 review finding) to also back
-/// `PlaidDebugLinkView`'s Sandbox -> Production switch confirmation, which needed a
-/// non-"Delete" action label, an optional message, and accessibility-identifier hooks.
+/// `SettingsView`'s Sandbox -> Production switch confirmation and its Unlink
+/// confirmation, both of which needed a non-"Delete" action label, an optional message,
+/// and accessibility-identifier hooks.
 extension View {
     /// - Parameters:
     ///   - pendingItem: the item awaiting confirmation, or `nil` when no confirmation
@@ -14,7 +15,7 @@ extension View {
     ///   - title: the confirmation dialog's title, computed from the pending item (e.g.
     ///     `GoalsView`'s pluralized "N attributed transactions" copy).
     ///   - message: optional body text shown below the title (e.g.
-    ///     `PlaidDebugLinkView`'s real-money warning). Defaults to no message, matching
+    ///     `SettingsView`'s real-money warning). Defaults to no message, matching
     ///     every pre-existing `deleteConfirmation` caller.
     ///   - actionTitle: the destructive action button's label, computed from the
     ///     pending item. Defaults to `"Delete"`, matching every pre-existing caller.

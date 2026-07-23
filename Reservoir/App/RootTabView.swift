@@ -1,17 +1,20 @@
 import SwiftUI
 
-/// Identifies each of `RootTabView`'s tabs — reservoir-adq.6.5 needs a way for
-/// `TodayView`'s connection-status badge to programmatically switch to the Settings tab
-/// (currently `PlaidDebugLinkView`, the interim reconnect-flow host) when tapped, which a
-/// bare `TabView` with no `selection:` binding can't do.
+/// Identifies each of `RootTabView`'s tabs, so its `TabView` can bind `selection:` to
+/// `TabSelection.selected` below rather than relying on index-based selection. Originally
+/// added (reservoir-adq.6.5) so `TodayView`'s connection-status badge could programmatically
+/// switch to Settings on tap; that badge moved onto the Settings tab item itself as a
+/// native `.badge(_:)` (code review follow-up on reservoir-adq.7), so `TodayView` no longer
+/// consumes this — `RootTabView`'s own `selection:` binding is the sole remaining consumer.
 enum AppTab: Hashable {
     case today, goals, transactions, settings
 }
 
 /// The one shared, `@Observable` tab-selection binding — owned by `RootTabView`, injected
 /// down to every tab via `.environment(_:)` (same idiom as `TodayClock`/
-/// `TransactionImportService`) so `TodayView` can navigate to `.settings` without
-/// `RootTabView` needing to hand it a closure or reach down into a child's state directly.
+/// `TransactionImportService`). Backs `RootTabView`'s own `TabView(selection:)` binding;
+/// no other view currently reads it (`TodayView`'s prior consumption, described in
+/// `AppTab`'s doc comment above, was removed).
 @Observable
 final class TabSelection {
     var selected: AppTab = .today
@@ -30,8 +33,9 @@ struct RootTabView: View {
 
     /// The app's one shared `TransactionImportService` instance (adq.6.4) — constructed
     /// lazily in `.task` once `modelContext` (an `@Environment` value) is available, same
-    /// convention `PlaidDebugLinkView` used for its own now-removed copy. Consolidating
-    /// onto a single instance here (rather than one per tab/debug view) means exactly one
+    /// convention `SettingsView`'s predecessor (`PlaidDebugLinkView`) used for its own
+    /// now-removed copy. Consolidating onto a single instance here (rather than one per
+    /// tab/debug view) means exactly one
     /// `mergeQueue`/`isImporting` for the whole app, injected down to every tab that needs
     /// it via `.environment(_:)` below, instead of three independent import paths racing
     /// against the same persisted store.
@@ -51,19 +55,17 @@ struct RootTabView: View {
                 .tabItem { Label("Transactions", systemImage: "list.bullet") }
                 .tag(AppTab.transactions)
 
-            #if DEBUG
-            // Temporary stand-in for Settings (reservoir-adq.7, not yet
-            // built) so the Plaid Link + Keychain flow (reservoir-adq.6.1)
-            // can be driven end to end. Remove once adq.7 ships the real
-            // Settings tab with its own "Link a bank account" entry point.
-            PlaidDebugLinkView()
+            SettingsView()
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(AppTab.settings)
-            #else
-            Text("Settings")
-                .tabItem { Label("Settings", systemImage: "gearshape") }
-                .tag(AppTab.settings)
-            #endif
+                // A broken bank connection (adq.6.5's needsAttention) now surfaces as a
+                // native tab-bar badge instead of a separate gear-icon overlay on the
+                // Today screen (code review follow-up, reservoir-adq.7) — Settings already
+                // has its own tab-bar entry point, so a second, redundant navigation
+                // affordance on Today added nothing; only the status signal itself was
+                // worth keeping, and a badge on the tab that actually owns this state is
+                // the more direct place for it.
+                .badge(importService?.needsAttention == true ? "!" : nil)
         }
         .keepingReferenceDateCurrent($todayClock.referenceDate, calendar: calendar)
         .environment(todayClock)
@@ -101,8 +103,9 @@ struct RootTabView: View {
     /// this binding to `nil` (dismiss-by-swipe) is a deliberate no-op: per adq.6.3's UX
     /// spec, there's no free "Cancel" for a merge prompt, only "Merge"/"Keep both", both of
     /// which pop the queue themselves via `resolveMergeDecision(_:)`. Hoisted here from
-    /// `PlaidDebugLinkView` (adq.6.4) so a merge prompt surfaced by a foreground- or
-    /// pull-to-refresh-triggered import shows up regardless of which tab is active.
+    /// `SettingsView`'s predecessor (`PlaidDebugLinkView`, adq.6.4) so a merge prompt
+    /// surfaced by a foreground- or pull-to-refresh-triggered import shows up regardless
+    /// of which tab is active.
     private var mergeDecisionBinding: Binding<TransactionImportService.PendingMergeDecision?> {
         Binding(
             get: { importService?.pendingMergeDecision },

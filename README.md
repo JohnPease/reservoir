@@ -368,13 +368,11 @@ appears anywhere in the app. It owns two responsibilities:
   reads `environmentStore.current` at the top of every Link/token call
   (`createLinkToken()`, `exchangePublicToken(_:)`), not once at init, so
   flipping the in-app toggle takes effect on the next call with no rebuild
-  or relaunch. The toggle lives in the same `#if DEBUG` `PlaidDebugLinkView`
-  standing in for Settings (below): a segmented Sandbox/Production picker
-  whose binding intercepts any attempt to select Production and routes it
-  through a confirmation dialog ("This will use real bank data...") before
-  applying — selecting Sandbox applies immediately, given the asymmetric
-  real-money risk. Settings (adq.7) will host the real control; this is
-  temporary scaffolding like the rest of `PlaidDebugLinkView`.
+  or relaunch. The toggle lives on the Settings tab (`SettingsView`, adq.7):
+  a segmented Sandbox/Production picker whose binding intercepts any attempt
+  to select Production and routes it through a confirmation dialog ("This
+  will use real bank data...") before applying — selecting Sandbox applies
+  immediately, given the asymmetric real-money risk.
 
   OAuth-institution redirects are handled by LinkKit itself
   (`ASWebAuthenticationSession` under the hood) once the app has the
@@ -410,13 +408,12 @@ appears anywhere in the app. It owns two responsibilities:
   `UserDefaults`-backed live implementation, same pattern as
   `KeychainServicing`/`PlaidSyncCursorStoring`), consistent with PROJECT_SPEC's
   "no `User` entity" note that app-wide settings outside SwiftData belong
-  there — not a storage decision for Settings' eventual real account list
-  (adq.7/adq.6.3), which may need a SwiftData model once more than metadata
-  display is needed. Both `PlaidServiceLive` (owns *when* to read/write it —
-  init, a successful Link/relink, an environment change) and
+  there. Both `PlaidServiceLive` (owns *when* to read/write it — init, a
+  successful Link/relink/unlink, an environment change) and
   `TransactionImportService` (sets `needsAttention` on a classified item-auth
   error, reads it for the Today-screen badge) depend on this one store via
-  constructor-parameter DI — see "Item relink / connection-status UX" below.
+  constructor-parameter DI — see "Item relink / connection-status UX" and
+  "Settings tab" below.
 
   `PlaidErrorClassifier` (`Services/Plaid/PlaidErrorClassifier.swift`) is a
   pure function classifying any Link or exchange failure into `.network` vs
@@ -430,11 +427,9 @@ appears anywhere in the app. It owns two responsibilities:
   status UX) reuses this same classifier for `ITEM_LOGIN_REQUIRED`-style
   import-time errors rather than duplicating the logic.
 
-  There's no permanent UI yet — a `#if DEBUG`-gated `PlaidDebugLinkView`
-  stands in for the "Settings" tab (reachable via the Settings tab item in
-  DEBUG builds only) so the flow can be driven and Keychain storage verified
-  end to end. Settings (adq.7) owns the real entry point and this debug view
-  is removed once that story ships.
+  The Settings tab (`SettingsView`, adq.7 — see "Settings tab" below) is the
+  permanent, real entry point for all of this: linking, relinking, and
+  unlinking, plus the Sandbox/Production toggle above.
 
 **Transaction import + dedup/merge prompt** (adq.6.3, absorbs adq.4's
 former "MerchantRule auto-tagging at import" scope): pulls transactions from
@@ -499,23 +494,18 @@ double-counted.
     through the existing `PersistenceSaveHelper.saveOrRollback`/
     `deleteWithRollback`, with a failed transaction's save logged and
     skipped rather than failing the whole import batch.
-  - Same debug-only posture as adq.6.1/6.2: `PlaidDebugLinkView` gets a
-    "Transaction import (debug)" section (manual "Import transactions"
-    trigger, non-blocking summary line, merge prompt wiring). Foreground/
-    pull-to-refresh triggers are adq.6.4, not built here.
+  - No manual "Import transactions" trigger exists in the shipped UI —
+    foreground/pull-to-refresh triggers (adq.6.4, below) are the only
+    production-facing ways an import runs.
 
 **Foreground refresh + pull-to-refresh triggers** (adq.6.4): wires
 `TransactionImportService` to its two real, permanent triggers per
 PROJECT_SPEC's locked "no webhooks/no background timer" decision — a manual
 debug button is no longer the only way to run an import.
-  - `RootTabView` (`App/RootTabView.swift`) now owns the app's one shared
-    `TransactionImportService` instance (constructed lazily in `.task`, same
-    convention `PlaidDebugLinkView` used previously), injected to every tab
-    via `.environment(_:)`. `PlaidDebugLinkView`'s own standalone instance was
-    removed — there is exactly one `mergeQueue`/`isImporting` for the whole
-    app now, not three independent import paths racing the same persisted
-    store. Its "Import transactions" debug button calls `runImport()` against
-    this shared instance.
+  - `RootTabView` (`App/RootTabView.swift`) owns the app's one shared
+    `TransactionImportService` instance (constructed lazily in `.task`),
+    injected to every tab via `.environment(_:)` — exactly one
+    `mergeQueue`/`isImporting` for the whole app, not one per tab/view.
   - `RootTabView` observes `\.scenePhase` and calls
     `TransactionImportService.handleScenePhaseTransition(to:)` on every
     change. SwiftUI fires `.onChange(of: scenePhase)` once per discrete phase
@@ -587,35 +577,77 @@ error toast a flaky connection would falsely trigger.
     an update-mode-flavored token. On success, `handleRelinkSuccess()` clears
     `needsAttention` via `LinkedItemStore` — no token re-exchange, since
     Plaid's `access_token` doesn't change in update mode.
-  - **UI**: per the build-config decision that JP runs Debug via Xcode only,
-    the reconnect affordance lives in the existing `#if DEBUG`-gated
-    `PlaidDebugLinkView` (interim home until Settings/adq.7 ships) — its
-    "Relink" button, previously mis-wired to call `startLink()` (which would
-    have created a duplicate item/token rather than repairing the existing
-    one), now calls `startRelink(for:)`. The Today screen (`TodayView`) gets
-    an icon-badge on its existing top-right gear icon — not a banner, so it
-    doesn't compete with the hero daily-limit number — visible whenever
-    `needsAttention` is true; tapping it navigates to the reconnect flow via
-    a new `TabSelection` (`App/RootTabView.swift`, `@Observable`, injected
-    via `.environment(_:)`) that lets `TodayView` programmatically switch
-    `RootTabView`'s `TabView` to the Settings tab, instead of the normal
-    placeholder Settings sheet.
+  - **UI**: the reconnect affordance is a "Relink" button on the Settings
+    tab (`SettingsView`, adq.7 — see "Settings tab" below), which calls
+    `startRelink(for:)` (not `startLink()`, which would create a duplicate
+    item/token rather than repairing the existing one). `needsAttention`
+    surfaces as a native `.badge(_:)` on the Settings tab item itself
+    (`App/RootTabView.swift`) rather than a separate indicator elsewhere —
+    Settings already has its own tab-bar entry point, so a second gear-icon
+    overlay on the Today screen (this story's original design, since removed
+    as a code-review follow-up) was a redundant navigation affordance with
+    only its status-signal half actually earning its place; a badge on the
+    tab that owns the state is the more direct home for it.
   - **Testing**: `ITEM_LOGIN_REQUIRED` classification and the
     `needsAttention`-setting/not-setting behavior (item error vs. transient/
     network error) are unit tested (`PlaidErrorClassifierTests`,
     `TransactionImportServiceTests`). `startRelink(for:)`'s exact update-mode
     request shape (`access_token` present, `products` absent) is unit tested
     against `PlaidServiceLive` (`PlaidServiceLiveTests`). Tapping "Relink"
-    and the Today-screen badge/navigation are covered by
+    and the Settings tab-bar badge are covered by
     `ReservoirUITests/PlaidRelinkUITests.swift` via a new scripted
     `URLProtocol` (`UITEST_PLAID_IMPORT_SCENARIO=itemLoginRequired`,
     consistent with the existing `PlaidForcedFailureURLProtocol`/
-    `PlaidImportMergePromptURLProtocol` convention). The full "reconnect
+    `PlaidImportMergePromptURLProtocol` convention) — XCUITest exposes a
+    SwiftUI tab-bar badge as the tab button's `.value` (`"!"` when set,
+    `""` when absent, confirmed empirically). The full "reconnect
     clears needsAttention, next refresh resumes normally" round trip against
     Plaid Sandbox is **manual verification only** (matches the existing
     posture for transient-error coverage; this test area already has two
     flakiness beads, reservoir-bdy/reservoir-tq7) — see the manual-steps
     comment at the bottom of `PlaidRelinkUITests.swift`.
+
+**Settings tab** (adq.7): `Features/Settings/SettingsView.swift` is the real,
+shipped Settings screen, replacing the `#if DEBUG`-only `PlaidDebugLinkView`
+that stood in for it during adq.6.1–6.5. Scoped to linked-account management
+only — goal management (create/edit/delete) lives entirely on the Goals tab
+(adq.5), and there is no starting-balance field here: that's a per-goal value
+collected at goal creation (`GoalFormView`) and immutable after, not an
+app-wide setting.
+  - **Environment section**: the Sandbox/Production segmented picker and its
+    switch-to-Production confirmation dialog, described under "Sandbox/
+    Production environment switching" above.
+  - **Linked account section**: shows the linked item's institution name and
+    item ID when present, an inline "needs attention" message
+    (`PlaidErrorText(error: .itemLoginRequired)`, reading
+    `TransactionImportService.needsAttention`) when the connection needs
+    reconnecting, a "Link a bank account" button when unlinked, and a
+    "Relink" button (Plaid's update-mode Link) when linked — see "Plaid Link
+    + Keychain token storage" and "Item relink / update-mode + connection-
+    status UX" above.
+  - **Unlink** (new in this story): a destructive "Unlink" button, gated by a
+    confirmation dialog ("Unlink \<institution\>?" / "You'll need to go
+    through Plaid's login flow again to reconnect. Transactions already
+    imported will stay."), calls `PlaidServiceLive.unlink()`. `unlink()`
+    clears only `LinkedItemStore` (linked-item metadata) and the Keychain
+    access token — the same two things an environment switch's invalidation
+    hook clears — and deliberately does **not** touch `SpendTransaction`
+    rows or the Plaid sync cursor: previously imported transaction history
+    survives an unlink untouched, and relinking the same institution
+    afterward resumes `/transactions/sync` from wherever it left off rather
+    than re-pulling full history.
+  - Both "Relink" and "Unlink" call `TransactionImportService
+    .refreshNeedsAttention()` on success so the Settings tab-bar badge
+    clears immediately rather than waiting for the next import.
+  - The Today screen no longer has a Settings entry point of its own — the
+    tab bar's Settings tab is the only way in, and (code-review follow-up)
+    it now also carries the `needsAttention` badge directly, replacing the
+    Today-screen gear icon this story originally shipped with. The
+    placeholder `StubSheet` this tab previously fell back to when
+    `needsAttention == false` is gone, along with `StubSheet` itself
+    (`Features/Today/TodayStubSheets.swift`, now unused and removed — its
+    other two call sites, goal creation and add-transaction, were already
+    retired onto real forms in adq.5/adq.3).
 
 ## Technical details
 
@@ -679,28 +711,30 @@ error toast a flaky connection would falsely trigger.
   (create/edit/delete, duplicate-name rejection, retroactive retag of
   matching transactions on rule create/edit) is reachable from this tab. See
   "Transactions tab" under Architecture above.
-- **Plaid Link + Keychain token storage** (adq.6.1, foundation only): behind
-  a `#if DEBUG` entry point standing in for Settings (see Architecture
-  above) — links an institution (including OAuth institutions) via LinkKit,
-  exchanges the resulting token directly from the device, and stores it in
-  Keychain.
-- **Sandbox/Production environment switching** (adq.6.2): an in-app toggle
-  (currently on the same `#if DEBUG` entry point above) switches which
-  Plaid credential set/API host `PlaidServiceLive` uses, with no rebuild —
-  see "Sandbox/Production environment switching" under Architecture above.
+- **Plaid Link + Keychain token storage** (adq.6.1, implemented): from the
+  Settings tab — links an institution (including OAuth institutions) via
+  LinkKit, exchanges the resulting token directly from the device, and
+  stores it in Keychain.
+- **Sandbox/Production environment switching** (adq.6.2, implemented): an
+  in-app toggle on the Settings tab switches which Plaid credential set/API
+  host `PlaidServiceLive` uses, with no rebuild — see "Sandbox/Production
+  environment switching" under Architecture above.
 - **Transaction import + dedup/merge prompt** (adq.6.3, implemented): a
-  debug-triggered `/transactions/sync` pull (same `#if DEBUG` entry point)
-  that dedups new Plaid transactions against manual entries before saving —
-  a matched pair prompts "Merge" (Plaid wins, keeps one row) vs. "Keep both"
-  — auto-tags imports via the existing `MerchantRule`s, attributes them to
-  a `SavingsGoal` under the same rules manual entry uses, and handles
-  upstream `modified`/`removed` transactions too. See "Transaction import +
-  dedup/merge prompt" under Architecture above. Foreground/pull-to-refresh
-  triggers for this pipeline are still to come (adq.6.4).
-- 🚧 Everything else is still in progress. Current state beyond Today,
-  Goals, and Transactions: the placeholder Settings tab (linked accounts,
-  starting balances, goal management) and wiring the import pipeline above
-  to real app-lifecycle triggers (adq.6.4).
+  `/transactions/sync` pull, triggered by foreground resume or pull-to-
+  refresh (adq.6.4), that dedups new Plaid transactions against manual
+  entries before saving — a matched pair prompts "Merge" (Plaid wins, keeps
+  one row) vs. "Keep both" — auto-tags imports via the existing
+  `MerchantRule`s, attributes them to a `SavingsGoal` under the same rules
+  manual entry uses, and handles upstream `modified`/`removed` transactions
+  too. See "Transaction import + dedup/merge prompt" under Architecture
+  above.
+- **Settings tab** (adq.7, implemented): linked-account management —
+  Sandbox/Production toggle, link/relink/unlink a bank account. Does not
+  manage goals or starting balances (see "Settings tab" under Architecture
+  above for why). See "Settings tab" under Architecture above.
+- 🚧 Everything else is still in progress — see
+  [`docs/PROJECT_SPEC.md`](docs/PROJECT_SPEC.md) and the `reservoir-adq`
+  epic (`bd show reservoir-adq`) for what's left.
 - Planned MVP scope and build order are tracked in
   [`docs/PROJECT_SPEC.md`](docs/PROJECT_SPEC.md) and as beads under the
   `reservoir-adq` epic (`bd show reservoir-adq`).

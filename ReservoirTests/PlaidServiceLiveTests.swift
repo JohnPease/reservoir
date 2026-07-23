@@ -1,5 +1,6 @@
 import XCTest
 import LinkKit
+import SwiftData
 @testable import Reservoir
 
 /// Covers `PlaidServiceLive`'s pure/mappable logic — the LinkKit
@@ -371,6 +372,111 @@ final class PlaidServiceLiveTests: XCTestCase {
         XCTAssertEqual(linkedItemStore.load()?.needsAttention, false, "the persisted store must also be updated, not just the in-memory copy.")
         XCTAssertFalse(sut.isPresentingLink)
         XCTAssertEqual(keychain.saveCallCount, 0, "no token re-exchange happens in update mode — the access_token doesn't change.")
+    }
+
+    // MARK: - unlink() (reservoir-adq.7)
+
+    /// `RecordingKeychain` mirrors `handleRelinkSuccess`'s existing pattern above but also
+    /// records `deleteCallCount`/last-deleted key — `unlink()`'s explicit acceptance
+    /// criterion is that it clears the Keychain access token, so a plain no-op stub
+    /// wouldn't prove the delete actually happened.
+    private final class RecordingKeychain: KeychainServicing, @unchecked Sendable {
+        private(set) var saveCallCount = 0
+        private(set) var deleteCallCount = 0
+        private(set) var lastDeletedKey: String?
+        func save(_ value: String, for key: String) async throws { saveCallCount += 1 }
+        func read(for key: String) async throws -> String? { nil }
+        func delete(for key: String) async throws {
+            deleteCallCount += 1
+            lastDeletedKey = key
+        }
+    }
+
+    func test_unlink_clearsLinkedItemAndPresentedError() async {
+        let linkedItemStore = StubLinkedItemStore(
+            initial: LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now)
+        )
+        let sut = PlaidServiceLive(keychain: RecordingKeychain(), urlSession: .shared, linkedItemStore: linkedItemStore)
+        XCTAssertNotNil(sut.linkedItem, "sanity check: init must have loaded the seeded item.")
+        sut.presentedError = .network
+
+        await sut.unlink()
+
+        XCTAssertNil(sut.linkedItem)
+        XCTAssertNil(sut.presentedError)
+    }
+
+    func test_unlink_clearsLinkedItemStore() async {
+        let linkedItemStore = StubLinkedItemStore(
+            initial: LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now)
+        )
+        let sut = PlaidServiceLive(keychain: RecordingKeychain(), urlSession: .shared, linkedItemStore: linkedItemStore)
+
+        await sut.unlink()
+
+        XCTAssertNil(linkedItemStore.load(), "the persisted store must also be cleared, not just the in-memory copy.")
+    }
+
+    func test_unlink_deletesKeychainAccessToken() async {
+        let linkedItemStore = StubLinkedItemStore(
+            initial: LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now)
+        )
+        let keychain = RecordingKeychain()
+        let sut = PlaidServiceLive(keychain: keychain, urlSession: .shared, linkedItemStore: linkedItemStore)
+
+        await sut.unlink()
+
+        XCTAssertEqual(keychain.deleteCallCount, 1)
+        XCTAssertEqual(keychain.lastDeletedKey, PlaidKeychainKey.accessToken)
+        XCTAssertEqual(keychain.saveCallCount, 0, "unlink never writes a new token — it only deletes the existing one.")
+    }
+
+    /// The explicit acceptance criterion (reservoir-adq.7): unlinking must never touch
+    /// `SpendTransaction` rows — previously imported transaction history survives an
+    /// unlink untouched. `PlaidServiceLive` never holds a `ModelContext` reference at all
+    /// (it only knows `LinkedItemStore`/Keychain), so this seeds a real in-memory
+    /// `ModelContainer` with transactions attributed to a goal, calls `unlink()` against a
+    /// completely separate `PlaidServiceLive` instance, and confirms the transactions —
+    /// untouched by anything `unlink()` could reach — are still all there afterward. This
+    /// is a belt-and-suspenders regression guard: if `unlink()` ever gained a
+    /// `modelContext` parameter/dependency in the future, this test would still catch a
+    /// SpendTransaction-deleting mistake.
+    @MainActor
+    func test_unlink_doesNotDeleteOrModifySpendTransactions() async throws {
+        let schema = Schema(versionedSchema: SchemaV5.self)
+        let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, migrationPlan: ReservoirMigrationPlan.self, configurations: [configuration])
+        let context = ModelContext(container)
+
+        let goal = SavingsGoal(
+            targetAmount: 1000,
+            targetDate: Calendar.current.date(byAdding: .day, value: 10, to: .now)!,
+            startDate: .now,
+            startingBalance: 0,
+            dailyBase: 20
+        )
+        context.insert(goal)
+        context.insert(SpendTransaction(
+            amount: 12.50, date: .now, merchantName: "Coffee Shop",
+            type: .variable, entryMethod: .manual, savingsGoal: goal
+        ))
+        context.insert(SpendTransaction(
+            amount: 900, date: .now, merchantName: "Rent",
+            type: .fixed, entryMethod: .manual, savingsGoal: goal
+        ))
+        try context.save()
+
+        let linkedItemStore = StubLinkedItemStore(
+            initial: LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now)
+        )
+        let sut = PlaidServiceLive(keychain: RecordingKeychain(), urlSession: .shared, linkedItemStore: linkedItemStore)
+
+        await sut.unlink()
+
+        let transactionsAfterUnlink = try context.fetch(FetchDescriptor<SpendTransaction>())
+        XCTAssertEqual(transactionsAfterUnlink.count, 2, "unlink() must not delete any SpendTransaction rows.")
+        XCTAssertTrue(transactionsAfterUnlink.contains { $0.merchantName == "Coffee Shop" && $0.savingsGoal != nil })
+        XCTAssertTrue(transactionsAfterUnlink.contains { $0.merchantName == "Rent" && $0.savingsGoal != nil })
     }
 
     // MARK: - errorType(for:) — ExitErrorCode -> app-domain string mapping
