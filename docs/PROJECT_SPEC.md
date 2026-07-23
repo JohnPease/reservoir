@@ -97,6 +97,14 @@ Single `TabView`, four tabs:
 | Widgets / Lock Screen | High usefulness — glanceable number is the point | Needs App Group + shared SwiftData container | **Phase 2** |
 | Siri/Shortcuts | Low — single-user app | Nontrivial App Intents work for the value | **Cut** |
 
+## Productionalize (Phase 3)
+
+Infrastructure/ops hardening for wider real-world use, not product features — sequenced
+after Phase 2, since none of it is needed for solo dev-machine usage:
+
+- Move the Plaid OAuth universal link's redirect domain off `johnpease.github.io`
+  (personal GitHub Pages) to a dedicated domain (reservoir-hka).
+
 ## Recommended build order
 
 1. SwiftData models: `SavingsGoal`, `Transaction`, `MerchantRule`
