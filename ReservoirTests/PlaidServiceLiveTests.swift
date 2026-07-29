@@ -113,14 +113,13 @@ final class PlaidServiceLiveTests: XCTestCase {
 
     // MARK: - handleLinkSuccess Keychain-failure classification
 
-    /// `PlaidServiceLive.persist(_:)`/`loadPersistedLinkedItem()` read/write
-    /// this fixed `UserDefaults.standard` key (mirrored here since it's
-    /// `private` on `PlaidServiceLive`) regardless of which `PlaidServiceLive`
-    /// instance is doing the writing — a real `LinkedItem` written by one
-    /// test is otherwise still there (and gets loaded by `init`) for every
-    /// later test in the process. Clear it before and after each test below
-    /// so they can't see each other's persisted state.
-    private static let linkedItemDefaultsKey = "plaid.linkedItem"
+    /// `LinkedItemStore`'s default `init` reads/writes this fixed `UserDefaults.standard`
+    /// key regardless of which `PlaidServiceLive` instance is doing the writing (the tests
+    /// below construct `PlaidServiceLive` with its default `linkedItemStore` param) — a
+    /// real `LinkedItem` written by one test is otherwise still there (and gets loaded by
+    /// `init`) for every later test in the process. Clear it before and after each test
+    /// below so they can't see each other's persisted state.
+    private static let linkedItemDefaultsKey = "plaid.linkedItems"
 
     private func clearPersistedLinkedItem() {
         UserDefaults.standard.removeObject(forKey: Self.linkedItemDefaultsKey)
@@ -186,10 +185,16 @@ final class PlaidServiceLiveTests: XCTestCase {
     private final class CapturingRelinkURLProtocol: URLProtocol {
         nonisolated(unsafe) static var capturedBody: [String: Any]?
         nonisolated(unsafe) static var linkTokenToReturn = "link-sandbox-relink-test"
+        /// When `true`, responds with a non-2xx status instead of a token — lets a test
+        /// drive `startRelink(for:)` into `beginLinkFlow`'s catch branch (relink attempted,
+        /// `relinkingItem` already set, but the flow never reaches `handleRelinkSuccess()`)
+        /// without needing a second, near-duplicate stub class.
+        nonisolated(unsafe) static var shouldFail = false
 
         static func reset() {
             capturedBody = nil
             linkTokenToReturn = "link-sandbox-relink-test"
+            shouldFail = false
         }
 
         override class func canInit(with request: URLRequest) -> Bool { true }
@@ -219,6 +224,17 @@ final class PlaidServiceLiveTests: XCTestCase {
             }
             if let bodyData {
                 Self.capturedBody = (try? JSONSerialization.jsonObject(with: bodyData)) as? [String: Any]
+            }
+            if Self.shouldFail {
+                let response = HTTPURLResponse(
+                    url: request.url ?? URL(string: "https://sandbox.plaid.com")!,
+                    statusCode: 400,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocolDidFinishLoading(self)
+                return
             }
             let body = Data(#"{"link_token": "\#(Self.linkTokenToReturn)"}"#.utf8)
             let response = HTTPURLResponse(
@@ -369,9 +385,90 @@ final class PlaidServiceLiveTests: XCTestCase {
         sut.handleRelinkSuccess()
 
         XCTAssertEqual(sut.linkedItem?.needsAttention, false)
-        XCTAssertEqual(linkedItemStore.load()?.needsAttention, false, "the persisted store must also be updated, not just the in-memory copy.")
+        XCTAssertEqual(linkedItemStore.loadAll().first?.needsAttention, false, "the persisted store must also be updated, not just the in-memory copy.")
         XCTAssertFalse(sut.isPresentingLink)
         XCTAssertEqual(keychain.saveCallCount, 0, "no token re-exchange happens in update mode — the access_token doesn't change.")
+    }
+
+    /// Code-review regression coverage (reservoir-loc.1): `linkedItem` is now an
+    /// arbitrary "first of N" pointer once more than one item can be linked (see its doc
+    /// comment on `PlaidServiceLive`), not necessarily the item that was just relinked.
+    /// Before this fix, `handleRelinkSuccess()` blindly cleared `needsAttention` on
+    /// whatever `linkedItem` happened to reference — relinking item-2 while `linkedItem`
+    /// still pointed at item-1 would have wrongly cleared item-1's flag and left item-2
+    /// (the one actually just relinked) still marked as needing attention.
+    func test_handleRelinkSuccess_ofNonPointerItem_clearsThatItemsFlag_notLinkedItems() async {
+        CapturingRelinkURLProtocol.reset()
+        let itemOne = LinkedItem(itemID: "item-1", institutionName: "Bank One", linkedAt: .now, needsAttention: true)
+        let itemTwo = LinkedItem(itemID: "item-2", institutionName: "Bank Two", linkedAt: .now, needsAttention: true)
+        let linkedItemStore = StubLinkedItemStore(initial: itemOne)
+        linkedItemStore.save(itemTwo)
+        let sut = PlaidServiceLive(
+            keychain: StubKeychainWithToken(),
+            urlSession: makeCapturingRelinkURLSession(),
+            linkedItemStore: linkedItemStore
+        )
+        XCTAssertEqual(sut.linkedItem?.itemID, "item-1", "sanity check: the single in-memory pointer defaults to the first-loaded item, not item-2.")
+
+        // Relink item-2 specifically, while `sut.linkedItem` still references item-1.
+        await sut.startRelink(for: itemTwo)
+        sut.handleRelinkSuccess()
+
+        let itemsByID = Dictionary(uniqueKeysWithValues: linkedItemStore.loadAll().map { ($0.itemID, $0) })
+        XCTAssertEqual(itemsByID["item-2"]?.needsAttention, false, "the item actually relinked must have its flag cleared.")
+        XCTAssertEqual(itemsByID["item-1"]?.needsAttention, true, "an unrelated item must not be touched by relinking a different one.")
+    }
+
+    /// Returns a distinct token per Keychain key, unlike `StubKeychainWithToken`'s single
+    /// fixed value — needed so a test can prove WHICH item's access token actually went
+    /// out over the network, not just that some request fired.
+    private final class KeyedStubKeychain: KeychainServicing, @unchecked Sendable {
+        private let tokensByKey: [String: String]
+        init(tokensByKey: [String: String]) { self.tokensByKey = tokensByKey }
+        func save(_ value: String, for key: String) async throws {}
+        func read(for key: String) async throws -> String? { tokensByKey[key] }
+        func delete(for key: String) async throws {}
+    }
+
+    /// Code-review regression coverage (reservoir-loc.1, second finding on the same class
+    /// of bug as the test above): `retry()` must also prefer `relinkingItem` over the
+    /// arbitrary `linkedItem` pointer. Before this fix, a failed relink of item-2 (while
+    /// `linkedItem` still pointed at item-1) followed by "Try again" would have retried
+    /// item-1 instead of the item that actually needed reauthentication.
+    func test_retry_afterFailedRelinkOfNonPointerItem_retriesThatItem_notLinkedItems() async {
+        CapturingRelinkURLProtocol.reset()
+        let itemOne = LinkedItem(itemID: "item-1", institutionName: "Bank One", linkedAt: .now)
+        let itemTwo = LinkedItem(itemID: "item-2", institutionName: "Bank Two", linkedAt: .now)
+        let linkedItemStore = StubLinkedItemStore(initial: itemOne)
+        linkedItemStore.save(itemTwo)
+        let keychain = KeyedStubKeychain(tokensByKey: [
+            PlaidKeychainKey.accessToken(itemID: "item-1"): "token-for-item-1",
+            PlaidKeychainKey.accessToken(itemID: "item-2"): "token-for-item-2",
+        ])
+        let sut = PlaidServiceLive(
+            keychain: keychain,
+            urlSession: makeCapturingRelinkURLSession(),
+            linkedItemStore: linkedItemStore
+        )
+        XCTAssertEqual(sut.linkedItem?.itemID, "item-1", "sanity check: the single in-memory pointer defaults to the first-loaded item, not item-2.")
+
+        // Attempt to relink item-2 specifically, but make the token-creation call fail —
+        // relinkingItem is set (startRelink(for:) sets it before making the network call)
+        // but handleRelinkSuccess() never runs, so it's never cleared.
+        CapturingRelinkURLProtocol.shouldFail = true
+        await sut.startRelink(for: itemTwo)
+        XCTAssertNotNil(sut.presentedError, "sanity check: the relink attempt must have actually failed.")
+
+        // "Try again" — must retry item-2 (the one that actually failed), not item-1 (the
+        // arbitrary pointer). The two items' distinct tokens make this provable, not just
+        // "some request fired."
+        CapturingRelinkURLProtocol.shouldFail = false
+        CapturingRelinkURLProtocol.capturedBody = nil
+        await sut.retry()
+
+        XCTAssertEqual(CapturingRelinkURLProtocol.capturedBody?["access_token"] as? String, "token-for-item-2", "retry() must re-attempt item-2's relink (the item that actually failed), not item-1's.")
+        XCTAssertTrue(sut.isPresentingLink, "retry() must have reached Link presentation this time (the retried call succeeded).")
+        XCTAssertNil(sut.presentedError, "a successful retry must clear the prior error.")
     }
 
     // MARK: - unlink() (reservoir-adq.7)
@@ -414,7 +511,7 @@ final class PlaidServiceLiveTests: XCTestCase {
 
         await sut.unlink()
 
-        XCTAssertNil(linkedItemStore.load(), "the persisted store must also be cleared, not just the in-memory copy.")
+        XCTAssertTrue(linkedItemStore.loadAll().isEmpty, "the persisted store must also be cleared, not just the in-memory copy.")
     }
 
     func test_unlink_deletesKeychainAccessToken() async {
@@ -427,7 +524,7 @@ final class PlaidServiceLiveTests: XCTestCase {
         await sut.unlink()
 
         XCTAssertEqual(keychain.deleteCallCount, 1)
-        XCTAssertEqual(keychain.lastDeletedKey, PlaidKeychainKey.accessToken)
+        XCTAssertEqual(keychain.lastDeletedKey, PlaidKeychainKey.accessToken(itemID: "item-1"))
         XCTAssertEqual(keychain.saveCallCount, 0, "unlink never writes a new token — it only deletes the existing one.")
     }
 
@@ -443,7 +540,7 @@ final class PlaidServiceLiveTests: XCTestCase {
     /// SpendTransaction-deleting mistake.
     @MainActor
     func test_unlink_doesNotDeleteOrModifySpendTransactions() async throws {
-        let schema = Schema(versionedSchema: SchemaV5.self)
+        let schema = Schema(versionedSchema: SchemaV6.self)
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, migrationPlan: ReservoirMigrationPlan.self, configurations: [configuration])
         let context = ModelContext(container)

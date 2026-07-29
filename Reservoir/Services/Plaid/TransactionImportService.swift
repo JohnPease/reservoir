@@ -157,7 +157,12 @@ final class TransactionImportService {
         self.cursorStore = cursorStore
         self.linkedItemStore = linkedItemStore
         self.logger = logger
-        self.needsAttention = linkedItemStore.load()?.needsAttention ?? false
+        // Single-pointer "current item" read (reservoir-loc.1): this service still only
+        // ever imports against one item's worth of state per `runImport()` call —
+        // iterating `loadAll()` to sync every linked item is reservoir-loc.2's scope, not
+        // this story's. Picks the first stored item when more than one exists, same
+        // arbitrary-but-consistent choice `PlaidServiceLive.init` makes.
+        self.needsAttention = linkedItemStore.loadAll().first?.needsAttention ?? false
         hydrateMergeQueue()
     }
 
@@ -165,7 +170,7 @@ final class TransactionImportService {
     /// doc comment for why this exists alongside the automatic sync at the start of every
     /// `runImport()`.
     func refreshNeedsAttention() {
-        needsAttention = linkedItemStore.load()?.needsAttention ?? false
+        needsAttention = linkedItemStore.loadAll().first?.needsAttention ?? false
     }
 
     // MARK: - Import
@@ -224,7 +229,14 @@ final class TransactionImportService {
         presentedError = nil
         presentedErrorDetail = nil
 
-        guard let accessToken = try? await keychain.read(for: PlaidKeychainKey.accessToken) else {
+        // Single-item usage pattern (reservoir-loc.1): reads whichever item
+        // `linkedItemStore` currently reports first. Iterating every linked item to sync
+        // each one's own cursor/token is reservoir-loc.2's scope — this only needs to
+        // keep working correctly against the one-item flow using the new
+        // per-item-scoped storage APIs.
+        guard let itemID = linkedItemStore.loadAll().first?.itemID,
+              let accessToken = try? await keychain.read(for: PlaidKeychainKey.accessToken(itemID: itemID))
+        else {
             // No linked item yet, or the keychain read failed — nothing to import,
             // not an error surfaced to the user (background operation). Still resync
             // needsAttention before returning (code review finding, reservoir-adq.6.5):
@@ -237,7 +249,7 @@ final class TransactionImportService {
         }
 
         let environment = environmentStore.current
-        var requestCursor = cursorStore.cursor(for: environment)
+        var requestCursor = cursorStore.cursor(for: environment, itemID: itemID)
         var summary = ImportSummary()
 
         // Re-hydrate from the persisted store before fetching candidates: another
@@ -274,7 +286,7 @@ final class TransactionImportService {
                     presentedError = category
                     if category == .itemLoginRequired {
                         needsAttention = true
-                        linkedItemStore.setNeedsAttention(true)
+                        linkedItemStore.setNeedsAttention(true, itemID: itemID)
                     }
                 } else {
                     presentedError = PlaidErrorClassifier.classify(.exchangeError(error))
@@ -288,7 +300,8 @@ final class TransactionImportService {
                 manualTransactions: &manualTransactions,
                 importedByPlaidID: &importedByPlaidID,
                 rules: rules,
-                activeGoals: activeGoals
+                activeGoals: activeGoals,
+                sourceItemID: itemID
             )
             summary.added += pageResult.summary.added
             summary.modified += pageResult.summary.modified
@@ -296,7 +309,7 @@ final class TransactionImportService {
             summary.queuedForMerge += pageResult.summary.queuedForMerge
 
             if pageResult.allHandled {
-                cursorStore.setCursor(response.next_cursor, for: environment)
+                cursorStore.setCursor(response.next_cursor, for: environment, itemID: itemID)
                 requestCursor = response.next_cursor
                 hasMore = response.has_more
             } else {
@@ -334,7 +347,8 @@ final class TransactionImportService {
         manualTransactions: inout [SpendTransaction],
         importedByPlaidID: inout [String: SpendTransaction],
         rules: [MerchantRule],
-        activeGoals: [SavingsGoal]
+        activeGoals: [SavingsGoal],
+        sourceItemID: String
     ) -> PageResult {
         var result = PageResult()
 
@@ -376,7 +390,7 @@ final class TransactionImportService {
                 continue
             }
 
-            let newTransaction = buildNewImportedTransaction(from: mapped, rules: rules, activeGoals: activeGoals)
+            let newTransaction = buildNewImportedTransaction(from: mapped, rules: rules, activeGoals: activeGoals, sourceItemID: sourceItemID)
             let failureMessage = PersistenceSaveHelper.saveOrRollback(
                 modelContext: modelContext,
                 mutate: { modelContext.insert(newTransaction) },
@@ -680,10 +694,24 @@ final class TransactionImportService {
     /// both build an identical new `SpendTransaction` from a `MappedPlaidTransaction`,
     /// so this is the one place that construction happens (per STANDARDS §3, no
     /// near-duplicate constructors).
+    ///
+    /// `sourceItemID` (reservoir-loc.1, code review addition) — `nil` from the "Keep
+    /// both" call site, `runImport()`'s known current item from the "added" call site.
+    /// Not symmetric on purpose: `PendingTransactionMerge` (the durable record a "Keep
+    /// both" decision resolves) has no item-ID field of its own to recover this from
+    /// later — adding one is a bigger change than this story scopes (see `SchemaV6`'s
+    /// doc comment; `PendingTransactionMerge` wasn't touched this story). Stamping
+    /// `plaidItemID` on the straightforward "added" path now, rather than leaving every
+    /// newly imported row `nil` until reservoir-loc.2 lands, avoids accumulating fresh
+    /// backfill debt for the one case that's already trivially correct — the "Keep both"
+    /// gap is a pre-existing shape `PendingTransactionMerge` already has (it doesn't
+    /// preserve manual-override/rule-tagging provenance either), left for reservoir-loc.2
+    /// to close alongside its per-item import loop, not expanded here.
     private func buildNewImportedTransaction(
         from mapped: MappedPlaidTransaction,
         rules: [MerchantRule],
-        activeGoals: [SavingsGoal]
+        activeGoals: [SavingsGoal],
+        sourceItemID: String? = nil
     ) -> SpendTransaction {
         let type = MerchantMatcher.match(rules: rules, merchantName: mapped.merchantName) ?? .variable
         let goal: SavingsGoal?
@@ -701,6 +729,7 @@ final class TransactionImportService {
             type: type,
             entryMethod: .imported,
             plaidTransactionID: mapped.plaidTransactionID,
+            plaidItemID: sourceItemID,
             isManualOverride: false,
             savingsGoal: goal
         )

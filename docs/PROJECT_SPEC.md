@@ -92,7 +92,7 @@ Single `TabView`, four tabs:
 | MerchantRule auto-tagging | High leverage — avoids manual triage on every import | Low-moderate — simple string-match rules | **MVP** |
 | Goal progress + pace projection | Core "why" behind the daily number | Low — derived math from existing `SavingsGoal` fields | **MVP** |
 | Push notifications | Motivational hook | Local `UNUserNotificationCenter` scheduling, no backend needed | **Phase 2** |
-| Multi-account / multi-goal support | Useful once >1 goal exists | Data model already supports it; just needs a picker UI | **Phase 2** |
+| Multi-account / multi-goal support | Useful once >1 goal exists | Foundational schema/storage work landed in reservoir-loc.1 (SchemaV6's `SpendTransaction.plaidItemID`/`SavingsGoal.associatedItemIDs`, unbounded per-item Plaid storage, `GoalAccountAssociationService`); reservoir-loc.2 wires per-item dedup/import attribution, reservoir-loc.3 adds the account-management/goal-picker UI | **Phase 2** |
 | Charts/trends | Satisfying, doesn't change daily behavior | Swift Charts, easy to add later | **Phase 2, low priority** |
 | Widgets / Lock Screen | High usefulness — glanceable number is the point | Needs App Group + shared SwiftData container | **Phase 2** |
 | Siri/Shortcuts | Low — single-user app | Nontrivial App Intents work for the value | **Cut** |

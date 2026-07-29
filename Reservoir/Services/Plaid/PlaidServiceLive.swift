@@ -133,6 +133,18 @@ final class PlaidServiceLive: PlaidService {
     private var environment: PlaidEnvironment { pinnedEnvironment ?? environmentStore.current }
     private var baseURL: URL { environment.baseURL }
 
+    /// The item `startRelink(for:)` is currently relinking, set for the duration of that
+    /// flow and consumed by `handleRelinkSuccess()` (reservoir-loc.1 fix). Before this,
+    /// `handleRelinkSuccess()` blindly used `linkedItem` — the single in-memory pointer —
+    /// to decide which item's `needsAttention` to clear. That was correct back when
+    /// `linkedItem` was the only linked item there could ever be, but this story turned it
+    /// into an arbitrary "first of N" pointer (see its doc comment above), so a relink of
+    /// one item while `linkedItem` happens to reference a *different* item would silently
+    /// clear the wrong item's flag and leave the actually-relinked item still marked as
+    /// needing attention. Same pattern as `pinnedEnvironment`: captured at the start of the
+    /// flow this instance corresponds to, consumed once, not a general-purpose cache.
+    private var relinkingItem: LinkedItem?
+
     init(
         keychain: KeychainServicing = KeychainService(),
         urlSession: URLSession = .shared,
@@ -145,25 +157,38 @@ final class PlaidServiceLive: PlaidService {
         self.environmentStore = environmentStore
         self.cursorStore = cursorStore
         self.linkedItemStore = linkedItemStore
-        self.linkedItem = linkedItemStore.load()
+        // Single-pointer `linkedItem` still reflects only "the" (most recently
+        // active) item for now — the rest of `PlaidService`'s protocol surface
+        // (and every current call site) is single-item-shaped; exposing the full
+        // `loadAll()` collection through this property is reservoir-loc.3's
+        // concern (Settings' multi-account UI), not this story's. Arbitrarily
+        // picks the first stored item when more than one exists.
+        self.linkedItem = linkedItemStore.loadAll().first
 
         let keychainForInvalidation = keychain
         let cursorStoreForInvalidation = cursorStore
         let linkedItemStoreForInvalidation = linkedItemStore
         (environmentStore as? PlaidEnvironmentStore)?.onChange = { [weak self] _ in
-            // Invalidate every sync cursor, not just the newly-selected environment's —
-            // a stale cursor left behind for the environment being switched *away from*
-            // would otherwise be reused unmodified the next time that environment is
-            // switched back to, even though the linked item/Keychain token for it was
-            // already cleared here (adq.6.3). One hook, one place — see
-            // PlaidSyncCursorStore's doc comment / the plan's "Item 2" decision.
-            for candidate in PlaidEnvironment.allCases {
-                cursorStoreForInvalidation.clearCursor(for: candidate)
+            // Invalidate every sync cursor/token/metadata for every linked item, not
+            // just the one `self?.linkedItem` currently points at (reservoir-loc.1) —
+            // a stale cursor or Keychain token left behind for an item this in-memory
+            // pointer doesn't happen to reference would otherwise survive an
+            // environment switch untouched, even though a linked item/Keychain token
+            // is only ever valid for the environment it was linked under. One hook,
+            // one place — see PlaidSyncCursorStore's doc comment / the plan's "Item 2"
+            // decision.
+            let items = linkedItemStoreForInvalidation.loadAll()
+            for item in items {
+                for candidate in PlaidEnvironment.allCases {
+                    cursorStoreForInvalidation.clearCursor(for: candidate, itemID: item.itemID)
+                }
             }
             Task { @MainActor in
                 self?.linkedItem = nil
-                linkedItemStoreForInvalidation.clear()
-                try? await keychainForInvalidation.delete(for: PlaidKeychainKey.accessToken)
+                for item in items {
+                    linkedItemStoreForInvalidation.remove(itemID: item.itemID)
+                    try? await keychainForInvalidation.delete(for: PlaidKeychainKey.accessToken(itemID: item.itemID))
+                }
             }
         }
     }
@@ -209,9 +234,23 @@ final class PlaidServiceLive: PlaidService {
     /// update-mode token) and the user taps "Try again", retrying via `startLink()` would
     /// silently create a brand-new item/token instead of repairing the existing one —
     /// exactly the bug the Relink button itself was fixed to avoid.
+    ///
+    /// Prefers `relinkingItem` over `linkedItem` (reservoir-loc.1 code review) for the same
+    /// reason `handleRelinkSuccess()` does — `linkedItem` is an arbitrary "first of N"
+    /// pointer once more than one item is linked, not necessarily the item a failed relink
+    /// attempt was actually for. Not reachable through today's still-single-item-shaped
+    /// `SettingsView` (it only calls `startRelink(for:)` with `linkedItem` itself), but a
+    /// live hazard once reservoir-loc.3 lets a user relink an item other than the pointer's
+    /// current "first" one.
+    ///
+    /// Still latent (flagged for reservoir-loc.3, not fixed here): once that story's UI can
+    /// call `startLink()` to add a new item while `linkedItem` is already non-nil, this
+    /// method has no way to tell "a fresh add failed" from "a relink failed" — both leave
+    /// `relinkingItem` in whatever state the last attempt left it. Needs an explicit
+    /// last-attempted-flow marker once that ambiguity becomes reachable.
     func retry() async {
         presentedError = nil
-        if let item = linkedItem {
+        if let item = relinkingItem ?? linkedItem {
             await startRelink(for: item)
         } else {
             await startLink()
@@ -245,13 +284,23 @@ final class PlaidServiceLive: PlaidService {
         // .plaidSide): the bank exchange itself succeeded, so "Couldn't
         // connect to your bank" would be the wrong message — the failure is
         // local Keychain storage, not Plaid.
+        //
+        // Keyed by this item's own itemID (reservoir-loc.1) — never the fixed,
+        // shared key a prior version of this method wrote to, which meant a
+        // second successful Link here would silently overwrite the first
+        // item's stored access token even though the first item was still
+        // valid on Plaid's side.
         do {
-            try await keychain.save(exchange.accessToken, for: PlaidKeychainKey.accessToken)
+            try await keychain.save(exchange.accessToken, for: PlaidKeychainKey.accessToken(itemID: exchange.itemID))
         } catch {
             presentedError = PlaidErrorClassifier.classify(.localStorageError(error))
             return
         }
 
+        // `linkedItemStore.save(_:)` upserts by itemID (reservoir-loc.1) — this never
+        // discards any other previously linked item's metadata, which is the actual bug
+        // fix: linking a second (or Nth) account here used to silently overwrite the
+        // one persisted item wholesale.
         let item = LinkedItem(itemID: exchange.itemID, institutionName: institutionName, linkedAt: Date())
         linkedItem = item
         linkedItemStore.save(item)
@@ -288,7 +337,7 @@ final class PlaidServiceLive: PlaidService {
         defer { isStartingLink = false }
 
         presentedError = nil
-        guard let accessToken = try? await keychain.read(for: PlaidKeychainKey.accessToken) else {
+        guard let accessToken = try? await keychain.read(for: PlaidKeychainKey.accessToken(itemID: item.itemID)) else {
             // No access token to relink — nothing Plaid-side has been attempted yet, so
             // this classifies the same generic way a pre-flight local failure would.
             // Not expected in normal use (a `LinkedItem` only ever exists because a token
@@ -300,6 +349,7 @@ final class PlaidServiceLive: PlaidService {
             return
         }
 
+        relinkingItem = item
         await beginLinkFlow(isRelink: true) { try await self.createRelinkToken(accessToken: accessToken) }
     }
 
@@ -312,12 +362,17 @@ final class PlaidServiceLive: PlaidService {
         isPresentingLink = false
         linkSession = nil
         pinnedEnvironment = nil
-        if var item = linkedItem {
+        // Prefers `relinkingItem` — the item `startRelink(for:)` actually captured — over
+        // the single `linkedItem` pointer, which may reference a different item now that
+        // more than one can be linked (reservoir-loc.1 code review fix; see
+        // `relinkingItem`'s doc comment for the bug this avoids). Falls back to
+        // `linkedItem` when no relink is in flight (e.g. this method called directly,
+        // bypassing `startRelink(for:)`) so single-item behavior is unchanged.
+        defer { relinkingItem = nil }
+        if var item = relinkingItem ?? linkedItem {
             item.needsAttention = false
             linkedItem = item
             linkedItemStore.save(item)
-        } else {
-            linkedItemStore.setNeedsAttention(false)
         }
         // Notify after the flag is actually cleared (both in-memory and in the store) —
         // reservoir-1nn. This is the one point that genuinely marks relink completion;
@@ -346,10 +401,14 @@ final class PlaidServiceLive: PlaidService {
     /// its own state on success — no half-unlinked state left behind for the UI to
     /// misrender.
     func unlink() async {
+        let item = linkedItem
         linkedItem = nil
         presentedError = nil
-        linkedItemStore.clear()
-        try? await keychain.delete(for: PlaidKeychainKey.accessToken)
+        guard let item else { return }
+        // Removes only this item (reservoir-loc.1) — never every stored item — so
+        // unlinking one account leaves any other linked item's metadata/token intact.
+        linkedItemStore.remove(itemID: item.itemID)
+        try? await keychain.delete(for: PlaidKeychainKey.accessToken(itemID: item.itemID))
     }
 
     // MARK: - LinkKit session creation

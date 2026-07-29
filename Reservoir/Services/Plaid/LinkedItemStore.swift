@@ -1,85 +1,92 @@
 import Foundation
 
-/// Persists the single linked Plaid item's non-secret metadata (institution name, item
-/// ID, linked date, and the `needsAttention` flag reservoir-adq.6.5 adds) — the
+/// Persists the linked Plaid items' non-secret metadata (institution name, item ID,
+/// linked date, and the `needsAttention` flag reservoir-adq.6.5 adds) — the
 /// `access_token` itself lives only in Keychain, never here. `UserDefaults`-backed under
-/// the `plaid.linkedItem` key, matching the shape `PlaidServiceLive` originally read/wrote
-/// as private static helpers before this story extracted them into their own store.
+/// the `plaid.linkedItems` key as one JSON-encoded array (reservoir-loc.1), replacing the
+/// original single-`LinkedItem`-under-`plaid.linkedItem` shape.
+///
+/// **Unbounded, keyed by item ID, upsert-on-save** (reservoir-loc.1): the original
+/// `save(_:)` unconditionally overwrote the one persisted item, so linking a second
+/// account silently destroyed the first account's local metadata even though the item
+/// still existed on Plaid's side — a live data-loss bug, not just a missing feature. This
+/// store now holds a collection; `save(_:)` upserts by `itemID` (replacing a matching
+/// existing entry in place, appending otherwise) and never touches any other item's
+/// entry. No fixed cap on how many items can be stored.
 ///
 /// A protocol so `PlaidServiceLive` and `TransactionImportService` — and their tests —
 /// don't depend on `UserDefaults` directly, same reasoning as `KeychainServicing`/
 /// `PlaidSyncCursorStoring`/`PlaidEnvironmentStoring`. Both services depend on this one
 /// store via constructor-parameter DI rather than each owning a parallel persistence
-/// mechanism: `PlaidServiceLive` still owns *writing* the item on a successful Link/relink
-/// and clearing it on an environment change, while `TransactionImportService` only ever
-/// flips `needsAttention` (via `setNeedsAttention(_:)`) when it classifies an item-level
-/// auth error — it never constructs/persists a whole `LinkedItem` itself.
+/// mechanism: `PlaidServiceLive` still owns *writing* an item on a successful Link/relink
+/// and removing items on an environment change, while `TransactionImportService` only
+/// ever flips `needsAttention` (via `setNeedsAttention(_:itemID:)`) when it classifies an
+/// item-level auth error — it never constructs/persists a whole `LinkedItem` itself.
 protocol LinkedItemStoring: Sendable {
-    /// The currently persisted linked item, or `nil` if none has been linked (or it was
-    /// cleared by an environment switch — see `PlaidEnvironmentStore.onChange`).
-    func load() -> LinkedItem?
-    /// Persists `item` in full, overwriting whatever was previously stored. Used by
-    /// `PlaidServiceLive` after a successful Link exchange (new item) and after a
-    /// successful update-mode relink (same item, `needsAttention` reset to `false`).
+    /// Every currently persisted linked item, in no particular order. Empty if none has
+    /// ever been linked (or all were removed — see `remove(itemID:)` and
+    /// `PlaidEnvironmentStore.onChange`).
+    func loadAll() -> [LinkedItem]
+    /// Upserts `item` by `itemID`: replaces the existing entry with that ID if one
+    /// exists, otherwise appends `item` as a new entry. Never overwrites or discards any
+    /// other item's stored metadata — this is the fix for the original overwrite-on-save
+    /// bug. Used by `PlaidServiceLive` after a successful Link exchange (new item) and
+    /// after a successful update-mode relink (same item, `needsAttention` reset to
+    /// `false`).
     func save(_ item: LinkedItem)
-    /// Clears the persisted item entirely — used when the Plaid environment changes
-    /// (a linked item is only ever valid for the environment it was linked under).
-    func clear()
-    /// Flips just the `needsAttention` flag on whatever item is currently stored, leaving
-    /// every other field untouched. A no-op if nothing is currently stored (can't flag a
-    /// connection that was never linked in the first place). This is the one write
-    /// `TransactionImportService` needs — it has no other reason to touch linked-item
-    /// metadata, so it's given this narrow, purpose-built method rather than a general
-    /// `save(_:)` it would have to read-modify-write through itself.
-    func setNeedsAttention(_ needsAttention: Bool)
+    /// Removes just the item matching `itemID`, leaving every other persisted item
+    /// untouched. A no-op if no item with that ID is currently stored. Used when the
+    /// Plaid environment changes (an item is only ever valid for the environment it was
+    /// linked under) and when a single item is unlinked.
+    func remove(itemID: String)
+    /// Flips just the `needsAttention` flag on the item matching `itemID`, leaving every
+    /// other field — and every other item — untouched. A no-op if no item with that ID
+    /// is currently stored (can't flag a connection that was never linked in the first
+    /// place). This is the one write `TransactionImportService` needs — it has no other
+    /// reason to touch linked-item metadata, so it's given this narrow, purpose-built
+    /// method rather than a general `save(_:)` it would have to read-modify-write through
+    /// itself.
+    func setNeedsAttention(_ needsAttention: Bool, itemID: String)
 }
 
 final class LinkedItemStore: LinkedItemStoring, @unchecked Sendable {
-    private static let defaultsKey = "plaid.linkedItem"
+    private static let defaultsKey = "plaid.linkedItems"
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
     }
 
-    func load() -> LinkedItem? {
-        guard let dict = defaults.dictionary(forKey: Self.defaultsKey),
-              let itemID = dict["itemID"] as? String,
-              let institutionName = dict["institutionName"] as? String,
-              let linkedAtInterval = dict["linkedAt"] as? TimeInterval
-        else {
-            return nil
-        }
-        // `needsAttention` defaults to `false` when reading a dict written before this
-        // story added the field — an item linked before it existed is assumed healthy,
-        // not flagged. (UITestSupport's seeding helper always sets it explicitly now,
-        // via this same store's `save(_:)`, so this fallback is only for pre-story data.)
-        let needsAttention = dict["needsAttention"] as? Bool ?? false
-        return LinkedItem(
-            itemID: itemID,
-            institutionName: institutionName,
-            linkedAt: Date(timeIntervalSince1970: linkedAtInterval),
-            needsAttention: needsAttention
-        )
+    func loadAll() -> [LinkedItem] {
+        guard let data = defaults.data(forKey: Self.defaultsKey) else { return [] }
+        return (try? JSONDecoder().decode([LinkedItem].self, from: data)) ?? []
     }
 
     func save(_ item: LinkedItem) {
-        let dict: [String: Any] = [
-            "itemID": item.itemID,
-            "institutionName": item.institutionName,
-            "linkedAt": item.linkedAt.timeIntervalSince1970,
-            "needsAttention": item.needsAttention,
-        ]
-        defaults.set(dict, forKey: Self.defaultsKey)
+        var items = loadAll()
+        if let index = items.firstIndex(where: { $0.itemID == item.itemID }) {
+            items[index] = item
+        } else {
+            items.append(item)
+        }
+        persist(items)
     }
 
-    func clear() {
-        defaults.removeObject(forKey: Self.defaultsKey)
+    func remove(itemID: String) {
+        var items = loadAll()
+        items.removeAll { $0.itemID == itemID }
+        persist(items)
     }
 
-    func setNeedsAttention(_ needsAttention: Bool) {
-        guard var item = load() else { return }
-        item.needsAttention = needsAttention
-        save(item)
+    func setNeedsAttention(_ needsAttention: Bool, itemID: String) {
+        var items = loadAll()
+        guard let index = items.firstIndex(where: { $0.itemID == itemID }) else { return }
+        items[index].needsAttention = needsAttention
+        persist(items)
+    }
+
+    private func persist(_ items: [LinkedItem]) {
+        guard let data = try? JSONEncoder().encode(items) else { return }
+        defaults.set(data, forKey: Self.defaultsKey)
     }
 }

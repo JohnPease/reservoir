@@ -269,7 +269,9 @@ enum UITestScenario: String {
         guard ProcessInfo.processInfo.environment["UITEST_SEED_PLAID_TOKEN"] == "1" else { return }
         let semaphore = DispatchSemaphore(value: 0)
         Task {
-            try? await KeychainService().save("uitest-fake-access-token", for: PlaidKeychainKey.accessToken)
+            // Keyed to the same "uitest-item" itemID `seedPlaidLinkedItemIfRequested()`
+            // seeds (reservoir-loc.1) — Keychain access tokens are now scoped per item ID.
+            try? await KeychainService().save("uitest-fake-access-token", for: PlaidKeychainKey.accessToken(itemID: "uitest-item"))
             semaphore.signal()
         }
         semaphore.wait()
@@ -297,7 +299,9 @@ enum UITestScenario: String {
         guard ProcessInfo.processInfo.environment["UITEST_RESET_PLAID_KEYCHAIN"] == "1" else { return }
         let semaphore = DispatchSemaphore(value: 0)
         Task {
-            try? await KeychainService().delete(for: PlaidKeychainKey.accessToken)
+            // Same "uitest-item" itemID as `seedPlaidTokenIfRequested()` above — this is
+            // the one seeded during XCUITests, so it's the one that needs resetting.
+            try? await KeychainService().delete(for: PlaidKeychainKey.accessToken(itemID: "uitest-item"))
             semaphore.signal()
         }
         semaphore.wait()
