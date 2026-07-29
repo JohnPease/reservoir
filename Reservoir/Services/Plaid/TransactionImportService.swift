@@ -88,17 +88,14 @@ struct ImportSummary: Equatable {
 final class TransactionImportService {
     private(set) var isImporting = false
     var presentedError: PlaidErrorCategory?
-    /// `true` whenever ANY linked item's `needsAttention` flag (reservoir-adq.6.5) is set
-    /// — the most recent import attempt against that item classified as
-    /// `.itemLoginRequired`. This is an OR across every `linkedItemStore.loadAll()` item
-    /// (reservoir-loc.2), not a single-item pointer read: with multiple linked items, one
-    /// item's login-required state must not be masked by another item that's still
-    /// healthy. Synced from `linkedItemStore` at `init` and at the start of every
-    /// `runImport()` (alongside `hydrateMergeQueue()`), so a fresh instance picks up
-    /// whatever the last session (or a completed relink) left behind. Also refreshable on
-    /// demand via `refreshNeedsAttention()` — `SettingsView` calls that right after a
-    /// successful relink or unlink so the Today-screen badge (bound to this property)
-    /// clears immediately rather than waiting for the next import.
+    /// Mirrors the linked item's `needsAttention` flag (reservoir-adq.6.5) — `true`
+    /// whenever the most recent import attempt classified as `.itemLoginRequired`. Synced
+    /// from `linkedItemStore` at `init` and at the start of every `runImport()` (alongside
+    /// `hydrateMergeQueue()`), so a fresh instance picks up whatever the last session (or a
+    /// completed relink) left behind. Also refreshable on demand via
+    /// `refreshNeedsAttention()` — `SettingsView` calls that right after a successful
+    /// relink or unlink so the Today-screen badge (bound to this property) clears
+    /// immediately rather than waiting for the next import.
     private(set) var needsAttention: Bool
     /// The raw underlying error behind `presentedError`, kept alongside the coarse
     /// category (rather than discarded at classification time) so the UI can offer an
@@ -160,10 +157,12 @@ final class TransactionImportService {
         self.cursorStore = cursorStore
         self.linkedItemStore = linkedItemStore
         self.logger = logger
-        // OR across every linked item (reservoir-loc.2) — see the property's doc comment
-        // for why a single-item `.first?.needsAttention` read would silently mask a
-        // non-first item's login-required state once more than one item is linked.
-        self.needsAttention = linkedItemStore.loadAll().contains { $0.needsAttention }
+        // Single-pointer "current item" read (reservoir-loc.1): this service still only
+        // ever imports against one item's worth of state per `runImport()` call —
+        // iterating `loadAll()` to sync every linked item is reservoir-loc.2's scope, not
+        // this story's. Picks the first stored item when more than one exists, same
+        // arbitrary-but-consistent choice `PlaidServiceLive.init` makes.
+        self.needsAttention = linkedItemStore.loadAll().first?.needsAttention ?? false
         hydrateMergeQueue()
     }
 
@@ -171,7 +170,7 @@ final class TransactionImportService {
     /// doc comment for why this exists alongside the automatic sync at the start of every
     /// `runImport()`.
     func refreshNeedsAttention() {
-        needsAttention = linkedItemStore.loadAll().contains { $0.needsAttention }
+        needsAttention = linkedItemStore.loadAll().first?.needsAttention ?? false
     }
 
     // MARK: - Import
@@ -222,26 +221,6 @@ final class TransactionImportService {
         }
     }
 
-    /// Loops over every linked item (reservoir-loc.2), syncing each one's own
-    /// `/transactions/sync` cursor/access-token independently — the single-pointer
-    /// "current item" shape reservoir-loc.1 left in place (see this method's prior doc
-    /// comment) is what this story replaces. `presentedError`/`presentedErrorDetail`/
-    /// `lastImportSummary` stay scalar, "most recent/aggregate wins" across the whole
-    /// run (JP-resolved scope call, not per-item) — only `needsAttention` is
-    /// meaningfully per-item, and that's already handled by `refreshNeedsAttention()`
-    /// computing straight from `linkedItemStore.loadAll()` rather than a second parallel
-    /// dict.
-    ///
-    /// `manualTransactions` (the shared shrinking dedup-candidate pool),
-    /// `importedByPlaidID`, `rules`, and `attributableGoals` are all fetched once, before
-    /// the per-item loop starts, and threaded through every item's page processing by
-    /// reference/value — the same one-fetch-per-run shape `runImport()` already used for
-    /// a single item, just now shared across all of them. Sharing the candidate pool
-    /// across items (rather than re-fetching or re-scoping it per item) is what closes
-    /// the cross-account false-merge gap: two items' incoming transactions racing for the
-    /// same untagged manual transaction resolve first-match-wins, with the match removed
-    /// from the pool immediately — consistent with the existing single-item behavior, no
-    /// change needed to `TransactionDedupMatcher.findMatch` itself.
     func runImport() async {
         guard !isImporting else { return }
         isImporting = true
@@ -250,20 +229,28 @@ final class TransactionImportService {
         presentedError = nil
         presentedErrorDetail = nil
 
-        let items = linkedItemStore.loadAll()
-        guard !items.isEmpty else {
-            // No linked item yet — nothing to import, not an error surfaced to the user
-            // (background operation). Still resync needsAttention before returning (code
-            // review finding, reservoir-adq.6.5): an environment switch clears both the
-            // Keychain token and the persisted linked items via
-            // `PlaidEnvironmentStore.onChange`, but without this the in-memory flag from
-            // a stale linked item would stay stuck `true` forever, since every earlier
-            // return path in this method skipped the sync below.
+        // Single-item usage pattern (reservoir-loc.1): reads whichever item
+        // `linkedItemStore` currently reports first. Iterating every linked item to sync
+        // each one's own cursor/token is reservoir-loc.2's scope — this only needs to
+        // keep working correctly against the one-item flow using the new
+        // per-item-scoped storage APIs.
+        guard let itemID = linkedItemStore.loadAll().first?.itemID,
+              let accessToken = try? await keychain.read(for: PlaidKeychainKey.accessToken(itemID: itemID))
+        else {
+            // No linked item yet, or the keychain read failed — nothing to import,
+            // not an error surfaced to the user (background operation). Still resync
+            // needsAttention before returning (code review finding, reservoir-adq.6.5):
+            // an environment switch clears both the Keychain token and the persisted
+            // linked item via `PlaidEnvironmentStore.onChange`, but without this the
+            // in-memory flag from a stale linked item would stay stuck `true` forever,
+            // since every earlier return path in this method skipped the sync below.
             refreshNeedsAttention()
             return
         }
 
         let environment = environmentStore.current
+        var requestCursor = cursorStore.cursor(for: environment, itemID: itemID)
+        var summary = ImportSummary()
 
         // Re-hydrate from the persisted store before fetching candidates: another
         // `TransactionImportService` instance (a prior app session, most likely) may
@@ -279,79 +266,55 @@ final class TransactionImportService {
 
         var importedByPlaidID = fetchImportedIndex()
         let rules = fetchRules()
-        let attributableGoals = fetchAttributableGoals()
+        let activeGoals = fetchActiveGoals()
 
-        var summary = ImportSummary()
-        var sawAnyAccessToken = false
-
-        for item in items {
-            let itemID = item.itemID
-            guard let accessToken = try? await keychain.read(for: PlaidKeychainKey.accessToken(itemID: itemID)) else {
-                // A keychain read failure for this one item shouldn't abort every other
-                // linked item's sync — skip it and move on, same "log and continue"
-                // isolation `processPage`'s per-transaction failures already use.
-                continue
-            }
-            sawAnyAccessToken = true
-
-            var requestCursor = cursorStore.cursor(for: environment, itemID: itemID)
-            var hasMore = true
-            while hasMore {
-                let response: PlaidSyncResponseBody
-                do {
-                    response = try await syncPage(accessToken: accessToken, cursor: requestCursor, environment: environment)
-                } catch {
-                    // A decoded Plaid item-level error body (reservoir-adq.6.5) is
-                    // classified distinctly from every other failure here — a genuine
-                    // ITEM_LOGIN_REQUIRED sets the persistent needsAttention flag; a
-                    // plain network/transport error or an unrecognized error shape
-                    // (still `.exchangeError`, same as before this story) must NOT, so a
-                    // flaky connection during a foreground refresh doesn't falsely trip
-                    // the "needs attention" UI (see this story's UX section / Out of
-                    // scope). This item's failure stops *this item's* pagination only —
-                    // other linked items still get their own sync attempt.
-                    if let apiError = error as? PlaidAPIError {
-                        let category = PlaidErrorClassifier.classify(.itemError(errorType: apiError.errorType, errorCode: apiError.errorCode))
-                        presentedError = category
-                        if category == .itemLoginRequired {
-                            needsAttention = true
-                            linkedItemStore.setNeedsAttention(true, itemID: itemID)
-                        }
-                    } else {
-                        presentedError = PlaidErrorClassifier.classify(.exchangeError(error))
+        var hasMore = true
+        while hasMore {
+            let response: PlaidSyncResponseBody
+            do {
+                response = try await syncPage(accessToken: accessToken, cursor: requestCursor, environment: environment)
+            } catch {
+                // A decoded Plaid item-level error body (reservoir-adq.6.5) is classified
+                // distinctly from every other failure here — a genuine ITEM_LOGIN_REQUIRED
+                // sets the persistent needsAttention flag; a plain network/transport error
+                // or an unrecognized error shape (still `.exchangeError`, same as before
+                // this story) must NOT, so a flaky connection during a foreground refresh
+                // doesn't falsely trip the "needs attention" UI (see this story's UX
+                // section / Out of scope).
+                if let apiError = error as? PlaidAPIError {
+                    let category = PlaidErrorClassifier.classify(.itemError(errorType: apiError.errorType, errorCode: apiError.errorCode))
+                    presentedError = category
+                    if category == .itemLoginRequired {
+                        needsAttention = true
+                        linkedItemStore.setNeedsAttention(true, itemID: itemID)
                     }
-                    presentedErrorDetail = String(describing: error)
-                    break
-                }
-
-                let pageResult = processPage(
-                    response,
-                    manualTransactions: &manualTransactions,
-                    importedByPlaidID: &importedByPlaidID,
-                    rules: rules,
-                    attributableGoals: attributableGoals,
-                    sourceItemID: itemID
-                )
-                summary.added += pageResult.summary.added
-                summary.modified += pageResult.summary.modified
-                summary.removed += pageResult.summary.removed
-                summary.queuedForMerge += pageResult.summary.queuedForMerge
-
-                if pageResult.allHandled {
-                    cursorStore.setCursor(response.next_cursor, for: environment, itemID: itemID)
-                    requestCursor = response.next_cursor
-                    hasMore = response.has_more
                 } else {
-                    hasMore = false
+                    presentedError = PlaidErrorClassifier.classify(.exchangeError(error))
                 }
+                presentedErrorDetail = String(describing: error)
+                break
             }
-        }
 
-        guard sawAnyAccessToken else {
-            // Every linked item's keychain read failed — nothing was actually imported
-            // this run. `needsAttention` was already resynced by `refreshNeedsAttention()`
-            // above; no summary to publish.
-            return
+            let pageResult = processPage(
+                response,
+                manualTransactions: &manualTransactions,
+                importedByPlaidID: &importedByPlaidID,
+                rules: rules,
+                activeGoals: activeGoals,
+                sourceItemID: itemID
+            )
+            summary.added += pageResult.summary.added
+            summary.modified += pageResult.summary.modified
+            summary.removed += pageResult.summary.removed
+            summary.queuedForMerge += pageResult.summary.queuedForMerge
+
+            if pageResult.allHandled {
+                cursorStore.setCursor(response.next_cursor, for: environment, itemID: itemID)
+                requestCursor = response.next_cursor
+                hasMore = response.has_more
+            } else {
+                hasMore = false
+            }
         }
 
         lastImportSummary = summary
@@ -384,7 +347,7 @@ final class TransactionImportService {
         manualTransactions: inout [SpendTransaction],
         importedByPlaidID: inout [String: SpendTransaction],
         rules: [MerchantRule],
-        attributableGoals: [SavingsGoal],
+        activeGoals: [SavingsGoal],
         sourceItemID: String
     ) -> PageResult {
         var result = PageResult()
@@ -405,8 +368,7 @@ final class TransactionImportService {
                     incomingAmount: mapped.amount,
                     incomingDate: mapped.date,
                     incomingMerchantName: mapped.merchantName,
-                    manualTransaction: match,
-                    plaidItemID: sourceItemID
+                    manualTransaction: match
                 )
                 let failureMessage = PersistenceSaveHelper.saveOrRollback(
                     modelContext: modelContext,
@@ -428,7 +390,7 @@ final class TransactionImportService {
                 continue
             }
 
-            let newTransaction = buildNewImportedTransaction(from: mapped, rules: rules, attributableGoals: attributableGoals, sourceItemID: sourceItemID)
+            let newTransaction = buildNewImportedTransaction(from: mapped, rules: rules, activeGoals: activeGoals, sourceItemID: sourceItemID)
             let failureMessage = PersistenceSaveHelper.saveOrRollback(
                 modelContext: modelContext,
                 mutate: { modelContext.insert(newTransaction) },
@@ -706,19 +668,9 @@ final class TransactionImportService {
 
     private func applyKeepBothDecision(_ decision: PendingMergeDecision) {
         let rules = fetchRules()
-        let attributableGoals = fetchAttributableGoals()
-        // The persisted `PendingTransactionMerge` row (reservoir-loc.2, `SchemaV7`) is
-        // the only durable record of which linked item the incoming transaction came
-        // from — `PendingMergeDecision` (the in-memory mirror) carries no item ID of its
-        // own, so this is read back off the record rather than threaded through
-        // `resolveMergeDecision`'s call site.
+        let activeGoals = fetchActiveGoals()
+        let newTransaction = buildNewImportedTransaction(from: decision.incoming, rules: rules, activeGoals: activeGoals)
         let record = fetchPendingMerge(plaidTransactionID: decision.id)
-        let newTransaction = buildNewImportedTransaction(
-            from: decision.incoming,
-            rules: rules,
-            attributableGoals: attributableGoals,
-            sourceItemID: record?.plaidItemID
-        )
         let failureMessage = PersistenceSaveHelper.saveOrRollback(
             modelContext: modelContext,
             mutate: {
@@ -743,27 +695,32 @@ final class TransactionImportService {
     /// so this is the one place that construction happens (per STANDARDS §3, no
     /// near-duplicate constructors).
     ///
-    /// `sourceItemID` (reservoir-loc.1) is stamped directly onto `SpendTransaction
-    /// .plaidItemID` and (reservoir-loc.2) also drives goal attribution: rather than
-    /// `TransactionEntryValidator.goalAttributionRequirement(activeGoals:)`'s
-    /// goal-count-driven auto-select/no-op/explicit-choice policy (still the manual-entry
-    /// picker's behavior, unchanged), an imported transaction attributes to whichever
-    /// goal `GoalAccountAssociationService` reports as associated with `sourceItemID` —
-    /// regardless of how many other goals exist. A transaction from an item with no
-    /// associated goal, or with no `sourceItemID` at all (the "Keep both" path, when the
-    /// originating `PendingTransactionMerge` predates `SchemaV7`), stays unattributed.
-    /// `attributableGoals` is `activeGoals + completedUndismissedGoals` — a goal that just
-    /// completed but hasn't been dismissed yet must still be a valid attribution target
-    /// for a transaction landing today, same as manual entry already treats it via
-    /// `TodayScreenCalculator.spentToday`.
+    /// `sourceItemID` (reservoir-loc.1, code review addition) — `nil` from the "Keep
+    /// both" call site, `runImport()`'s known current item from the "added" call site.
+    /// Not symmetric on purpose: `PendingTransactionMerge` (the durable record a "Keep
+    /// both" decision resolves) has no item-ID field of its own to recover this from
+    /// later — adding one is a bigger change than this story scopes (see `SchemaV6`'s
+    /// doc comment; `PendingTransactionMerge` wasn't touched this story). Stamping
+    /// `plaidItemID` on the straightforward "added" path now, rather than leaving every
+    /// newly imported row `nil` until reservoir-loc.2 lands, avoids accumulating fresh
+    /// backfill debt for the one case that's already trivially correct — the "Keep both"
+    /// gap is a pre-existing shape `PendingTransactionMerge` already has (it doesn't
+    /// preserve manual-override/rule-tagging provenance either), left for reservoir-loc.2
+    /// to close alongside its per-item import loop, not expanded here.
     private func buildNewImportedTransaction(
         from mapped: MappedPlaidTransaction,
         rules: [MerchantRule],
-        attributableGoals: [SavingsGoal],
+        activeGoals: [SavingsGoal],
         sourceItemID: String? = nil
     ) -> SpendTransaction {
         let type = MerchantMatcher.match(rules: rules, merchantName: mapped.merchantName) ?? .variable
-        let goal = sourceItemID.flatMap { GoalAccountAssociationService.associatedGoal(for: $0, in: attributableGoals) }
+        let goal: SavingsGoal?
+        switch TransactionEntryValidator.goalAttributionRequirement(activeGoals: activeGoals) {
+        case .autoSelect(let onlyGoal):
+            goal = onlyGoal
+        case .noActiveGoals, .explicitChoiceRequired:
+            goal = nil
+        }
 
         return SpendTransaction(
             amount: mapped.amount,
@@ -842,17 +799,9 @@ final class TransactionImportService {
         (try? modelContext.fetch(FetchDescriptor<MerchantRule>())) ?? []
     }
 
-    /// Active goals plus completed-but-undismissed ones (reservoir-loc.2) — a goal whose
-    /// `targetDate` has just passed but whose completion banner the user hasn't dismissed
-    /// yet is still a valid attribution target for a transaction landing today, same
-    /// lifecycle window `TodayScreenCalculator.spentToday` already treats as "current".
-    /// The single fetch shared by both `runImport()`'s per-item loop and
-    /// `applyKeepBothDecision` — one source of "which goals can an import attribute to
-    /// right now", not two independently-derived lists.
-    private func fetchAttributableGoals() -> [SavingsGoal] {
+    private func fetchActiveGoals() -> [SavingsGoal] {
         let goals = (try? modelContext.fetch(FetchDescriptor<SavingsGoal>())) ?? []
         return TodayScreenCalculator.activeGoals(goals, referenceDate: .now)
-            + TodayScreenCalculator.completedUndismissedGoals(goals, referenceDate: .now)
     }
 
     // MARK: - Plaid REST call (direct from device, environment-aware)

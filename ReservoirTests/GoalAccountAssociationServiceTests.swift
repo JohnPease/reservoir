@@ -13,7 +13,7 @@ final class GoalAccountAssociationServiceTests: XCTestCase {
     private let logger = Logger(subsystem: "com.reservoir.tests", category: "GoalAccountAssociationServiceTests")
 
     override func setUpWithError() throws {
-        let schema = Schema(versionedSchema: SchemaV7.self)
+        let schema = Schema(versionedSchema: SchemaV6.self)
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         container = try ModelContainer(for: schema, migrationPlan: ReservoirMigrationPlan.self, configurations: [configuration])
         context = ModelContext(container)
@@ -162,7 +162,7 @@ final class GoalAccountAssociationServiceTests: XCTestCase {
     /// (never previously saved), same as that precedent's own read-only tests: a
     /// `ModelContext.fetch` sees its own pending inserts even before a save succeeds.
     private func makeReadOnlyContext() throws -> ModelContext {
-        let schema = Schema(versionedSchema: SchemaV7.self)
+        let schema = Schema(versionedSchema: SchemaV6.self)
         let storeURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("GoalAccountAssociationServiceTests-\(UUID().uuidString)")
             .appendingPathExtension("store")

@@ -133,13 +133,6 @@ final class TransactionEntryValidatorTests: XCTestCase {
     }
 
     // MARK: - goalAttributionRequirement
-    //
-    // reservoir-loc.2 regression check: `TransactionImportService`'s import-time
-    // attribution moved to an account-aware policy (`GoalAccountAssociationService
-    // .associatedGoal(for:in:)`, keyed off the importing item), but manual transaction
-    // entry keeps this goal-count-driven policy entirely unchanged -- the three tests
-    // below still exercise exactly what they did before this story, with no code changes
-    // to `TransactionEntryValidator` itself required to keep them passing.
 
     func testSoleActiveGoalAutoSelects() {
         let goal = makeGoal()

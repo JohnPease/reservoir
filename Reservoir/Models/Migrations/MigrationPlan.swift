@@ -2,11 +2,11 @@ import SwiftData
 
 enum ReservoirMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self, SchemaV5.self, SchemaV6.self, SchemaV7.self]
+        [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self, SchemaV5.self, SchemaV6.self]
     }
 
     static var stages: [MigrationStage] {
-        [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5, migrateV5toV6, migrateV6toV7]
+        [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5, migrateV5toV6]
     }
 
     /// Lightweight (inferred) migration: `SavingsGoal.dismissedAt` and
@@ -87,13 +87,4 @@ enum ReservoirMigrationPlan: SchemaMigrationPlan {
             }
         )
     }()
-
-    /// Lightweight (inferred) migration: `PendingTransactionMerge.plaidItemID` is a new,
-    /// defaulted-nil (`String?`) field with no renames or type changes to any existing
-    /// model — see `SchemaV7`'s doc comment for why no backfill (unlike `SchemaV6`'s
-    /// custom `migrateV5toV6` stage) is needed here.
-    static let migrateV6toV7 = MigrationStage.lightweight(
-        fromVersion: SchemaV6.self,
-        toVersion: SchemaV7.self
-    )
 }

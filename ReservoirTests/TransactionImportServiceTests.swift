@@ -13,7 +13,7 @@ final class TransactionImportServiceTests: XCTestCase {
     private var context: ModelContext!
 
     override func setUpWithError() throws {
-        let schema = Schema(versionedSchema: SchemaV7.self)
+        let schema = Schema(versionedSchema: SchemaV6.self)
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         container = try ModelContainer(for: schema, migrationPlan: ReservoirMigrationPlan.self, configurations: [configuration])
         context = ModelContext(container)
@@ -488,17 +488,9 @@ final class TransactionImportServiceTests: XCTestCase {
         XCTAssertEqual(fetched.first?.isManualOverride, false)
     }
 
-    // MARK: - Goal attribution (reservoir-loc.2: account-aware, not goal-count-driven)
-    //
-    // Import-time attribution no longer follows
-    // `TransactionEntryValidator.goalAttributionRequirement(activeGoals:)`'s
-    // auto-select/no-active-goals/explicit-choice policy (that stays exactly as-is for
-    // manual entry — see `TransactionEntryValidatorTests`). Instead, an imported
-    // transaction attributes to whichever goal `GoalAccountAssociationService` reports as
-    // associated with the transaction's `sourceItemID`, full stop — irrelevant how many
-    // other goals exist.
+    // MARK: - Goal attribution
 
-    func testRunImport_zeroGoalsAtAll_savesUnattributed() async throws {
+    func testRunImport_zeroActiveGoals_savesUnattributed() async throws {
         ScriptedSyncURLProtocol.responses = [
             syncResponse(added: [transactionJSON(id: "plaid-1", amount: 12.50)], nextCursor: "cursor-1")
         ]
@@ -509,16 +501,9 @@ final class TransactionImportServiceTests: XCTestCase {
         XCTAssertNil(fetched.first?.savingsGoal)
     }
 
-    /// A goal associated with the importing item attributes the transaction — even with a
-    /// second, unrelated goal also in play, unlike the old goal-count-driven policy where
-    /// a second active goal would have forced "explicit choice required" (unattributed at
-    /// import time).
-    func testRunImport_goalAssociatedWithSourceItem_attributes_regardlessOfOtherGoalCount() async throws {
-        let associatedGoal = makeGoal()
-        associatedGoal.associatedItemIDs = [Self.defaultItemID]
-        let unrelatedGoal = makeGoal()
-        context.insert(associatedGoal)
-        context.insert(unrelatedGoal)
+    func testRunImport_oneActiveGoal_autoAttributes() async throws {
+        let goal = makeGoal()
+        context.insert(goal)
         try context.save()
 
         ScriptedSyncURLProtocol.responses = [
@@ -528,20 +513,12 @@ final class TransactionImportServiceTests: XCTestCase {
         await sut.runImport()
 
         let fetched = try context.fetch(FetchDescriptor<SpendTransaction>())
-        XCTAssertEqual(
-            fetched.first?.savingsGoal?.persistentModelID, associatedGoal.persistentModelID,
-            "must attribute to the goal associated with the importing item, not the unrelated goal, and not fall back to 'unattributed' just because a second goal exists."
-        )
+        XCTAssertEqual(fetched.first?.savingsGoal?.persistentModelID, goal.persistentModelID)
     }
 
-    /// Exactly one goal exists (the old policy's auto-select case), but it isn't
-    /// associated with the importing item — must stay unattributed. Proves attribution is
-    /// no longer goal-count-driven at all: the old policy would have auto-selected this
-    /// goal purely because it's the only one.
-    func testRunImport_noGoalAssociatedWithSourceItem_savesUnattributed_evenWithExactlyOneGoal() async throws {
-        let unrelatedGoal = makeGoal()
-        unrelatedGoal.associatedItemIDs = ["some-other-item"]
-        context.insert(unrelatedGoal)
+    func testRunImport_twoActiveGoals_savesUnattributed() async throws {
+        context.insert(makeGoal())
+        context.insert(makeGoal())
         try context.save()
 
         ScriptedSyncURLProtocol.responses = [
@@ -551,22 +528,12 @@ final class TransactionImportServiceTests: XCTestCase {
         await sut.runImport()
 
         let fetched = try context.fetch(FetchDescriptor<SpendTransaction>())
-        XCTAssertNil(
-            fetched.first?.savingsGoal,
-            "the sole goal isn't associated with the importing item, so it must not be auto-selected."
-        )
+        XCTAssertNil(fetched.first?.savingsGoal)
     }
 
-    // MARK: - resolveMergeDecision(.keepBoth) — account-aware attribution + plaidItemID stamping
-
-    /// "Keep both" must apply the same account-aware attribution policy as the main
-    /// `added` path, and must stamp `plaidItemID` on the new row (reservoir-loc.2's
-    /// `SchemaV7` fix — previously `applyKeepBothDecision` never passed `sourceItemID`
-    /// through at all, so every keep-both result's `plaidItemID` was `nil`).
-    func testResolveMergeDecision_keepBoth_attributesToAssociatedGoal_andStampsPlaidItemID() async throws {
-        let associatedGoal = makeGoal()
-        associatedGoal.associatedItemIDs = [Self.defaultItemID]
-        context.insert(associatedGoal)
+    func testResolveMergeDecision_keepBoth_appliesSameGoalAttributionPolicy() async throws {
+        let goal = makeGoal()
+        context.insert(goal)
         let manual = SpendTransaction(amount: 12.50, date: matchingFixtureDate, merchantName: "Coffee Shop", type: .variable, entryMethod: .manual)
         context.insert(manual)
         try context.save()
@@ -580,120 +547,8 @@ final class TransactionImportServiceTests: XCTestCase {
         sut.resolveMergeDecision(.keepBoth)
 
         let fetched = try context.fetch(FetchDescriptor<SpendTransaction>())
-        let newImported = try XCTUnwrap(fetched.first { $0.plaidTransactionID == "plaid-1" })
-        XCTAssertEqual(newImported.savingsGoal?.persistentModelID, associatedGoal.persistentModelID)
-        XCTAssertEqual(newImported.plaidItemID, Self.defaultItemID, "the keep-both result must be stamped with the item ID recovered from the persisted PendingTransactionMerge row.")
-    }
-
-    /// Companion to the above: a goal exists but isn't associated with the importing
-    /// item — "Keep both" must leave the new row unattributed, same as the main `added`
-    /// path would, not fall back to any goal-count-based auto-select.
-    func testResolveMergeDecision_keepBoth_noAssociatedGoal_savesUnattributed() async throws {
-        let unrelatedGoal = makeGoal()
-        unrelatedGoal.associatedItemIDs = ["some-other-item"]
-        context.insert(unrelatedGoal)
-        let manual = SpendTransaction(amount: 12.50, date: matchingFixtureDate, merchantName: "Coffee Shop", type: .variable, entryMethod: .manual)
-        context.insert(manual)
-        try context.save()
-
-        ScriptedSyncURLProtocol.responses = [
-            syncResponse(added: [transactionJSON(id: "plaid-1", amount: 12.50)], nextCursor: "cursor-1")
-        ]
-        let sut = makeSUT()
-        await sut.runImport()
-        XCTAssertEqual(sut.mergeQueue.count, 1, "sanity check: the item must actually have been queued for merge.")
-        sut.resolveMergeDecision(.keepBoth)
-
-        let fetched = try context.fetch(FetchDescriptor<SpendTransaction>())
-        let newImported = try XCTUnwrap(fetched.first { $0.plaidTransactionID == "plaid-1" })
-        XCTAssertNil(newImported.savingsGoal)
-        XCTAssertEqual(newImported.plaidItemID, Self.defaultItemID, "plaidItemID stamping is independent of goal attribution -- must still be recorded even with no associated goal.")
-    }
-
-    // MARK: - Multi-item import (reservoir-loc.2)
-
-    /// Two linked items whose incoming transactions this run both dedup-match the *same*
-    /// pre-existing manual transaction (identical amount/calendar-day/merchant name) —
-    /// the cross-account false-merge scenario this story's dedup-fix section is about.
-    /// The shared, shrinking candidate pool (not a per-item-scoped pool, and no signature
-    /// change to `TransactionDedupMatcher.findMatch`) means the first item processed
-    /// claims the match and removes it from the pool immediately; the second item's
-    /// otherwise-identical incoming transaction finds no candidate left and is saved as
-    /// its own new imported row, correctly tagged with *its own* `plaidItemID` — never
-    /// merged into the first item's manual entry.
-    func testRunImport_twoItems_sharedManualTransaction_firstItemClaimsMatch_secondSavesIndependently() async throws {
-        let manual = SpendTransaction(amount: 12.50, date: matchingFixtureDate, merchantName: "Coffee Shop", type: .variable, entryMethod: .manual)
-        context.insert(manual)
-        try context.save()
-
-        let linkedItemStore = StubLinkedItemStore(
-            initial: LinkedItem(itemID: Self.defaultItemID, institutionName: "Bank One", linkedAt: .now)
-        )
-        linkedItemStore.save(LinkedItem(itemID: "item-2", institutionName: "Bank Two", linkedAt: .now))
-
-        // Call order mirrors `linkedItemStore.loadAll()`'s order (insertion order for
-        // this stub) -- item-1 processed first, item-2 second.
-        ScriptedSyncURLProtocol.responses = [
-            syncResponse(added: [transactionJSON(id: "plaid-item1-txn", amount: 12.50)], nextCursor: "cursor-item1"),
-            syncResponse(added: [transactionJSON(id: "plaid-item2-txn", amount: 12.50)], nextCursor: "cursor-item2"),
-        ]
-        let sut = makeSUT(linkedItemStore: linkedItemStore)
-
-        await sut.runImport()
-
-        XCTAssertEqual(sut.mergeQueue.count, 1, "only the first item's incoming transaction should claim the shared manual candidate.")
-        XCTAssertEqual(sut.mergeQueue.first?.incoming.plaidTransactionID, "plaid-item1-txn")
-
-        let fetched = try context.fetch(FetchDescriptor<SpendTransaction>())
-        // manual (still pending merge, untouched) + item-2's independently saved import.
-        XCTAssertEqual(fetched.count, 2)
-        let secondItemImport = try XCTUnwrap(fetched.first { $0.plaidTransactionID == "plaid-item2-txn" })
-        XCTAssertEqual(secondItemImport.entryMethod, .imported)
-        XCTAssertEqual(
-            secondItemImport.plaidItemID, "item-2",
-            "the second item's transaction must be tagged with its own item ID -- it must never be silently absorbed into item-1's manual entry."
-        )
-    }
-
-    /// Same shared-manual-candidate setup as above, but with a third linked item added —
-    /// proves the pool exhaustion holds across more than two competitors, not just a
-    /// two-item coincidence: only the very first item to process a matching incoming
-    /// transaction ever gets a merge decision queued against that manual row; every other
-    /// item with an identical-signature incoming transaction saves its own independent
-    /// row instead of re-matching (or double-queueing against) the same manual candidate.
-    func testRunImport_threeItems_sharedManualCandidatePool_onlyFirstMatchQueued_othersSaveIndependently() async throws {
-        let manual = SpendTransaction(amount: 12.50, date: matchingFixtureDate, merchantName: "Coffee Shop", type: .variable, entryMethod: .manual)
-        context.insert(manual)
-        try context.save()
-
-        let linkedItemStore = StubLinkedItemStore(
-            initial: LinkedItem(itemID: Self.defaultItemID, institutionName: "Bank One", linkedAt: .now)
-        )
-        linkedItemStore.save(LinkedItem(itemID: "item-2", institutionName: "Bank Two", linkedAt: .now))
-        linkedItemStore.save(LinkedItem(itemID: "item-3", institutionName: "Bank Three", linkedAt: .now))
-
-        ScriptedSyncURLProtocol.responses = [
-            syncResponse(added: [transactionJSON(id: "plaid-item1-txn", amount: 12.50)], nextCursor: "cursor-item1"),
-            syncResponse(added: [transactionJSON(id: "plaid-item2-txn", amount: 12.50)], nextCursor: "cursor-item2"),
-            syncResponse(added: [transactionJSON(id: "plaid-item3-txn", amount: 12.50)], nextCursor: "cursor-item3"),
-        ]
-        let sut = makeSUT(linkedItemStore: linkedItemStore)
-
-        await sut.runImport()
-
-        XCTAssertEqual(sut.mergeQueue.count, 1, "the shared manual candidate must be matched at most once across every item processed this run, not once per item.")
-        XCTAssertEqual(sut.mergeQueue.first?.incoming.plaidTransactionID, "plaid-item1-txn")
-        XCTAssertEqual(
-            Set(sut.mergeQueue.map(\.manualTransaction.persistentModelID)).count, sut.mergeQueue.count,
-            "no manual transaction may appear behind more than one queued decision."
-        )
-
-        let fetched = try context.fetch(FetchDescriptor<SpendTransaction>())
-        XCTAssertEqual(fetched.count, 3, "manual (pending) + item-2's independent save + item-3's independent save.")
-        let item2Import = try XCTUnwrap(fetched.first { $0.plaidTransactionID == "plaid-item2-txn" })
-        let item3Import = try XCTUnwrap(fetched.first { $0.plaidTransactionID == "plaid-item3-txn" })
-        XCTAssertEqual(item2Import.plaidItemID, "item-2")
-        XCTAssertEqual(item3Import.plaidItemID, "item-3")
+        let newImported = fetched.first { $0.plaidTransactionID == "plaid-1" }
+        XCTAssertEqual(newImported?.savingsGoal?.persistentModelID, goal.persistentModelID)
     }
 
     // MARK: - modified
@@ -900,7 +755,7 @@ final class TransactionImportServiceTests: XCTestCase {
     /// constraint) was tried first but turned out not to throw: SwiftData resolves that
     /// collision as an upsert rather than a `save()` failure.
     private func makeReadOnlyContext() throws -> (context: ModelContext, storeURL: URL) {
-        let schema = Schema(versionedSchema: SchemaV7.self)
+        let schema = Schema(versionedSchema: SchemaV6.self)
         let storeURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("TransactionImportServiceTests-\(UUID().uuidString)")
             .appendingPathExtension("store")
@@ -963,7 +818,7 @@ final class TransactionImportServiceTests: XCTestCase {
         // directly (SwiftData's in-memory change tracking around a read-only store has
         // sharp edges independent of what this test cares about), but what actually
         // landed on disk is the real question this test needs answered.
-        let verificationSchema = Schema(versionedSchema: SchemaV7.self)
+        let verificationSchema = Schema(versionedSchema: SchemaV6.self)
         let verificationContainer = try ModelContainer(
             for: verificationSchema,
             migrationPlan: ReservoirMigrationPlan.self,
@@ -1237,26 +1092,6 @@ final class TransactionImportServiceTests: XCTestCase {
         sut.refreshNeedsAttention()
 
         XCTAssertFalse(sut.needsAttention)
-    }
-
-    /// Regression coverage for reservoir-loc.2: with more than one linked item,
-    /// `needsAttention` must be an OR across every item, not a `.first`-only read — a
-    /// non-first item's login-required state must not be masked by an earlier, still-healthy
-    /// item. Guards against reverting to the pre-loc.2 single-pointer read that would have
-    /// silently reported `false` here despite item-2 genuinely needing attention.
-    func testNeedsAttention_multipleItems_isOrAcrossAllItems_notFirstItemOnly() {
-        let linkedItemStore = StubLinkedItemStore(
-            initial: LinkedItem(itemID: "item-1", institutionName: "Bank One", linkedAt: .now, needsAttention: false)
-        )
-        linkedItemStore.save(LinkedItem(itemID: "item-2", institutionName: "Bank Two", linkedAt: .now, needsAttention: true))
-        let sut = makeSUT(linkedItemStore: linkedItemStore)
-
-        XCTAssertTrue(sut.needsAttention, "item-2 (not the first item) needing attention must not be masked by item-1's healthy state.")
-
-        linkedItemStore.setNeedsAttention(false, itemID: "item-2")
-        sut.refreshNeedsAttention()
-
-        XCTAssertFalse(sut.needsAttention, "once every item is healthy again, the OR must clear too.")
     }
 
     /// Code-review finding (reservoir-adq.6.5): `runImport()`'s no-access-token guard used
