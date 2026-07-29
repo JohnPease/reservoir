@@ -540,7 +540,7 @@ final class PlaidServiceLiveTests: XCTestCase {
     /// SpendTransaction-deleting mistake.
     @MainActor
     func test_unlink_doesNotDeleteOrModifySpendTransactions() async throws {
-        let schema = Schema(versionedSchema: SchemaV6.self)
+        let schema = Schema(versionedSchema: SchemaV7.self)
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, migrationPlan: ReservoirMigrationPlan.self, configurations: [configuration])
         let context = ModelContext(container)
