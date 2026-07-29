@@ -341,4 +341,61 @@ final class MigrationPlanTests: XCTestCase {
         XCTAssertEqual(fetchedTransactions.count, 1)
         XCTAssertNil(fetchedTransactions.first?.plaidItemID, "with no pre-migration linked item, there is nothing to backfill to.")
     }
+
+    /// Regression coverage for reservoir-loc.2: a store created under `SchemaV6` (as any
+    /// pre-loc.2 build would have on disk) must open cleanly under `SchemaV7` via
+    /// `ReservoirMigrationPlan`, with existing data intact and the new
+    /// `PendingTransactionMerge.plaidItemID` field present, defaulted to `nil` for a
+    /// pending row that predates it — see `SchemaV7`'s doc comment for why (unlike
+    /// `SchemaV6`'s `plaidItemID` backfill for `SpendTransaction`) no backfill is needed
+    /// or attempted here: a plain lightweight/inferred migration is correct.
+    func testV6StoreMigratesToV7WithDataIntactAndPendingTransactionMergePlaidItemIDDefaultedNil() throws {
+        let v6Schema = Schema(versionedSchema: SchemaV6.self)
+        let v6Configuration = ModelConfiguration(schema: v6Schema, url: storeURL)
+        do {
+            let v6Container = try ModelContainer(for: v6Schema, configurations: [v6Configuration])
+            let context = ModelContext(v6Container)
+            let manual = SchemaV6.SpendTransaction(
+                amount: 12.50,
+                date: .now,
+                merchantName: "Coffee Shop",
+                type: .variable,
+                entryMethod: .manual
+            )
+            context.insert(manual)
+            let pending = SchemaV6.PendingTransactionMerge(
+                plaidTransactionID: "plaid-pending-existing",
+                incomingAmount: 12.50,
+                incomingDate: .now,
+                incomingMerchantName: "Coffee Shop",
+                manualTransaction: manual
+            )
+            context.insert(pending)
+            try context.save()
+        }
+
+        let v7Schema = Schema(versionedSchema: SchemaV7.self)
+        let v7Configuration = ModelConfiguration(schema: v7Schema, url: storeURL)
+        let v7Container = try ModelContainer(
+            for: v7Schema,
+            migrationPlan: ReservoirMigrationPlan.self,
+            configurations: [v7Configuration]
+        )
+        let context = ModelContext(v7Container)
+        // Explicitly `SchemaV7.PendingTransactionMerge`, not the bare alias — that alias
+        // now points at `SchemaV7` anyway (this is the current version, unlike every
+        // prior test in this file), but named explicitly here for consistency with every
+        // stage's test above.
+        let fetchedPending = try context.fetch(FetchDescriptor<SchemaV7.PendingTransactionMerge>())
+        XCTAssertEqual(fetchedPending.count, 1)
+        XCTAssertEqual(fetchedPending.first?.plaidTransactionID, "plaid-pending-existing")
+        XCTAssertNil(
+            fetchedPending.first?.plaidItemID,
+            "a pending merge decision that predates this field must default to nil, not crash or fabricate a value."
+        )
+
+        let fetchedTransactions = try context.fetch(FetchDescriptor<SchemaV7.SpendTransaction>())
+        XCTAssertEqual(fetchedTransactions.count, 1)
+        XCTAssertEqual(fetchedTransactions.first?.merchantName, "Coffee Shop", "existing data must survive the migration intact.")
+    }
 }
