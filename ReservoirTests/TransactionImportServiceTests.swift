@@ -13,7 +13,7 @@ final class TransactionImportServiceTests: XCTestCase {
     private var context: ModelContext!
 
     override func setUpWithError() throws {
-        let schema = Schema(versionedSchema: SchemaV5.self)
+        let schema = Schema(versionedSchema: SchemaV6.self)
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         container = try ModelContainer(for: schema, migrationPlan: ReservoirMigrationPlan.self, configurations: [configuration])
         context = ModelContext(container)
@@ -187,10 +187,21 @@ final class TransactionImportServiceTests: XCTestCase {
         return URLSession(configuration: configuration)
     }
 
+    /// The itemID every test below implicitly imports against, via `makeSUT`'s default
+    /// `linkedItemStore` — `runImport()` now needs a known linked item's ID to scope its
+    /// Keychain read and sync-cursor storage (reservoir-loc.1), so a `StubLinkedItemStore`
+    /// with nothing in it would make every test below hit the "no linked item" no-op path
+    /// even though `StubKeychainWithToken` (which ignores the key it's asked for) implies
+    /// one is linked. Tests that need to assert against a specific cursor entry use this
+    /// same constant rather than a magic string.
+    private static let defaultItemID = "item-1"
+
     private func makeSUT(
         keychain: KeychainServicing = StubKeychainWithToken(),
         cursorStore: PlaidSyncCursorStoring = StubCursorStore(),
-        linkedItemStore: LinkedItemStoring = StubLinkedItemStore(),
+        linkedItemStore: LinkedItemStoring = StubLinkedItemStore(
+            initial: LinkedItem(itemID: TransactionImportServiceTests.defaultItemID, institutionName: "Test Bank", linkedAt: .now)
+        ),
         urlSession: URLSession? = nil
     ) -> TransactionImportService {
         TransactionImportService(
@@ -280,6 +291,7 @@ final class TransactionImportServiceTests: XCTestCase {
         XCTAssertEqual(fetched.first?.plaidTransactionID, "plaid-1")
         XCTAssertEqual(fetched.first?.amount, 12.50)
         XCTAssertEqual(sut.lastImportSummary?.added, 1)
+        XCTAssertEqual(fetched.first?.plaidItemID, Self.defaultItemID, "reservoir-loc.1: a freshly imported row must record which linked item it came from.")
     }
 
     // MARK: - Added: dedup match -> queued, not saved
@@ -321,7 +333,7 @@ final class TransactionImportServiceTests: XCTestCase {
         await sut.runImport()
 
         XCTAssertEqual(sut.mergeQueue.count, 1, "sanity check: the item must actually have been queued for merge, not saved outright.")
-        XCTAssertEqual(cursorStore.cursor(for: .sandbox), "cursor-after-queue")
+        XCTAssertEqual(cursorStore.cursor(for: .sandbox, itemID: Self.defaultItemID), "cursor-after-queue")
     }
 
     // MARK: - Merge-decision persistence (review findings 2+5 -- see SchemaV5's doc comment)
@@ -743,7 +755,7 @@ final class TransactionImportServiceTests: XCTestCase {
     /// constraint) was tried first but turned out not to throw: SwiftData resolves that
     /// collision as an upsert rather than a `save()` failure.
     private func makeReadOnlyContext() throws -> (context: ModelContext, storeURL: URL) {
-        let schema = Schema(versionedSchema: SchemaV5.self)
+        let schema = Schema(versionedSchema: SchemaV6.self)
         let storeURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("TransactionImportServiceTests-\(UUID().uuidString)")
             .appendingPathExtension("store")
@@ -789,12 +801,15 @@ final class TransactionImportServiceTests: XCTestCase {
             keychain: StubKeychainWithToken(),
             urlSession: makeScriptedURLSession(),
             environmentStore: StubEnvironmentStore(.sandbox),
-            cursorStore: cursorStore
+            cursorStore: cursorStore,
+            linkedItemStore: StubLinkedItemStore(
+                initial: LinkedItem(itemID: Self.defaultItemID, institutionName: "Test Bank", linkedAt: .now)
+            )
         )
 
         await sut.runImport()
 
-        XCTAssertNil(cursorStore.cursor(for: .sandbox), "A page with a genuine save failure must not advance the cursor.")
+        XCTAssertNil(cursorStore.cursor(for: .sandbox, itemID: Self.defaultItemID), "A page with a genuine save failure must not advance the cursor.")
         XCTAssertEqual(sut.lastImportSummary?.added, 0, "Neither failed write counts toward the summary.")
 
         // Verify against a *fresh* container reopened from the same store file, rather
@@ -803,7 +818,7 @@ final class TransactionImportServiceTests: XCTestCase {
         // directly (SwiftData's in-memory change tracking around a read-only store has
         // sharp edges independent of what this test cares about), but what actually
         // landed on disk is the real question this test needs answered.
-        let verificationSchema = Schema(versionedSchema: SchemaV5.self)
+        let verificationSchema = Schema(versionedSchema: SchemaV6.self)
         let verificationContainer = try ModelContainer(
             for: verificationSchema,
             migrationPlan: ReservoirMigrationPlan.self,
@@ -911,7 +926,10 @@ final class TransactionImportServiceTests: XCTestCase {
             keychain: StubKeychainWithToken(),
             urlSession: makeSlowURLSession(),
             environmentStore: StubEnvironmentStore(.sandbox),
-            cursorStore: StubCursorStore()
+            cursorStore: StubCursorStore(),
+            linkedItemStore: StubLinkedItemStore(
+                initial: LinkedItem(itemID: Self.defaultItemID, institutionName: "Test Bank", linkedAt: .now)
+            )
         )
 
         // Simulate an already-in-flight import (e.g. pull-to-refresh) blocked on the network.
@@ -1001,7 +1019,7 @@ final class TransactionImportServiceTests: XCTestCase {
         XCTAssertEqual(sut.presentedError, .itemLoginRequired)
         XCTAssertTrue(sut.needsAttention, "the in-memory flag must be set so the Today-screen badge (bound to it) reacts immediately.")
         XCTAssertEqual(linkedItemStore.setNeedsAttentionCalls, [true], "the persisted flag must also be set, so it survives past this TransactionImportService instance.")
-        XCTAssertEqual(linkedItemStore.load()?.needsAttention, true)
+        XCTAssertEqual(linkedItemStore.loadAll().first?.needsAttention, true)
     }
 
     /// A different (non-`ITEM_LOGIN_REQUIRED`) item-level error still falls back to
@@ -1070,7 +1088,7 @@ final class TransactionImportServiceTests: XCTestCase {
         let sut = makeSUT(linkedItemStore: linkedItemStore)
         XCTAssertTrue(sut.needsAttention, "sanity check: seeded true at init.")
 
-        linkedItemStore.setNeedsAttention(false)
+        linkedItemStore.setNeedsAttention(false, itemID: "item-1")
         sut.refreshNeedsAttention()
 
         XCTAssertFalse(sut.needsAttention)
@@ -1095,7 +1113,7 @@ final class TransactionImportServiceTests: XCTestCase {
         linkedItemStore.save(LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now, needsAttention: true))
         sut.refreshNeedsAttention()
         XCTAssertTrue(sut.needsAttention, "sanity check: starts stale-true, matching a flagged item from before the switch.")
-        linkedItemStore.clear()
+        linkedItemStore.remove(itemID: "item-1")
 
         await sut.runImport()
 
@@ -1172,7 +1190,7 @@ final class TransactionImportServiceTests: XCTestCase {
         await sut.runImport()
 
         XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 2)
-        XCTAssertEqual(cursorStore.cursor(for: .sandbox), "cursor-page2")
+        XCTAssertEqual(cursorStore.cursor(for: .sandbox, itemID: Self.defaultItemID), "cursor-page2")
         let fetched = try context.fetch(FetchDescriptor<SpendTransaction>())
         XCTAssertEqual(fetched.count, 2)
         XCTAssertEqual(sut.lastImportSummary?.added, 2)

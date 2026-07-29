@@ -189,7 +189,11 @@ final class MigrationPlanTests: XCTestCase {
             configurations: [v5Configuration]
         )
         let context = ModelContext(v5Container)
-        let fetchedTransactions = try context.fetch(FetchDescriptor<SpendTransaction>())
+        // Explicitly `SchemaV5.SpendTransaction`/`SchemaV5.PendingTransactionMerge`, not
+        // the bare aliases — those now point at `SchemaV6` (see `CurrentSchema.swift`),
+        // and this container was opened `for: v5Schema` only (same pitfall the V1->V2/
+        // V2->V3/V3->V4 tests above already document).
+        let fetchedTransactions = try context.fetch(FetchDescriptor<SchemaV5.SpendTransaction>())
 
         XCTAssertEqual(fetchedTransactions.count, 1)
         XCTAssertEqual(fetchedTransactions.first?.merchantName, "Hardware Store")
@@ -197,7 +201,7 @@ final class MigrationPlanTests: XCTestCase {
         // The new model is usable post-migration: insert and fetch a
         // PendingTransactionMerge referencing the migrated transaction.
         let manual = try XCTUnwrap(fetchedTransactions.first)
-        let pending = PendingTransactionMerge(
+        let pending = SchemaV5.PendingTransactionMerge(
             plaidTransactionID: "plaid-new",
             incomingAmount: 30.00,
             incomingDate: .now,
@@ -207,8 +211,134 @@ final class MigrationPlanTests: XCTestCase {
         context.insert(pending)
         try context.save()
 
-        let fetchedPending = try context.fetch(FetchDescriptor<PendingTransactionMerge>())
+        let fetchedPending = try context.fetch(FetchDescriptor<SchemaV5.PendingTransactionMerge>())
         XCTAssertEqual(fetchedPending.count, 1)
         XCTAssertEqual(fetchedPending.first?.manualTransaction?.persistentModelID, manual.persistentModelID)
+    }
+
+    /// Regression coverage for reservoir-loc.1: a store created under `SchemaV5` (as any
+    /// pre-loc.1 build would have on disk) must open cleanly under `SchemaV6` via
+    /// `ReservoirMigrationPlan`, with existing data intact, `SavingsGoal.associatedItemIDs`
+    /// lightweight-defaulted to `[]`, and — the part a plain lightweight/inferred
+    /// migration would get wrong — every *existing imported* `SpendTransaction` row's new
+    /// `plaidItemID` backfilled to the single item ID that was linked pre-migration (read
+    /// from `LinkedItemStore`), not left `nil`. A manual entry must stay `nil`, matching
+    /// the existing `plaidTransactionID` nil-for-manual convention. See `SchemaV6`'s and
+    /// `ReservoirMigrationPlan.migrateV5toV6`'s doc comments.
+    func testV5StoreMigratesToV6WithPlaidItemIDBackfilledAndAssociatedItemIDsDefaulted() throws {
+        // `ReservoirMigrationPlan.migrateV5toV6`'s `willMigrate` reads the pre-migration
+        // linked item via `LinkedItemStore()`'s default (real `UserDefaults.standard`)
+        // init — snapshot and restore whatever's really there so this test can't leak
+        // state into (or be polluted by) any other test in the same process.
+        let linkedItemStore = LinkedItemStore()
+        let preExistingItems = linkedItemStore.loadAll()
+        for item in preExistingItems { linkedItemStore.remove(itemID: item.itemID) }
+        addTeardownBlock {
+            linkedItemStore.remove(itemID: "existing-item-1")
+            for item in preExistingItems { linkedItemStore.save(item) }
+        }
+        linkedItemStore.save(LinkedItem(itemID: "existing-item-1", institutionName: "Existing Bank", linkedAt: .now))
+
+        let v5Schema = Schema(versionedSchema: SchemaV5.self)
+        let v5Configuration = ModelConfiguration(schema: v5Schema, url: storeURL)
+        do {
+            let v5Container = try ModelContainer(for: v5Schema, configurations: [v5Configuration])
+            let context = ModelContext(v5Container)
+            let imported = SchemaV5.SpendTransaction(
+                amount: 42.00,
+                date: .now,
+                merchantName: "Coffee Shop",
+                type: .variable,
+                entryMethod: .imported,
+                plaidTransactionID: "plaid-existing"
+            )
+            let manual = SchemaV5.SpendTransaction(
+                amount: 10.00,
+                date: .now,
+                merchantName: "Cash Tip",
+                type: .variable,
+                entryMethod: .manual
+            )
+            let goal = SchemaV5.SavingsGoal(
+                targetAmount: 500,
+                targetDate: Calendar.current.date(byAdding: .day, value: 30, to: .now)!,
+                startDate: .now,
+                startingBalance: 0,
+                dailyBase: 10
+            )
+            context.insert(imported)
+            context.insert(manual)
+            context.insert(goal)
+            try context.save()
+        }
+
+        let v6Schema = Schema(versionedSchema: SchemaV6.self)
+        let v6Configuration = ModelConfiguration(schema: v6Schema, url: storeURL)
+        let v6Container = try ModelContainer(
+            for: v6Schema,
+            migrationPlan: ReservoirMigrationPlan.self,
+            configurations: [v6Configuration]
+        )
+        let context = ModelContext(v6Container)
+        let fetchedTransactions = try context.fetch(FetchDescriptor<SchemaV6.SpendTransaction>())
+        XCTAssertEqual(fetchedTransactions.count, 2)
+
+        let importedRow = try XCTUnwrap(fetchedTransactions.first { $0.plaidTransactionID == "plaid-existing" })
+        XCTAssertEqual(
+            importedRow.plaidItemID, "existing-item-1",
+            "an existing imported row must be backfilled to the item ID that was linked pre-migration, not left nil."
+        )
+
+        let manualRow = try XCTUnwrap(fetchedTransactions.first { $0.merchantName == "Cash Tip" })
+        XCTAssertNil(manualRow.plaidItemID, "a manual entry must stay nil, matching the plaidTransactionID nil-for-manual convention.")
+
+        let fetchedGoals = try context.fetch(FetchDescriptor<SchemaV6.SavingsGoal>())
+        XCTAssertEqual(fetchedGoals.count, 1)
+        XCTAssertEqual(
+            fetchedGoals.first?.associatedItemIDs, [],
+            "an existing goal must default to zero associated accounts — no backfill needed, this feature didn't exist before."
+        )
+    }
+
+    /// Companion to the backfill test above: when *no* item was linked pre-migration
+    /// (a fresh install, or a user who unlinked before ever updating), the backfill must
+    /// be a no-op rather than crash or fabricate an item ID — every imported row simply
+    /// stays `nil`, same as it would have under a plain lightweight migration.
+    func testV5StoreMigratesToV6_withNoLinkedItemPreMigration_leavesPlaidItemIDNil() throws {
+        let linkedItemStore = LinkedItemStore()
+        let preExistingItems = linkedItemStore.loadAll()
+        for item in preExistingItems { linkedItemStore.remove(itemID: item.itemID) }
+        addTeardownBlock {
+            for item in preExistingItems { linkedItemStore.save(item) }
+        }
+
+        let v5Schema = Schema(versionedSchema: SchemaV5.self)
+        let v5Configuration = ModelConfiguration(schema: v5Schema, url: storeURL)
+        do {
+            let v5Container = try ModelContainer(for: v5Schema, configurations: [v5Configuration])
+            let context = ModelContext(v5Container)
+            context.insert(SchemaV5.SpendTransaction(
+                amount: 42.00,
+                date: .now,
+                merchantName: "Coffee Shop",
+                type: .variable,
+                entryMethod: .imported,
+                plaidTransactionID: "plaid-existing"
+            ))
+            try context.save()
+        }
+
+        let v6Schema = Schema(versionedSchema: SchemaV6.self)
+        let v6Configuration = ModelConfiguration(schema: v6Schema, url: storeURL)
+        let v6Container = try ModelContainer(
+            for: v6Schema,
+            migrationPlan: ReservoirMigrationPlan.self,
+            configurations: [v6Configuration]
+        )
+        let context = ModelContext(v6Container)
+        let fetchedTransactions = try context.fetch(FetchDescriptor<SchemaV6.SpendTransaction>())
+
+        XCTAssertEqual(fetchedTransactions.count, 1)
+        XCTAssertNil(fetchedTransactions.first?.plaidItemID, "with no pre-migration linked item, there is nothing to backfill to.")
     }
 }

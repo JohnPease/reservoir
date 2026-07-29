@@ -2,13 +2,14 @@ import Foundation
 import Observation
 
 /// A successfully linked Plaid item, reduced to the minimal metadata the
-/// rest of the app needs. Plain struct, not a SwiftData `@Model` — this
-/// story only needs to prove Link + exchange + Keychain storage work
-/// end to end. Where linked-item metadata is queried for real UI (Settings'
-/// account list, reservoir-adq.7) may need a SwiftData schema decision at
-/// that point; that's flagged forward, not resolved here (see
-/// reservoir-adq.6.1's Technical approach).
-struct LinkedItem: Equatable, Sendable {
+/// rest of the app needs. Plain struct, not a SwiftData `@Model` — an
+/// explicit product-lead call (reservoir-loc.1): a struct collection keyed
+/// by item ID, persisted via UserDefaults, is sufficient at this scale and
+/// avoids unnecessary migration risk. `Codable` (added reservoir-loc.1) so
+/// `LinkedItemStore` can JSON-encode the whole collection into one
+/// `UserDefaults` entry rather than hand-rolling a dictionary encoding per
+/// field, as its single-item predecessor did.
+struct LinkedItem: Equatable, Codable, Sendable {
     let itemID: String
     let institutionName: String
     let linkedAt: Date
@@ -24,11 +25,16 @@ struct LinkedItem: Equatable, Sendable {
     var needsAttention: Bool = false
 }
 
-/// Keychain key the single linked item's access token is stored under.
-/// One linked item / one Keychain entry for this story — multi-account
-/// linking is explicitly out of scope (reservoir-adq.6.1's Out of scope).
+/// Keychain key an item's access token is stored under. Scoped per item ID
+/// (reservoir-loc.1) so linking a second (or Nth) account never overwrites
+/// another item's stored token — each linked item gets its own Keychain
+/// entry. `KeychainService` itself stays generic (`save(_:for:)`/
+/// `read(for:)`/`delete(for:)` all take a plain `String` key); this is the
+/// one place that decides what that key looks like.
 enum PlaidKeychainKey {
-    static let accessToken = "plaid.accessToken"
+    static func accessToken(itemID: String) -> String {
+        "plaid.accessToken.\(itemID)"
+    }
 }
 
 /// App-domain owner of the Plaid Link session lifecycle and token exchange.

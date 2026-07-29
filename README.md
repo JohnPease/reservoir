@@ -86,29 +86,44 @@ ReservoirTests/    — XCTest
 ReservoirUITests/  — XCUITest
 ```
 
-**Data model** (current — `Models/Migrations/SchemaV3.swift`; the app-wide
+**Data model** (current — `Models/Migrations/SchemaV6.swift`; the app-wide
 type aliases in `Models/CurrentSchema.swift` always point at the current
 version, so the rest of the app never references a `SchemaVN` directly):
 
 | Entity | Key fields |
 |---|---|
-| `SavingsGoal` | `targetAmount`, `targetDate`, `startDate` (user-editable/backdatable at creation — see "Goals screen" below), `startingBalance`, `dailyBase` (fixed at creation/edit), `dismissedAt` (set when the user dismisses a completion banner; added in `SchemaV2`), `createdAt` (real creation timestamp, never user-editable; added in `SchemaV3` — see "Goals screen" below) |
-| `SpendTransaction` | `amount`, `date`, `merchantName`, `type` (variable/fixed), `entryMethod` (manual/imported), `plaidTransactionID`, `isManualOverride`, `createdAt` (record-creation time, distinct from the user-facing `date`; breaks ties when ordering same-day transactions; added in `SchemaV2`) |
+| `SavingsGoal` | `targetAmount`, `targetDate`, `startDate` (user-editable/backdatable at creation — see "Goals screen" below), `startingBalance`, `dailyBase` (fixed at creation/edit), `dismissedAt` (set when the user dismisses a completion banner; added in `SchemaV2`), `createdAt` (real creation timestamp, never user-editable; added in `SchemaV3` — see "Goals screen" below), `associatedItemIDs: [String]` (linked-item IDs this goal is associated with, at most one goal per item ID at a time, enforced by `GoalAccountAssociationService`; added in `SchemaV6`, defaults to `[]`) |
+| `SpendTransaction` | `amount`, `date`, `merchantName`, `type` (variable/fixed), `entryMethod` (manual/imported), `plaidTransactionID`, `plaidItemID` (which linked item this row was imported from; nil for manual entries, same convention as `plaidTransactionID`; added in `SchemaV6`, backfilled for existing imported rows — see "Migrations" below), `isManualOverride`, `createdAt` (record-creation time, distinct from the user-facing `date`; breaks ties when ordering same-day transactions; added in `SchemaV2`), `wasMergedFromManual` (added in `SchemaV4`) |
 | `MerchantRule` | `merchantName` (exact, case-insensitive match), `type` |
+| `PendingTransactionMerge` | durable form of a queued merge-prompt decision (added in `SchemaV5`) |
 
 **Migrations**: `Models/Migrations/MigrationPlan.swift`'s
 `ReservoirMigrationPlan` lists every `VersionedSchema` in order and the
-`MigrationStage`s between them. `SchemaV1` -> `SchemaV2` and `SchemaV2` ->
-`SchemaV3` are both lightweight (inferred) stages — every new field is
-optional, or non-optional with a property-level default (see `SchemaV3`'s
-`createdAt` note below). Any change to a `@Model` type's shape (new/removed/
-retyped field) requires a new `SchemaVN`, not an in-place edit to the current
-one — an in-place edit means a store created from an older build no longer
-matches the version its data was validated against, and
-`ModelContainer(for:migrationPlan:)` fails to open it (see
-`ReservoirApp.makeModelContainer`'s corrupted-store fallback, which deletes
-the on-disk store as a last resort — exactly what a missing migration stage
-would trigger for real user data).
+`MigrationStage`s between them. `SchemaV1` -> `SchemaV2`, `SchemaV2` ->
+`SchemaV3`, `SchemaV3` -> `SchemaV4`, and `SchemaV4` -> `SchemaV5` are all
+lightweight (inferred) stages — every new field is optional, or non-optional
+with a property-level default (see `SchemaV3`'s `createdAt` note below). Any
+change to a `@Model` type's shape (new/removed/retyped field) requires a new
+`SchemaVN`, not an in-place edit to the current one — an in-place edit means
+a store created from an older build no longer matches the version its data
+was validated against, and `ModelContainer(for:migrationPlan:)` fails to open
+it (see `ReservoirApp.makeModelContainer`'s corrupted-store fallback, which
+deletes the on-disk store as a last resort — exactly what a missing
+migration stage would trigger for real user data).
+
+`SchemaV5` -> `SchemaV6` (reservoir-loc.1) is this codebase's first **custom**
+(non-lightweight) migration stage: `SavingsGoal.associatedItemIDs` is a plain
+defaulted new field (lightweight-safe on its own), but
+`SpendTransaction.plaidItemID` needs every *existing* imported row
+(`plaidTransactionID != nil`) backfilled to the single linked item's ID —
+read from the pre-migration `LinkedItemStore` inside `migrateV5toV6`'s
+`willMigrate` closure and applied to the migrated rows inside `didMigrate`
+(a plain lightweight migration would have left every existing imported row's
+`plaidItemID` incorrectly `nil`). See `SchemaV6`'s and
+`ReservoirMigrationPlan.migrateV5toV6`'s doc comments, and
+`MigrationPlanTests.testV5StoreMigratesToV6WithPlaidItemIDBackfilledAndAssociatedItemIDsDefaulted`
+for the regression test that actually creates pre-migration data and asserts
+the backfill.
 
 A **non-optional** new field (like `SchemaV3.SavingsGoal.createdAt`) needs its
 default declared directly on the stored property (`var createdAt: Date =
@@ -399,21 +414,46 @@ appears anywhere in the app. It owns two responsibilities:
   `Security` framework's generic-password APIs directly — no third-party
   dependency, since iOS ships no SwiftData/Keychain bridge. The Plaid
   `access_token` is stored with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`
-  (survives background refresh, never iCloud-synced/exportable), keyed by a
-  single fixed identifier — one linked item for now, multi-account linking is
-  deferred (see `docs/PROJECT_SPEC.md`/adq.6 breakdown). Non-secret linked-item
+  (survives background refresh, never iCloud-synced/exportable). **Multi-item
+  storage (reservoir-loc.1)**: `KeychainService` itself stays generically keyed
+  (`save(_:for:)`/`read(for:)`/`delete(for:)` take a plain `String`), but the
+  key each linked item's token is stored under is now scoped per item ID —
+  `PlaidKeychainKey.accessToken(itemID:)`, a function, not the fixed constant
+  an earlier single-item version of this story used. Non-secret linked-item
   metadata (institution name, item ID, linked date, and — since adq.6.5 —
   a `needsAttention` flag) lives in `UserDefaults` behind `LinkedItemStore`
   (`Services/Plaid/LinkedItemStore.swift`, a `LinkedItemStoring` protocol +
   `UserDefaults`-backed live implementation, same pattern as
   `KeychainServicing`/`PlaidSyncCursorStoring`), consistent with PROJECT_SPEC's
   "no `User` entity" note that app-wide settings outside SwiftData belong
-  there. Both `PlaidServiceLive` (owns *when* to read/write it — init, a
-  successful Link/relink/unlink, an environment change) and
+  there. `LinkedItemStore` persists an **unbounded collection** of `LinkedItem`
+  (still a plain `Codable` struct, not a SwiftData `@Model` — an explicit
+  product-lead call, since a struct collection JSON-encoded into one
+  `UserDefaults` entry is sufficient at this app's scale), keyed by item ID:
+  `loadAll()` returns every linked item; `save(_:)` **upserts by `itemID`**
+  (replaces a matching entry in place, appends otherwise) rather than
+  overwriting the whole collection — the fix for a real data-loss bug where
+  linking a second account used to silently destroy the first account's
+  stored token/metadata; `remove(itemID:)` and `setNeedsAttention(_:itemID:)`
+  round out the surface. `PlaidSyncCursorStore` is keyed by `(environment,
+  itemID)` for the same reason — two linked items within the same environment
+  have unrelated transaction histories and must not share a `/transactions
+  /sync` cursor. Both `PlaidServiceLive` (owns *when* to read/write it — init,
+  a successful Link/relink/unlink, an environment change, always upserting/
+  removing only the one item a given operation concerns) and
   `TransactionImportService` (sets `needsAttention` on a classified item-auth
-  error, reads it for the Today-screen badge) depend on this one store via
-  constructor-parameter DI — see "Item relink / connection-status UX" and
-  "Settings tab" below.
+  error, reads it for the Today-screen badge — still single-item-at-a-time
+  usage; iterating every linked item's own sync/dedup is reservoir-loc.2's
+  scope, not this story's) depend on this one store via constructor-parameter
+  DI — see "Item relink / connection-status UX" and "Settings tab" below.
+  `SavingsGoal.associatedItemIDs: [String]` (`SchemaV6`) records which linked
+  item(s) a goal is associated with; `GoalAccountAssociationService`
+  (`Services/GoalAccountAssociationService.swift`) is the single choke point
+  enforcing "at most one goal per item ID at a time" — associating an item
+  already held by another goal moves it (an implicit "steal," not an error),
+  atomically via `PersistenceSaveHelper`. No UI to manage more than one
+  account exists yet (reservoir-loc.3); this story is the storage/schema
+  foundation underneath it.
 
   `PlaidErrorClassifier` (`Services/Plaid/PlaidErrorClassifier.swift`) is a
   pure function classifying any Link or exchange failure into `.network` vs
@@ -482,11 +522,15 @@ double-counted.
   - `PlaidSyncCursorStore` (`Services/Plaid/PlaidSyncCursorStore.swift`,
     `UserDefaults`-backed, behind `PlaidSyncCursorStoring`, mirroring
     `PlaidEnvironmentStore`'s shape) persists the sync cursor scoped
-    per-`PlaidEnvironment` — Sandbox and Production are unrelated
-    transaction histories — and is invalidated via the same `onChange` hook
+    per-`(PlaidEnvironment, itemID)` (reservoir-loc.1 — originally
+    environment-only) — Sandbox and Production are unrelated transaction
+    histories, and so are two distinct linked items within the same
+    environment — and is invalidated via the same `onChange` hook
     `PlaidServiceLive` already uses to clear the linked-item/Keychain state
-    on an environment switch (one invalidation path, not two). A sync
-    page's cursor only advances past transactions that saved successfully
+    on an environment switch (one invalidation path, not two), which now
+    iterates every item `LinkedItemStore.loadAll()` reports rather than a
+    single fixed one. A sync page's cursor only advances past transactions
+    that saved successfully
     or were queued for a merge decision (a queued item counts as
     "handled" — Plaid won't redeliver an already-acknowledged `added` item
     once the cursor moves past it); a genuine save failure blocks the
