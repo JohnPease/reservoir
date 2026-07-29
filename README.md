@@ -693,6 +693,40 @@ app-wide setting.
     other two call sites, goal creation and add-transaction, were already
     retired onto real forms in adq.5/adq.3).
 
+**Visual design system** (Today screen redesign): the app's color/iconography
+treatment is token-based rather than system-default — see `docs/DESIGN_STANDARDS.md`
+for the living conventions and `docs/TODAY_SCREEN_REDESIGN_REQUIREMENTS.md` for
+the screen-specific spec these were first derived from. All 13 `Reservoir*`
+tokens (backgrounds, surfaces, text, and droplet-fill colors, sampled from the
+app icon) are `Resources/Assets.xcassets` color sets with Any/Dark variants —
+never hardcoded hex or `colorScheme ==` branching in view code. The Today
+screen's hero number now sits beside a droplet-shaped fill-gauge
+(`Shared/FillGaugeView.swift`) whose fill percentage/color-regime calculation
+lives in `Services/FillGaugeCalculator.swift` (pure, unit-tested, no
+SwiftUI/SwiftData import): `fillPercent = clamp(currentBalance / (7 *
+baseDailyAmount), -1, 1)`, healthy/deficit color switch at zero, and a 0.06
+floor on the deficit side so a small deficit never renders as a false-empty
+gauge (see that file's doc comment for the full reasoning, and
+`docs/DESIGN_STANDARDS.md` §4 for the general "derive a reference window from
+an existing rate field, don't add a new persisted capacity" pattern this
+established). `TodayView`'s hero number and gauge both key off
+`TodayScreenCalculator.Summary.limit`/`.dailyBase`, not `.remaining` — the
+gauge ties to the hero number's own tank, not the separately-colored
+"Remaining" stat card. Transaction rows (`Shared/TransactionRowView.swift`)
+replaced the old lock/cart glyphs with a 30x30pt circular direction-icon
+backdrop (`arrow.down.right`/`arrow.up.right`, derived from
+`SpendTransaction.amount`'s sign) for every row regardless of fixed/variable
+type — `SpendTransaction.amount` is always positive today (`PlaidTransactionMapper`
+drops credits/income entirely at import), so every row currently renders as a
+debit; the sign check is still the general rule so a credit renders correctly
+the moment one exists in the data model, with no further code change. The tab
+bar's active-item tint (`ReservoirAccent`) and inactive-item tint
+(`ReservoirTextMuted`) are applied in `App/RootTabView.swift`; the spec's
+pill-shaped background behind the active tab item is **not** implemented —
+stock SwiftUI `TabView` has no public API for a per-item selection
+background short of a fully custom tab bar, which was out of proportion to
+this visual-only story's scope (flagged, tracked as `reservoir-d2s`).
+
 ## Technical details
 
 - **Minimum iOS version**: 17.0 (required for SwiftData and `@Observable`)
