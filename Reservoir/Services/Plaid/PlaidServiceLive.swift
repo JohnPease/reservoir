@@ -234,9 +234,23 @@ final class PlaidServiceLive: PlaidService {
     /// update-mode token) and the user taps "Try again", retrying via `startLink()` would
     /// silently create a brand-new item/token instead of repairing the existing one —
     /// exactly the bug the Relink button itself was fixed to avoid.
+    ///
+    /// Prefers `relinkingItem` over `linkedItem` (reservoir-loc.1 code review) for the same
+    /// reason `handleRelinkSuccess()` does — `linkedItem` is an arbitrary "first of N"
+    /// pointer once more than one item is linked, not necessarily the item a failed relink
+    /// attempt was actually for. Not reachable through today's still-single-item-shaped
+    /// `SettingsView` (it only calls `startRelink(for:)` with `linkedItem` itself), but a
+    /// live hazard once reservoir-loc.3 lets a user relink an item other than the pointer's
+    /// current "first" one.
+    ///
+    /// Still latent (flagged for reservoir-loc.3, not fixed here): once that story's UI can
+    /// call `startLink()` to add a new item while `linkedItem` is already non-nil, this
+    /// method has no way to tell "a fresh add failed" from "a relink failed" — both leave
+    /// `relinkingItem` in whatever state the last attempt left it. Needs an explicit
+    /// last-attempted-flow marker once that ambiguity becomes reachable.
     func retry() async {
         presentedError = nil
-        if let item = linkedItem {
+        if let item = relinkingItem ?? linkedItem {
             await startRelink(for: item)
         } else {
             await startLink()
