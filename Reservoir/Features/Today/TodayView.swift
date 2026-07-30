@@ -278,26 +278,9 @@ private struct StatCard: View {
     }
 }
 
-/// §3.5's primary button — `ReservoirAccent` fill, `ReservoirOnAccent` label. Built as
-/// a custom `ButtonStyle` rather than `.buttonStyle(.borderedProminent) .tint(...)`
-/// because `.borderedProminent`'s label color isn't independently customizable — it's
-/// always a system-chosen (effectively white) foreground regardless of `.tint()`, which
-/// can't express `ReservoirOnAccent`'s dark-on-light-teal flip in dark mode (§2's note
-/// on why the accent button uses dark text over a lighter teal there, matching the app
-/// icon's own contrast). Corner radius/padding below are a reasonable match to the
-/// prior `.borderedProminent` default, not a byte-for-byte trace of its undocumented
-/// system metrics — flagged as a minor, low-risk deviation from "corner radius, height
-/// unchanged" rather than silently reinterpreted.
-private struct ReservoirPrimaryButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.body.weight(.semibold))
-            .foregroundStyle(Color("ReservoirOnAccent"))
-            .padding(.vertical, 14)
-            .background(Color("ReservoirAccent"), in: RoundedRectangle(cornerRadius: 12))
-            .opacity(configuration.isPressed ? 0.85 : 1.0)
-    }
-}
+// §3.5's primary button — moved to `Reservoir/Shared/ReservoirPrimaryButtonStyle.swift`
+// (reservoir-jog) once Goals/Transactions/Settings needed the identical CTA treatment;
+// see that file's doc comment for the full rationale (STANDARDS.md §3, no copy-paste).
 
 // MARK: - Completion banner
 

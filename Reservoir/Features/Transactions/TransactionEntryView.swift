@@ -177,6 +177,9 @@ struct TransactionEntryView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .listRowBackground(Color("ReservoirSurface"))
+            .background(Color("ReservoirBackground"))
             .navigationTitle(mode.isEdit ? "Edit Transaction" : "Add Transaction")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

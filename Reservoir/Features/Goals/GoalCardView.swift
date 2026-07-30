@@ -63,13 +63,15 @@ struct ActiveGoalCardView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Target: \(goal.targetAmount, format: .currency(code: "USD")) by \(dateText(goal.targetDate))")
                         .font(.subheadline)
+                        .foregroundStyle(Color("ReservoirTextPrimary"))
                     Text("Started: \(dateText(goal.startDate))")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color("ReservoirTextSecondary"))
                 }
                 Spacer()
                 Button(action: onEdit) {
                     Image(systemName: "pencil")
+                        .foregroundStyle(Color("ReservoirTextSecondary"))
                 }
                 .accessibilityIdentifier("goals.card.edit")
                 Button(role: .destructive, action: onDelete) {
@@ -80,10 +82,11 @@ struct ActiveGoalCardView: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 ProgressView(value: clampedProgress(currentBalance: currentBalance))
+                    .tint(Color("ReservoirAccent"))
                     .accessibilityIdentifier("goals.card.progressBar")
                 Text(progressPercentText(currentBalance: currentBalance))
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color("ReservoirTextSecondary"))
                     .accessibilityIdentifier("goals.card.progressText")
             }
 
@@ -99,6 +102,7 @@ struct ActiveGoalCardView: View {
                 switch selectedSegment {
                 case .pace:
                     Text(paceText(input: carryForwardInput))
+                        .foregroundStyle(isBehindPace(input: carryForwardInput) ? Color("ReservoirDeficit") : Color("ReservoirTextPrimary"))
                 case .simulation:
                     simulationContent(input: carryForwardInput)
                 }
@@ -107,9 +111,20 @@ struct ActiveGoalCardView: View {
             .accessibilityIdentifier("goals.card.paceContent")
         }
         .padding()
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .background(Color("ReservoirSurface"), in: RoundedRectangle(cornerRadius: 12))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("goals.card")
+    }
+
+    /// Drives the pace-copy's text color per the bead's instruction to mirror
+    /// `TodayView`'s `isOverLimit` pattern for goals behind schedule — `ReservoirDeficit`
+    /// only for the `.behindPace` case, `ReservoirTextPrimary` for `.onPace`/`.unavailable`
+    /// (matching `StatCard`'s "deficit text only when actually in a deficit state" rule).
+    private func isBehindPace(input: GoalCarryForwardInput) -> Bool {
+        if case .behindPace = GoalsScreenCalculator.paceStatus(input: input, targetDate: goal.targetDate, referenceDate: referenceDate, calendar: calendar) {
+            return true
+        }
+        return false
     }
 
     // MARK: - Pace segment copy
@@ -132,14 +147,17 @@ struct ActiveGoalCardView: View {
         switch GoalsScreenCalculator.simulationStatus(input: input, targetDate: goal.targetDate, referenceDate: referenceDate, calendar: calendar) {
         case .unavailable:
             Text("Pace unavailable")
+                .foregroundStyle(Color("ReservoirTextPrimary"))
         case .notEnoughHistory:
             Text("Not enough spending history yet")
+                .foregroundStyle(Color("ReservoirTextPrimary"))
         case .computed(let projection):
             VStack(alignment: .leading, spacing: 4) {
                 Text(simulationAmountText(projection))
+                    .foregroundStyle(projection.avgDailyNet >= 0 ? Color("ReservoirTextPrimary") : Color("ReservoirDeficit"))
                 Text(simulationCompletionText(projection))
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color("ReservoirTextSecondary"))
             }
         }
     }

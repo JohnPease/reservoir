@@ -20,7 +20,14 @@ struct LabeledField<Content: View>: View {
             if let error {
                 Text(error)
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    // Reuses `ReservoirDeficit` — the app's only existing "something's
+                    // wrong" text token — for form validation errors. Not a perfect
+                    // semantic fit (that token's documented purpose is negative-amount/
+                    // over-target financial text, not form validation), but introducing
+                    // a separate `ReservoirError` asset for this one case wasn't
+                    // obviously justified either; flagged in reservoir-jog's report for
+                    // product-lead/JP to confirm rather than decided unilaterally.
+                    .foregroundStyle(Color("ReservoirDeficit"))
                     .accessibilityIdentifier("\(errorIdentifierPrefix).error.\(label)")
             }
         }

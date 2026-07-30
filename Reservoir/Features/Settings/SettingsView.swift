@@ -58,7 +58,7 @@ struct SettingsView: View {
                          ? "Using Production credentials — real bank data."
                          : "Using Sandbox credentials — test data only.")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color("ReservoirTextSecondary"))
                 }
                 .deleteConfirmation(
                     pendingItem: $pendingEnvironment,
@@ -92,17 +92,18 @@ struct SettingsView: View {
                         }
                     } else {
                         Text("No account linked yet.")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color("ReservoirTextSecondary"))
                     }
 
                     if service.isExchangingToken {
                         HStack {
                             ProgressView()
                             Text("Exchanging token…")
+                                .foregroundStyle(Color("ReservoirTextPrimary"))
                         }
                         .accessibilityIdentifier("settings.exchanging")
                     } else {
-                        Button(service.linkedItem == nil ? "Link a bank account" : "Relink") {
+                        Button {
                             // "Relink" opens Plaid's update-mode Link for the existing item
                             // (re-authenticates in place, clears needsAttention on success)
                             // rather than startLink(), which would create a duplicate
@@ -114,7 +115,18 @@ struct SettingsView: View {
                                     await service.startLink()
                                 }
                             }
+                        } label: {
+                            Text(service.linkedItem == nil ? "Link a bank account" : "Relink")
+                                .frame(maxWidth: .infinity)
                         }
+                        .buttonStyle(ReservoirPrimaryButtonStyle())
+                        .listRowInsets(EdgeInsets())
+                        // Clears the section's `ReservoirSurface` row background just for
+                        // this row — the button style already paints its own
+                        // `ReservoirAccent` fill, so stacking `ReservoirSurface` behind it
+                        // would show as a mismatched border around the button's rounded
+                        // corners.
+                        .listRowBackground(Color("ReservoirBackground"))
                         .disabled(service.isStartingLink)
                         .accessibilityIdentifier("settings.linkButton")
                     }
@@ -156,6 +168,9 @@ struct SettingsView: View {
                     }
                 )
             }
+            .scrollContentBackground(.hidden)
+            .listRowBackground(Color("ReservoirSurface"))
+            .background(Color("ReservoirBackground"))
             .navigationTitle("Settings")
             .plaidLinkPresentation(service: service)
         }

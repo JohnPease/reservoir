@@ -727,6 +727,31 @@ stock SwiftUI `TabView` has no public API for a per-item selection
 background short of a fully custom tab bar, which was out of proportion to
 this visual-only story's scope (flagged, tracked as `reservoir-d2s`).
 
+**Visual design system, rest of the app** (`reservoir-jog`): the token-based
+treatment above was extended from the Today screen to Goals, Transactions, and
+Settings, mirroring Today's patterns rather than inventing new ones. The
+primary/accent `ButtonStyle` (`ReservoirAccent` fill, `ReservoirOnAccent`
+label) was extracted from `TodayView` into `Shared/ReservoirPrimaryButtonStyle.swift`
+once a second screen needed the identical CTA treatment (STANDARDS.md §3) —
+`TodayView`'s "Add transaction", `NoActiveGoalPromptView`'s "Create a goal",
+and `SettingsView`'s "Link a bank account"/"Relink" all use it now. The
+completed-goal banner (`Shared/CompletionBannerView.swift`) and goal pace/
+simulation copy (`Features/Goals/GoalCardView.swift`) reuse the same
+`ReservoirSurfaceDeficit`/`ReservoirDeficit` pairing `TodayView.StatCard`
+already established for `isOverLimit`, applied to "behind pace"/"goal not met"
+states. Two judgment calls worth flagging: (1) form screens (`GoalFormView`,
+`TransactionEntryView`, `MerchantRuleEntryView`, `SettingsView`) now paint
+their `Form` sections with `ReservoirSurface` via `.scrollContentBackground(.hidden)`
++ `.listRowBackground(_:)` — Today itself has no `Form` on its main screen, so
+this is new territory rather than a mirrored pattern, decided to keep those
+screens off native gray rather than leave them unstyled; (2) `LabeledField`'s
+inline validation-error text and `PlaidErrorText` both reuse `ReservoirDeficit`
+for "something's wrong" red text, even though that token's documented meaning
+(`docs/DESIGN_STANDARDS.md` §1) is negative-amount/over-target financial text,
+not general-purpose errors — no dedicated error token exists, and introducing
+one wasn't obviously justified for two call sites; flagged for product-lead/JP
+to confirm rather than decided unilaterally.
+
 ## Technical details
 
 - **Minimum iOS version**: 17.0 (required for SwiftData and `@Observable`)

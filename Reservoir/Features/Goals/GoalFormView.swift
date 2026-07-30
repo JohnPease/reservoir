@@ -108,6 +108,9 @@ struct GoalFormView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .listRowBackground(Color("ReservoirSurface"))
+            .background(Color("ReservoirBackground"))
             .navigationTitle(mode.isEdit ? "Edit Goal" : "Create a Goal")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

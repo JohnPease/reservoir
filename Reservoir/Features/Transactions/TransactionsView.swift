@@ -92,6 +92,7 @@ struct TransactionsView: View {
                                             )
                                         }
                                         .buttonStyle(.plain)
+                                        .listRowBackground(Color("ReservoirBackground"))
                                         .swipeActions {
                                             Button(role: .destructive) {
                                                 transactionPendingDelete = transaction
@@ -103,12 +104,15 @@ struct TransactionsView: View {
                                 }
                             }
                         }
+                        .scrollContentBackground(.hidden)
+                        .background(Color("ReservoirBackground"))
                         .accessibilityIdentifier("transactions.list")
                         .refreshable {
                             await triggerRefresh()
                         }
                     }
                 }
+                .background(Color("ReservoirBackground"))
                 .navigationTitle("Transactions")
             .toolbar {
                 #if DEBUG
