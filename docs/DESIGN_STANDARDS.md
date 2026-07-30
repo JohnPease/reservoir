@@ -32,6 +32,14 @@ decision that generalizes beyond that screen, promote it here.
     token would allow.
   - Do not substitute one for the other to save an asset — that's what
     caused the split in the first place.
+- **`ReservoirDeficit` doubles as general "something's wrong" text.** Its
+  original meaning is negative-amount/over-target financial text, but it's
+  also the approved color for form validation errors and connection-failure
+  messages (e.g. Plaid relink prompts) — a deliberate reuse, not drift, made
+  because a dedicated error token wasn't judged worth a new asset for two
+  call sites. If error-text usage grows enough that its red/terracotta hue
+  starts reading as "financial deficit" in a non-financial context, revisit
+  with a dedicated `ReservoirError` token then.
 
 ## 2. Contrast requirements
 
