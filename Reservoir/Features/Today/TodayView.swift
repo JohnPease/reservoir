@@ -297,11 +297,11 @@ private struct RecentTransactionsSection: View {
             if transactions.isEmpty {
                 Text("No transactions yet.")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color("ReservoirTextSecondary"))
                     .accessibilityIdentifier("today.emptyTransactions")
             } else {
                 ForEach(transactions, id: \.persistentModelID) { transaction in
-                    TransactionRowView(transaction: transaction)
+                    TransactionRowView(transaction: transaction, showDate: true)
                 }
             }
         }

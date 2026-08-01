@@ -19,6 +19,11 @@ struct TransactionRowView: View {
     /// `TransactionsView`'s list shows which goal (or "Unattributed") a transaction is
     /// attributed to; `TodayView`'s recent-transactions list doesn't need this line.
     var showGoalLabel: Bool = false
+    /// `TodayView`'s recent-transactions list is flat and can span multiple days, so the
+    /// timestamp alone is ambiguous — this prepends the date. `TransactionsView` already
+    /// groups rows under a per-day section header, where a per-row date would be
+    /// redundant, so it leaves this `false`.
+    var showDate: Bool = false
     /// When set, wraps the row as a single accessibility element under this identifier
     /// (matching `TransactionsView`'s existing `"transactions.row"` XCUITest hook).
     /// `nil` leaves the row's accessibility structure at SwiftUI's default, matching
@@ -46,20 +51,24 @@ struct TransactionRowView: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(transaction.merchantName)
-                    .foregroundStyle(isFixed ? .secondary : .primary)
+                    .foregroundStyle(isFixed ? Color("ReservoirTextSecondary") : Color("ReservoirTextPrimary"))
                 if isFixed {
                     Text("Excluded from limit")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color("ReservoirTextSecondary"))
+                } else if showDate {
+                    Text(transaction.date, format: .dateTime.month(.abbreviated).day().hour().minute())
+                        .font(.caption)
+                        .foregroundStyle(Color("ReservoirTextSecondary"))
                 } else {
                     Text(transaction.date, style: .time)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color("ReservoirTextSecondary"))
                 }
                 if showGoalLabel {
                     Text(goalLabel)
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color("ReservoirTextSecondary"))
                         .accessibilityIdentifier("transactions.row.goalLabel")
                 }
             }
@@ -67,7 +76,7 @@ struct TransactionRowView: View {
             Spacer()
 
             Text(transaction.amount, format: .currency(code: "USD"))
-                .foregroundStyle(isFixed ? .secondary : .primary)
+                .foregroundStyle(isFixed ? Color("ReservoirTextSecondary") : Color("ReservoirTextPrimary"))
         }
         .opacity(isFixed ? 0.6 : 1.0)
 
