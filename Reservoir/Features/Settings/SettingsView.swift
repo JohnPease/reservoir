@@ -21,11 +21,19 @@ struct SettingsView: View {
     @State private var pendingUnlink: LinkedItem?
 
     /// The one shared `TransactionImportService` instance, owned by `RootTabView` and
-    /// injected via `.environment(_:)` — read here only for `needsAttention` (the
-    /// "needs attention" text) and to refresh it immediately after a successful unlink,
-    /// same as `onRelinkSuccess` does after a successful relink. This view never calls
-    /// `runImport()` itself.
+    /// injected via `.environment(_:)` — read here only to refresh it immediately after a
+    /// successful unlink/relink, same as `onRelinkSuccess` does. This view never calls
+    /// `runImport()` itself. Its own `needsAttention` (an OR across every linked item,
+    /// reservoir-adq.6.5/loc.2) still backs `RootTabView`'s tab badge, but each row below
+    /// reads its own item's `needsAttention` directly (reservoir-loc.3) rather than this
+    /// service's app-wide OR.
     @Environment(TransactionImportService.self) private var importService: TransactionImportService?
+
+    /// Needed only to call `GoalAccountAssociationService.dissociate(itemID:modelContext:)`
+    /// as part of unlinking an item (reservoir-loc.3) — this view had no `ModelContext`
+    /// dependency before, since unlink previously only touched `LinkedItemStore`/Keychain
+    /// via `PlaidServiceLive`, neither of which needs SwiftData.
+    @Environment(\.modelContext) private var modelContext
 
     /// One shared `PlaidEnvironmentStore` instance backs `environmentStore`,
     /// `environment`'s initial value, and `service`'s own environment resolution — see
@@ -70,29 +78,41 @@ struct SettingsView: View {
                     onDelete: applyEnvironment
                 )
 
-                Section("Linked account") {
-                    if let linkedItem = service.linkedItem {
-                        LabeledContent("Institution", value: linkedItem.institutionName)
-                        LabeledContent("Item ID", value: linkedItem.itemID)
-
-                        // Reuses the shared `PlaidErrorText`/`.itemLoginRequired` copy (not a
-                        // second hardcoded string) so this and the Settings tab's own
-                        // `.badge(_:)` (RootTabView.swift) never drift into different wording
-                        // for the same state. Deliberately
-                        // reads `importService?.needsAttention`, not `linkedItem.needsAttention`
-                        // — see `PlaidDebugLinkView`'s equivalent (now-removed) comment: the
-                        // latter is `PlaidServiceLive`'s own cached copy, which never learns
-                        // about an `ITEM_LOGIN_REQUIRED` a *different* service instance
-                        // (`TransactionImportService`) detected and wrote straight to the
-                        // shared `LinkedItemStore`.
-                        if importService?.needsAttention == true {
-                            PlaidErrorText(error: .itemLoginRequired)
-                                .font(.footnote)
-                                .accessibilityIdentifier("settings.needsAttention")
-                        }
-                    } else {
+                // Rebuilt for reservoir-loc.3: an unbounded `ForEach` over every linked
+                // item (via `service.linkedItems`), each with its own relink/unlink/
+                // needsAttention state, replacing the old single `if let linkedItem`
+                // section. No fixed cap — "Link another account" stays available
+                // regardless of how many items are already linked.
+                //
+                // Accessibility identifiers are now per-item (`settings.relinkButton.
+                // <itemID>` etc.) rather than the old single static
+                // `settings.linkButton`/`settings.unlinkButton`/`settings.needsAttention` —
+                // `ReservoirUITests/PlaidRelinkUITests.swift` predates this story and still
+                // targets the old single-item identifiers/assumptions (e.g. "linkButton's
+                // label switches between Relink/Link a bank account"), which no longer
+                // holds now that adding and relinking are two permanently-separate
+                // affordances. That suite needs a rewrite pass for the new multi-item
+                // shape — flagged, not silently left broken.
+                Section("Linked accounts") {
+                    if service.linkedItems.isEmpty {
                         Text("No account linked yet.")
                             .foregroundStyle(Color("ReservoirTextSecondary"))
+                    } else {
+                        ForEach(service.linkedItems, id: \.itemID) { item in
+                            LinkedAccountRow(
+                                item: item,
+                                isStartingLink: service.isStartingLink,
+                                onRelink: {
+                                    // "Relink" opens Plaid's update-mode Link for this
+                                    // specific item (re-authenticates in place, clears
+                                    // needsAttention on success) rather than startLink(),
+                                    // which would create a duplicate item/token instead of
+                                    // repairing the existing one.
+                                    Task { await service.startRelink(for: item) }
+                                },
+                                onUnlink: { pendingUnlink = item }
+                            )
+                        }
                     }
 
                     if service.isExchangingToken {
@@ -104,19 +124,9 @@ struct SettingsView: View {
                         .accessibilityIdentifier("settings.exchanging")
                     } else {
                         Button {
-                            // "Relink" opens Plaid's update-mode Link for the existing item
-                            // (re-authenticates in place, clears needsAttention on success)
-                            // rather than startLink(), which would create a duplicate
-                            // item/token instead of repairing the existing one.
-                            Task {
-                                if let linkedItem = service.linkedItem {
-                                    await service.startRelink(for: linkedItem)
-                                } else {
-                                    await service.startLink()
-                                }
-                            }
+                            Task { await service.startLink() }
                         } label: {
-                            Text(service.linkedItem == nil ? "Link a bank account" : "Relink")
+                            Text("Link another account")
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(ReservoirPrimaryButtonStyle())
@@ -129,14 +139,6 @@ struct SettingsView: View {
                         .listRowBackground(Color("ReservoirBackground"))
                         .disabled(service.isStartingLink)
                         .accessibilityIdentifier("settings.linkButton")
-                    }
-
-                    if let linkedItem = service.linkedItem, !service.isExchangingToken {
-                        Button("Unlink", role: .destructive) {
-                            pendingUnlink = linkedItem
-                        }
-                        .disabled(service.isStartingLink)
-                        .accessibilityIdentifier("settings.unlinkButton")
                     }
 
                     if let error = service.presentedError {
@@ -155,14 +157,32 @@ struct SettingsView: View {
                     title: { item in "Unlink \(item.institutionName)?" },
                     message: { _ in
                         "You'll need to go through Plaid's login flow again to reconnect. "
-                            + "Transactions already imported will stay."
+                            + "Transactions already imported will stay. The connection itself "
+                            + "still exists on Plaid's side until removed there separately — "
+                            + "this only removes it from this app."
                     },
                     actionTitle: { _ in "Unlink" },
                     actionAccessibilityIdentifier: "settings.confirmUnlink",
                     cancelAccessibilityIdentifier: "settings.cancelUnlink",
-                    onDelete: { _ in
+                    onDelete: { item in
                         Task {
-                            await service.unlink()
+                            // Auto-dissociate before unlink (JP, reservoir-loc.3): an
+                            // unlinked item's `itemID` must never linger in any goal's
+                            // `associatedItemIDs` — a stale reference there would be a
+                            // silent, permanent mismatch (`GoalAccountAssociationService
+                            // .associatedGoal` simply never matching anything real again).
+                            // Runs before `service.unlink(_:)` so the local-data cleanup
+                            // happens before the Keychain/LinkedItemStore cleanup. Failure
+                            // here (rare — same `PersistenceSaveHelper.saveOrRollback`
+                            // failure mode as any other save) is logged by the service
+                            // itself and otherwise swallowed: no dedicated alert channel
+                            // for it, since a stale itemID self-heals the next time the
+                            // affected goal's account section is retoggled, and adding a
+                            // second failure-surfacing path to this view for a rare,
+                            // self-healing, non-destructive edge case isn't worth the
+                            // added UI surface.
+                            _ = GoalAccountAssociationService.dissociate(itemID: item.itemID, modelContext: modelContext)
+                            await service.unlink(item)
                             importService?.refreshNeedsAttention()
                         }
                     }
@@ -207,5 +227,56 @@ struct SettingsView: View {
         environmentStore.set(newValue)
         environment = newValue
         pendingEnvironment = nil
+    }
+}
+
+/// One row in `SettingsView`'s "Linked accounts" list (reservoir-loc.3) — institution
+/// name, this item's own `needsAttention` badge, and its own Relink/Unlink actions.
+/// Extracted out of `SettingsView.body` (rather than inlined in the `ForEach`) purely for
+/// readability at this nesting depth; it has no reuse elsewhere and takes no dependency
+/// beyond what its caller already has in scope.
+///
+/// Reads `item.needsAttention` directly — unlike the pre-loc.3 single-item section, which
+/// deliberately read `importService?.needsAttention` instead of `linkedItem.needsAttention`
+/// because that scalar was `TransactionImportService`'s own fresher, live-checked copy (see
+/// that property's doc comment). Now that `needsAttention` is genuinely per-item data
+/// (`LinkedItemStore`), each row can read its own item's flag directly — `service.linkedItems`
+/// is itself sourced from `LinkedItemStore.loadAll()` (refreshed on every relevant mutation,
+/// including `TransactionImportService.refreshNeedsAttention()`'s writes, since both go
+/// through the same `LinkedItemStoring` instance), so there's no second, staler copy to
+/// prefer over it here.
+private struct LinkedAccountRow: View {
+    let item: LinkedItem
+    let isStartingLink: Bool
+    let onRelink: () -> Void
+    let onUnlink: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            LabeledContent("Institution", value: item.institutionName)
+            LabeledContent("Item ID", value: item.itemID)
+
+            // Reuses the shared `PlaidErrorText`/`.itemLoginRequired` copy (not a second
+            // hardcoded string) so this and `RootTabView`'s tab badge never drift into
+            // different wording for the same state.
+            if item.needsAttention {
+                PlaidErrorText(error: .itemLoginRequired)
+                    .font(.footnote)
+                    .accessibilityIdentifier("settings.needsAttention.\(item.itemID)")
+            }
+
+            HStack {
+                Button("Relink", action: onRelink)
+                    .disabled(isStartingLink)
+                    .accessibilityIdentifier("settings.relinkButton.\(item.itemID)")
+
+                Spacer()
+
+                Button("Unlink", role: .destructive, action: onUnlink)
+                    .disabled(isStartingLink)
+                    .accessibilityIdentifier("settings.unlinkButton.\(item.itemID)")
+            }
+        }
+        .padding(.vertical, 4)
     }
 }

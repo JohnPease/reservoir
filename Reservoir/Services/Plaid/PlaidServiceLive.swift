@@ -68,6 +68,10 @@ final class PlaidServiceLive: PlaidService {
     private(set) var linkToken: String?
     private(set) var isExchangingToken = false
     private(set) var linkedItem: LinkedItem?
+    /// Every currently linked item — reservoir-loc.3's multi-account read surface. Kept
+    /// in sync with `linkedItemStore` on every mutation; see `PlaidService.linkedItems`'s
+    /// doc comment.
+    private(set) var linkedItems: [LinkedItem] = []
     var presentedError: PlaidErrorCategory?
 
     /// True while `startLink()` is in flight (from the moment it's called
@@ -145,6 +149,22 @@ final class PlaidServiceLive: PlaidService {
     /// flow this instance corresponds to, consumed once, not a general-purpose cache.
     private var relinkingItem: LinkedItem?
 
+    /// Which flow (`startLink()` vs. `startRelink(for:)`) `presentedError` most recently
+    /// came from — reservoir-loc.3's fix for `retry()`'s flow-ambiguity. Before this,
+    /// `retry()` inferred the flow from `relinkingItem ?? linkedItem`, which was correct
+    /// only while at most one item could ever be linked (a failed "add" and a failed
+    /// "relink" were indistinguishable by any state this class kept once `linkedItem`
+    /// became an arbitrary "first of N" pointer — see `retry()`'s prior doc comment).
+    /// Set at the start of `startLink()`/`startRelink(for:)`, deliberately **not** cleared
+    /// on success or by `handleRelinkSuccess()`/`relinkingItem`'s own defer — it only ever
+    /// needs to reflect "the last flow this instance attempted," for `retry()` to dispatch
+    /// correctly the next time `presentedError` is set.
+    private enum AttemptedFlow {
+        case add
+        case relink(LinkedItem)
+    }
+    private var lastAttemptedFlow: AttemptedFlow?
+
     init(
         keychain: KeychainServicing = KeychainService(),
         urlSession: URLSession = .shared,
@@ -158,12 +178,12 @@ final class PlaidServiceLive: PlaidService {
         self.cursorStore = cursorStore
         self.linkedItemStore = linkedItemStore
         // Single-pointer `linkedItem` still reflects only "the" (most recently
-        // active) item for now — the rest of `PlaidService`'s protocol surface
-        // (and every current call site) is single-item-shaped; exposing the full
-        // `loadAll()` collection through this property is reservoir-loc.3's
-        // concern (Settings' multi-account UI), not this story's. Arbitrarily
-        // picks the first stored item when more than one exists.
-        self.linkedItem = linkedItemStore.loadAll().first
+        // active) item, kept for existing single-item call sites (see its doc
+        // comment) — arbitrarily picks the first stored item when more than one
+        // exists. `linkedItems` (reservoir-loc.3) is the real multi-item surface.
+        let items = linkedItemStore.loadAll()
+        self.linkedItems = items
+        self.linkedItem = items.first
 
         let keychainForInvalidation = keychain
         let cursorStoreForInvalidation = cursorStore
@@ -185,6 +205,7 @@ final class PlaidServiceLive: PlaidService {
             }
             Task { @MainActor in
                 self?.linkedItem = nil
+                self?.linkedItems = []
                 for item in items {
                     linkedItemStoreForInvalidation.remove(itemID: item.itemID)
                     try? await keychainForInvalidation.delete(for: PlaidKeychainKey.accessToken(itemID: item.itemID))
@@ -225,35 +246,45 @@ final class PlaidServiceLive: PlaidService {
         isStartingLink = true
         defer { isStartingLink = false }
 
+        lastAttemptedFlow = .add
         await beginLinkFlow(isRelink: false) { try await self.createLinkToken() }
     }
 
     /// The shared "Try again" affordance's action — retries whichever flow the last
-    /// `presentedError` came from. Must stay relink-aware (reservoir-adq.6.5 code review):
-    /// if a `startRelink(for:)` attempt fails (e.g. a transient network error creating the
-    /// update-mode token) and the user taps "Try again", retrying via `startLink()` would
-    /// silently create a brand-new item/token instead of repairing the existing one —
-    /// exactly the bug the Relink button itself was fixed to avoid.
+    /// `presentedError` came from, per `lastAttemptedFlow` (reservoir-loc.3). Must stay
+    /// relink-aware (reservoir-adq.6.5 code review): if a `startRelink(for:)` attempt fails
+    /// (e.g. a transient network error creating the update-mode token) and the user taps
+    /// "Try again", retrying via `startLink()` would silently create a brand-new item/token
+    /// instead of repairing the existing one — exactly the bug the Relink button itself was
+    /// fixed to avoid.
     ///
-    /// Prefers `relinkingItem` over `linkedItem` (reservoir-loc.1 code review) for the same
-    /// reason `handleRelinkSuccess()` does — `linkedItem` is an arbitrary "first of N"
-    /// pointer once more than one item is linked, not necessarily the item a failed relink
-    /// attempt was actually for. Not reachable through today's still-single-item-shaped
-    /// `SettingsView` (it only calls `startRelink(for:)` with `linkedItem` itself), but a
-    /// live hazard once reservoir-loc.3 lets a user relink an item other than the pointer's
-    /// current "first" one.
+    /// Dispatches on `lastAttemptedFlow` when it's known — set at the start of whichever
+    /// of `startLink()`/`startRelink(for:)` actually ran, so it correctly distinguishes "a
+    /// fresh `startLink()` add failed" from "a `startRelink(for:)` failed" once more than
+    /// one item can be linked (`linkedItem` is an arbitrary "first of N" pointer), which is
+    /// exactly the ambiguity reservoir-loc.3's multi-item `SettingsView` makes reachable —
+    /// a user can now tap "Link another account" while `linkedItem` is already non-nil.
     ///
-    /// Still latent (flagged for reservoir-loc.3, not fixed here): once that story's UI can
-    /// call `startLink()` to add a new item while `linkedItem` is already non-nil, this
-    /// method has no way to tell "a fresh add failed" from "a relink failed" — both leave
-    /// `relinkingItem` in whatever state the last attempt left it. Needs an explicit
-    /// last-attempted-flow marker once that ambiguity becomes reachable.
+    /// Falls back to the pre-loc.3 `linkedItem`-presence heuristic only when
+    /// `lastAttemptedFlow` is `nil` — i.e. `retry()` is called without either flow method
+    /// having actually run first (e.g. `presentedError` set directly, as some tests do to
+    /// simulate a prior failure). That fallback is unambiguous in the single-item shape it
+    /// was designed for and remains a reasonable default even now: absent better
+    /// information, "an item is already linked" is still the best guess that a relink is
+    /// what's wanted.
     func retry() async {
         presentedError = nil
-        if let item = relinkingItem ?? linkedItem {
+        switch lastAttemptedFlow {
+        case .relink(let item):
             await startRelink(for: item)
-        } else {
+        case .add:
             await startLink()
+        case .none:
+            if let item = linkedItem {
+                await startRelink(for: item)
+            } else {
+                await startLink()
+            }
         }
     }
 
@@ -304,6 +335,7 @@ final class PlaidServiceLive: PlaidService {
         let item = LinkedItem(itemID: exchange.itemID, institutionName: institutionName, linkedAt: Date())
         linkedItem = item
         linkedItemStore.save(item)
+        linkedItems = linkedItemStore.loadAll()
     }
 
     func handleLinkExit(errorType: String?, errorCode: String?) {
@@ -350,6 +382,7 @@ final class PlaidServiceLive: PlaidService {
         }
 
         relinkingItem = item
+        lastAttemptedFlow = .relink(item)
         await beginLinkFlow(isRelink: true) { try await self.createRelinkToken(accessToken: accessToken) }
     }
 
@@ -373,6 +406,7 @@ final class PlaidServiceLive: PlaidService {
             item.needsAttention = false
             linkedItem = item
             linkedItemStore.save(item)
+            linkedItems = linkedItemStore.loadAll()
         }
         // Notify after the flag is actually cleared (both in-memory and in the store) —
         // reservoir-1nn. This is the one point that genuinely marks relink completion;
@@ -397,17 +431,22 @@ final class PlaidServiceLive: PlaidService {
     /// unlink should resume `/transactions/sync` from wherever it left off rather than
     /// re-pulling full history and re-running dedup against everything again.
     ///
-    /// Resets `linkedItem`/`presentedError` the same way `handleRelinkSuccess()` resets
-    /// its own state on success — no half-unlinked state left behind for the UI to
-    /// misrender.
-    func unlink() async {
-        let item = linkedItem
-        linkedItem = nil
+    /// Takes an explicit `item` (reservoir-loc.3) rather than always targeting the single
+    /// `linkedItem` pointer — `SettingsView` now presents a row per linked item, and each
+    /// row's Unlink action must sever that specific item, not "whichever one `linkedItem`
+    /// currently happens to reference." Resets `linkedItem`/`linkedItems`/`presentedError`
+    /// to reflect the item's removal, same no-half-unlinked-state posture the prior no-arg
+    /// version had.
+    func unlink(_ item: LinkedItem) async {
         presentedError = nil
-        guard let item else { return }
         // Removes only this item (reservoir-loc.1) — never every stored item — so
         // unlinking one account leaves any other linked item's metadata/token intact.
         linkedItemStore.remove(itemID: item.itemID)
+        let remaining = linkedItemStore.loadAll()
+        linkedItems = remaining
+        if linkedItem?.itemID == item.itemID {
+            linkedItem = remaining.first
+        }
         try? await keychain.delete(for: PlaidKeychainKey.accessToken(itemID: item.itemID))
     }
 

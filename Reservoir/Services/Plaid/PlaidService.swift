@@ -62,7 +62,19 @@ protocol PlaidService: AnyObject {
 
     /// The most recently linked item, if any exchange has succeeded and
     /// been stored in Keychain this session or on a prior launch.
+    ///
+    /// Kept for existing single-item call sites (`retry()`'s fallback, `unlink()`'s prior
+    /// shape before reservoir-loc.3) — an arbitrary "first of N" once more than one item
+    /// is linked. New multi-item UI (`SettingsView`, reservoir-loc.3) should read
+    /// `linkedItems` instead.
     var linkedItem: LinkedItem? { get }
+
+    /// Every currently linked item, in `LinkedItemStore.loadAll()`'s order — reservoir-
+    /// loc.3's multi-account read surface. Kept in sync with `LinkedItemStore` on every
+    /// mutation (`handleLinkSuccess`, `handleRelinkSuccess`, `unlink(_:)`, the
+    /// environment-change invalidation hook) so a view holding this instance never needs
+    /// its own separate `LinkedItemStore` read.
+    var linkedItems: [LinkedItem] { get }
 
     /// User-facing error to display, or nil. Set by `handleLinkExit` and by
     /// a failed exchange; cleared when the user dismisses it or retries.
@@ -99,4 +111,12 @@ protocol PlaidService: AnyObject {
     /// classified and surfaced via `presentedError`, same generic-error posture as
     /// `startLink()`.
     func startRelink(for item: LinkedItem) async
+
+    /// Severs the local Plaid connection for `item` specifically (reservoir-loc.3) —
+    /// clears just that item's `LinkedItemStore` entry and Keychain access token, leaving
+    /// every other linked item untouched. Takes an explicit item (not the prior no-arg
+    /// shape, which only ever unlinked whichever item the single `linkedItem` pointer
+    /// happened to reference) now that `SettingsView` can present more than one linked
+    /// item at a time and needs to unlink a specific row, not "whichever one is current."
+    func unlink(_ item: LinkedItem) async
 }
