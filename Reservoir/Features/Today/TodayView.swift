@@ -133,11 +133,12 @@ struct TodayView: View {
                         Text("Add transaction")
                             .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(ReservoirPrimaryButtonStyle())
                     .accessibilityIdentifier("today.addTransaction")
                 }
                 .padding()
             }
+            .background(Color("ReservoirBackground"))
             .navigationTitle(dateHeaderText)
         }
         .sheet(isPresented: $isShowingAddTransaction) {
@@ -176,17 +177,37 @@ struct TodayView: View {
 private struct HeroSection: View {
     let summary: TodayScreenCalculator.Summary
 
+    /// The fill-gauge and the hero number's own color switch both key off
+    /// `summary.limit` (today's daily limit — base + carry-forward), not
+    /// `summary.remaining`. Per §3.1, the gauge exists to "visually tie the hero number
+    /// to the reservoir/tank metaphor" — it's the hero number's own tank, not a
+    /// separate reading of the still-remaining balance (which the "Remaining" stat
+    /// card already covers on its own terms, §3.3). `summary.dailyBase` is the "full
+    /// tank" reference rate §4's formula scales to a week.
+    private var gaugeResult: FillGaugeCalculator.Result {
+        FillGaugeCalculator.result(currentBalance: summary.limit, baseDailyAmount: summary.dailyBase)
+    }
+
+    private var heroColor: Color {
+        summary.limit >= 0 ? Color("ReservoirTextPrimary") : Color("ReservoirDeficit")
+    }
+
     var body: some View {
         VStack(spacing: 4) {
-            // 44px per PROJECT_SPEC's "UX design — Today screen" — a manual/code-review
-            // check (STANDARDS.md §5), not something asserted in XCUITest.
-            Text(summary.limit, format: .currency(code: "USD"))
-                .font(.system(size: 44, weight: .bold))
-                .accessibilityIdentifier("today.heroAmount")
+            HStack(spacing: 8) {
+                FillGaugeView(result: gaugeResult)
+
+                // 44px per PROJECT_SPEC's "UX design — Today screen" — a manual/code-review
+                // check (STANDARDS.md §5), not something asserted in XCUITest.
+                Text(summary.limit, format: .currency(code: "USD"))
+                    .font(.system(size: 44, weight: .bold))
+                    .foregroundStyle(heroColor)
+                    .accessibilityIdentifier("today.heroAmount")
+            }
 
             Text("\(currency(summary.dailyBase)) base + \(currency(summary.carriedForward)) carried forward")
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color("ReservoirTextSecondary"))
         }
         .frame(maxWidth: .infinity)
         // .contain, not the default .automatic, so this stays queryable as its own
@@ -240,16 +261,26 @@ private struct StatCard: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                // §3.3: deficit state reuses ReservoirDeficit for the label too — no
+                // separate dimmed asset; the caption's smaller size/weight already
+                // reads as "dimmed" relative to the value line below it.
+                .foregroundStyle(isOverLimit ? Color("ReservoirDeficit") : Color("ReservoirTextSecondary"))
             Text(amount, format: .currency(code: "USD"))
                 .font(.title3.weight(.semibold))
-                .foregroundStyle(isOverLimit ? .red : .primary)
+                .foregroundStyle(isOverLimit ? Color("ReservoirDeficit") : Color("ReservoirTextPrimary"))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .background(
+            isOverLimit ? Color("ReservoirSurfaceDeficit") : Color("ReservoirSurface"),
+            in: RoundedRectangle(cornerRadius: 12)
+        )
     }
 }
+
+// §3.5's primary button — moved to `Reservoir/Shared/ReservoirPrimaryButtonStyle.swift`
+// (reservoir-jog) once Goals/Transactions/Settings needed the identical CTA treatment;
+// see that file's doc comment for the full rationale (STANDARDS.md §3, no copy-paste).
 
 // MARK: - Completion banner
 
@@ -266,11 +297,11 @@ private struct RecentTransactionsSection: View {
             if transactions.isEmpty {
                 Text("No transactions yet.")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color("ReservoirTextSecondary"))
                     .accessibilityIdentifier("today.emptyTransactions")
             } else {
                 ForEach(transactions, id: \.persistentModelID) { transaction in
-                    TransactionRowView(transaction: transaction)
+                    TransactionRowView(transaction: transaction, showDate: true)
                 }
             }
         }

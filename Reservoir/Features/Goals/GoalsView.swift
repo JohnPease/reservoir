@@ -92,6 +92,7 @@ struct GoalsView: View {
                 }
                 .padding()
             }
+            .background(Color("ReservoirBackground"))
             .navigationTitle("Goals")
             .toolbar {
                 if !hasNoGoalsAtAll {
@@ -133,6 +134,7 @@ struct GoalsView: View {
     private func sectionHeader(_ title: String) -> some View {
         Text(title)
             .font(.headline)
+            .foregroundStyle(Color("ReservoirTextPrimary"))
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 

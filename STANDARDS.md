@@ -179,7 +179,15 @@ stages it on every commit, so it travels with the code. Consequences:
   from the file you just pulled; note this command itself creates a commit,
   so run it deliberately, not as an automatic hook).
 
-## 8. Definition of done
+## 8. Visual design system
+
+Color, iconography, and visual-element (gauge/progress) conventions are
+tracked separately in `docs/DESIGN_STANDARDS.md` — check it before building
+any new screen so colors/icons stay consistent with what's already shipped,
+and add to it when a screen-specific requirements doc makes a decision that
+generalizes beyond that screen.
+
+## 9. Definition of done
 
 A change is done when all of the following are true:
 - [ ] Code has no duplicated logic (extracted per §3)

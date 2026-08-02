@@ -34,13 +34,14 @@ struct MerchantRulesView: View {
                         } label: {
                             HStack {
                                 Text(rule.merchantName)
-                                    .foregroundStyle(.primary)
+                                    .foregroundStyle(Color("ReservoirTextPrimary"))
                                 Spacer()
                                 Text(rule.type == .fixed ? "Fixed" : "Variable")
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(Color("ReservoirTextSecondary"))
                             }
                         }
                         .buttonStyle(.plain)
+                        .listRowBackground(Color("ReservoirBackground"))
                         .accessibilityIdentifier("merchantRules.row")
                         .swipeActions {
                             Button(role: .destructive) {
@@ -51,9 +52,12 @@ struct MerchantRulesView: View {
                         }
                     }
                 }
+                .scrollContentBackground(.hidden)
+                .background(Color("ReservoirBackground"))
                 .accessibilityIdentifier("merchantRules.list")
             }
         }
+        .background(Color("ReservoirBackground"))
         .navigationTitle("Merchant Rules")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {

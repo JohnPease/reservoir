@@ -74,6 +74,9 @@ struct MerchantRuleEntryView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .listRowBackground(Color("ReservoirSurface"))
+            .background(Color("ReservoirBackground"))
             .navigationTitle(mode.isEdit ? "Edit Rule" : "New Rule")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

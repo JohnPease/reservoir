@@ -18,16 +18,20 @@ struct NoActiveGoalPromptView: View {
         VStack(spacing: 12) {
             Image(systemName: "target")
                 .font(.largeTitle)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color("ReservoirTextMuted"))
             Text("No active goal yet")
                 .font(.headline)
+                .foregroundStyle(Color("ReservoirTextPrimary"))
             Text("Create a savings goal to see your daily limit.")
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color("ReservoirTextSecondary"))
                 .multilineTextAlignment(.center)
-            Button("Create a goal", action: onCreateGoal)
-                .buttonStyle(.borderedProminent)
-                .accessibilityIdentifier(buttonAccessibilityIdentifier)
+            Button(action: onCreateGoal) {
+                Text("Create a goal")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(ReservoirPrimaryButtonStyle())
+            .accessibilityIdentifier(buttonAccessibilityIdentifier)
         }
         .frame(maxWidth: .infinity)
         .padding()

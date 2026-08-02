@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Identifies each of `RootTabView`'s tabs, so its `TabView` can bind `selection:` to
 /// `TabSelection.selected` below rather than relying on index-based selection. Originally
@@ -67,6 +68,17 @@ struct RootTabView: View {
                 // the more direct place for it.
                 .badge(importService?.needsAttention == true ? "!" : nil)
         }
+        // §3.6: active tab icon/label tinted ReservoirAccent (`.tint` colors whichever
+        // tab item is currently selected); inactive tabs' `ReservoirTextMuted` tint is
+        // set once via `UITabBar.appearance()` in `.task` below — SwiftUI's `TabView`
+        // has no direct modifier for the unselected-item color. The pill-shaped
+        // `ReservoirSurfaceAccent` background behind the active tab item in §3.6 is
+        // NOT applied here: stock `TabView` (pre-Liquid-Glass tab bar) has no public
+        // API for a per-item selection background, and the correct-but-heavyweight
+        // fix (a fully custom bottom bar replacing `TabView` outright) is a much
+        // larger, riskier change than this visual-layer story's scope — flagged back
+        // rather than silently built or silently dropped; see reservoir-d02.
+        .tint(Color("ReservoirAccent"))
         .keepingReferenceDateCurrent($todayClock.referenceDate, calendar: calendar)
         .environment(todayClock)
         .environment(tabSelection)
@@ -91,6 +103,13 @@ struct RootTabView: View {
                     urlSession: UITestScenario.plaidURLSession
                 )
             }
+            // Set once per launch (idempotent to set repeatedly, but only needs to run
+            // once) — UIKit's tab-bar appearance proxy is the only way to color the
+            // *unselected* tab items; SwiftUI's `.tint(_:)` above only reaches the
+            // selected one. Reads the asset catalog color, not a hardcoded value, so
+            // light/dark switching still comes from the Asset Catalog per
+            // `docs/DESIGN_STANDARDS.md` §1.
+            UITabBar.appearance().unselectedItemTintColor = UIColor(named: "ReservoirTextMuted")
         }
         .onChange(of: scenePhase) { _, newPhase in
             Task { await importService?.handleScenePhaseTransition(to: newPhase) }

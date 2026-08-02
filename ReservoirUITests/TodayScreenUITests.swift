@@ -43,6 +43,28 @@ final class TodayScreenUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Excluded from limit"].exists)
     }
 
+    func testRecentTransactionsRowShowsDateNotJustTime() {
+        // TodayView passes `showDate: true` to `TransactionRowView` (unlike
+        // `TransactionsView`, whose day-grouped list leaves it at the `false` default):
+        // this list is flat and can span multiple days, so a bare time like "7:24 AM" is
+        // ambiguous. Assert the row's secondary caption includes a recognizable date
+        // component (month abbreviation + day, e.g. "Jul 29, 7:24 AM"), not just a
+        // time-only string.
+        let app = launchedApp(scenario: "normal")
+
+        XCTAssertTrue(app.otherElements["today.recentTransactions"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Coffee Shop"].waitForExistence(timeout: 5))
+
+        // Locale-formatted as e.g. "Aug 1 at 9:29 AM" (month abbreviation + day + time),
+        // not just "9:29 AM" — matching on the leading "<3-letter month> <day>" prefix
+        // rather than a specific separator keeps this independent of the exact
+        // `.dateTime` phrasing.
+        let dateCaption = app.staticTexts.matching(
+            NSPredicate(format: "label MATCHES %@", "^[A-Za-z]{3} \\d{1,2}.*\\d{1,2}:\\d{2}.*")
+        )
+        XCTAssertGreaterThan(dateCaption.count, 0, "Recent-transactions row caption should include a date, not a bare time")
+    }
+
     func testAddTransactionOpensStubSheet() {
         let app = launchedApp(scenario: "normal")
 

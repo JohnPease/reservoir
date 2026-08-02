@@ -23,28 +23,62 @@ struct CompletionBannerView: View {
         TodayScreenCalculator.isGoalMet(goal)
     }
 
+    /// Backdrop-plus-glyph pairing per `docs/DESIGN_STANDARDS.md` §3 ("status icons sit on
+    /// a circular backdrop using the surface token for that status, tinted with that
+    /// status's text token") — same construction as `TransactionRowView`'s
+    /// `TransactionDirectionIcon`. "Goal met" reuses the accent (healthy/positive) pair;
+    /// "target date arrived without meeting it" reuses the deficit pair, mirroring the
+    /// bead's instruction to mirror `TodayView`'s `isOverLimit` pattern for goals behind
+    /// schedule/over-target.
+    private var iconBackdropColor: Color {
+        Color(isGoalMet ? "ReservoirSurfaceAccent" : "ReservoirSurfaceDeficit")
+    }
+
+    private var iconGlyphColor: Color {
+        Color(isGoalMet ? "ReservoirAccent" : "ReservoirDeficit")
+    }
+
+    /// Not-met reuses `ReservoirSurfaceDeficit` as a full card background — the same
+    /// pairing `TodayView.StatCard` already establishes and verifies for `isOverLimit`.
+    /// Met deliberately stays on the neutral `ReservoirSurface` rather than introducing an
+    /// unverified `ReservoirSurfaceAccent`-as-full-card-background pairing (that token's
+    /// only existing use is as a small icon backdrop, §2's contrast rule requires
+    /// verifying any new background/text pairing before introducing it) — the accent
+    /// icon backdrop above already signals "success" without needing the whole card
+    /// recolored too.
+    private var cardBackgroundColor: Color {
+        Color(isGoalMet ? "ReservoirSurface" : "ReservoirSurfaceDeficit")
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: isGoalMet ? "checkmark.circle.fill" : "calendar.badge.clock")
-                .foregroundStyle(.blue)
+            ZStack {
+                Circle().fill(iconBackdropColor)
+                Image(systemName: isGoalMet ? "checkmark.circle.fill" : "calendar.badge.clock")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(iconGlyphColor)
+            }
+            .frame(width: 30, height: 30)
             VStack(alignment: .leading, spacing: 4) {
                 if isGoalMet {
                     // Celebratory framing: the goal's cumulative carry-forward balance
                     // never went negative through the target date.
                     Text("You reached your goal — nice work!")
                         .font(.headline)
+                        .foregroundStyle(Color("ReservoirTextPrimary"))
                     Text("Target: \(goal.targetAmount, format: .currency(code: "USD")) by \(goal.targetDate, format: .dateTime.month(.wide).day()).")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color("ReservoirTextSecondary"))
                 } else {
                     // Factual, non-punitive framing — no shortfall dollar amount, no
                     // guilt language. This is a past event being reported, not an active
                     // warning (see reservoir-4za "UX" section).
                     Text("Your target date has arrived")
                         .font(.headline)
+                        .foregroundStyle(Color("ReservoirDeficit"))
                     Text("You spent more than planned along the way.")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color("ReservoirTextSecondary"))
                 }
             }
             Spacer()
@@ -52,11 +86,12 @@ struct CompletionBannerView: View {
                 onDismiss()
             } label: {
                 Image(systemName: "xmark")
+                    .foregroundStyle(Color("ReservoirTextSecondary"))
             }
             .accessibilityIdentifier(dismissButtonAccessibilityIdentifier)
         }
         .padding()
-        .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+        .background(cardBackgroundColor, in: RoundedRectangle(cornerRadius: 12))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(containerAccessibilityIdentifier)
     }

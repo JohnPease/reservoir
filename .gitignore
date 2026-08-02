@@ -20,3 +20,4 @@ xcuserdata/
 # Config/Plaid.local.xcconfig.example), which it #includes and which is never
 # committed — see README.
 Config/Plaid.local.xcconfig
+.build/
