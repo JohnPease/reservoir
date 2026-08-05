@@ -194,6 +194,46 @@ final class PlaidServiceLiveTests: XCTestCase {
         XCTAssertEqual(linkedItemStore.loadAll().map(\.itemID), ["item-1"])
     }
 
+    // MARK: - refreshLinkedItems() (reservoir-loc.3 bug fix)
+
+    /// The actual regression: `sut` never touches `linkedItemStore` itself once
+    /// constructed, so a write from a wholly separate `LinkedItemStoring`-backed object
+    /// (here, direct calls simulating what `TransactionImportService.setNeedsAttention`
+    /// does mid-import) leaves `sut.linkedItems`/`sut.linkedItem` stale until
+    /// `refreshLinkedItems()` is called.
+    func test_refreshLinkedItems_picksUpNeedsAttentionSetByADifferentInstance() {
+        let linkedItemStore = StubLinkedItemStore(initial: LinkedItem(itemID: "item-1", institutionName: "Bank One", linkedAt: .now))
+        let sut = PlaidServiceLive(keychain: StubKeychain(), urlSession: .shared, linkedItemStore: linkedItemStore)
+        XCTAssertEqual(sut.linkedItems.first?.needsAttention, false, "sanity check: not yet flagged.")
+
+        // Simulates a live import (a *different* PlaidServiceLive/TransactionImportService
+        // instance in the real app) classifying ITEM_LOGIN_REQUIRED and writing straight
+        // to the shared store, entirely independent of `sut`.
+        linkedItemStore.setNeedsAttention(true, itemID: "item-1")
+        XCTAssertEqual(sut.linkedItems.first?.needsAttention, false, "sanity check: sut's in-memory copy must still be stale before refreshLinkedItems() is called.")
+
+        sut.refreshLinkedItems()
+
+        XCTAssertEqual(sut.linkedItems.first?.needsAttention, true, "refreshLinkedItems() must re-read the current per-item flag from the store.")
+        XCTAssertEqual(sut.linkedItem?.needsAttention, true, "the single-pointer linkedItem must also be refreshed, not just the linkedItems array.")
+    }
+
+    func test_refreshLinkedItems_picksUpItemsAddedOrRemovedByADifferentInstance() {
+        let linkedItemStore = StubLinkedItemStore(initial: LinkedItem(itemID: "item-1", institutionName: "Bank One", linkedAt: .now))
+        let sut = PlaidServiceLive(keychain: StubKeychain(), urlSession: .shared, linkedItemStore: linkedItemStore)
+        XCTAssertEqual(sut.linkedItems.count, 1, "sanity check.")
+
+        // A second item added, and the original removed, entirely outside `sut`.
+        linkedItemStore.save(LinkedItem(itemID: "item-2", institutionName: "Bank Two", linkedAt: .now))
+        linkedItemStore.remove(itemID: "item-1")
+        XCTAssertEqual(sut.linkedItems.map(\.itemID), ["item-1"], "sanity check: sut's copy must still be stale before refreshLinkedItems().")
+
+        sut.refreshLinkedItems()
+
+        XCTAssertEqual(sut.linkedItems.map(\.itemID), ["item-2"])
+        XCTAssertEqual(sut.linkedItem?.itemID, "item-2", "the pointer must fall back to whatever remains once its previously-pointed-at item is gone.")
+    }
+
     // MARK: - startLink reentrancy guard
 
     func test_startLink_whileAlreadyInFlight_secondCallIsNoOpAndReturnsPromptly() async {

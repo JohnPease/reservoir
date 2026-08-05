@@ -101,7 +101,15 @@ struct SettingsView: View {
                         ForEach(service.linkedItems, id: \.itemID) { item in
                             LinkedAccountRow(
                                 item: item,
-                                isStartingLink: service.isStartingLink,
+                                // Both flags must gate these buttons, not just
+                                // `isStartingLink`: `isStartingLink` covers only
+                                // token-creation/session-presentation (cleared once the
+                                // LinkKit sheet is up — see its own doc comment), while a
+                                // fresh "Link another account" flow keeps going through
+                                // `isExchangingToken` afterward (the public-token exchange).
+                                // Without both, a row's Relink/Unlink stayed tappable
+                                // during that exchange window, racing against it.
+                                isBusy: service.isStartingLink || service.isExchangingToken,
                                 onRelink: {
                                     // "Relink" opens Plaid's update-mode Link for this
                                     // specific item (re-authenticates in place, clears
@@ -250,14 +258,24 @@ struct SettingsView: View {
 /// deliberately read `importService?.needsAttention` instead of `linkedItem.needsAttention`
 /// because that scalar was `TransactionImportService`'s own fresher, live-checked copy (see
 /// that property's doc comment). Now that `needsAttention` is genuinely per-item data
-/// (`LinkedItemStore`), each row can read its own item's flag directly — `service.linkedItems`
-/// is itself sourced from `LinkedItemStore.loadAll()` (refreshed on every relevant mutation,
-/// including `TransactionImportService.refreshNeedsAttention()`'s writes, since both go
-/// through the same `LinkedItemStoring` instance), so there's no second, staler copy to
-/// prefer over it here.
+/// (`LinkedItemStore`), each row can read its own item's flag directly.
+///
+/// **Not automatically live**, though: `item` comes from `service.linkedItems`, which only
+/// updates when `PlaidServiceLive` runs one of its own mutation methods or when
+/// `SettingsView.onAppear` explicitly calls `service.refreshLinkedItems()` — sharing the
+/// same underlying `LinkedItemStore` as `TransactionImportService` does **not**, by itself,
+/// keep this in-memory copy current (this was a real bug — a live import elsewhere setting
+/// `needsAttention` on the shared store left a since-constructed `PlaidServiceLive`
+/// instance's `linkedItems` stale until the next appearance). See `refreshLinkedItems()`'s
+/// doc comment for the actual fix.
 private struct LinkedAccountRow: View {
     let item: LinkedItem
-    let isStartingLink: Bool
+    /// True while *any* Link flow is in flight for this `service` instance — a fresh add,
+    /// a relink of this row, or a relink of a different row. Every row shares the same
+    /// underlying `PlaidServiceLive`, so disabling all rows' actions during any one
+    /// in-flight flow (rather than just the row that started it) matches the existing
+    /// reentrancy guard `PlaidServiceLive.isStartingLink` already enforces service-wide.
+    let isBusy: Bool
     let onRelink: () -> Void
     let onUnlink: () -> Void
 
@@ -277,13 +295,13 @@ private struct LinkedAccountRow: View {
 
             HStack {
                 Button("Relink", action: onRelink)
-                    .disabled(isStartingLink)
+                    .disabled(isBusy)
                     .accessibilityIdentifier("settings.relinkButton.\(item.itemID)")
 
                 Spacer()
 
                 Button("Unlink", role: .destructive, action: onUnlink)
-                    .disabled(isStartingLink)
+                    .disabled(isBusy)
                     .accessibilityIdentifier("settings.unlinkButton.\(item.itemID)")
             }
         }

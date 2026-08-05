@@ -417,8 +417,8 @@ final class PlaidServiceLive: PlaidService {
 
     // MARK: - Unlink (reservoir-adq.7)
 
-    /// Severs the Plaid connection for the current `linkedItem` — Settings' "Unlink"
-    /// action. Deliberately narrow, matching this story's explicit acceptance criterion:
+    /// Severs the local Plaid connection for `item` — Settings' "Unlink" action.
+    /// Deliberately narrow, matching this story's explicit acceptance criterion:
     /// clears only `LinkedItemStore` (linked-item metadata) and the Keychain access
     /// token, the same two things `PlaidEnvironmentStore.onChange`'s existing
     /// invalidation hook clears on an environment switch. It never touches

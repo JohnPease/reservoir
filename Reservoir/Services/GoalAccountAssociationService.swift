@@ -50,6 +50,36 @@ enum GoalAccountAssociationService {
         )
     }
 
+    /// Applies `associate(itemID:with:modelContext:)` for every ID in `itemIDs`, in order,
+    /// stopping at the first failure — reservoir-loc.3's `GoalFormView` create-mode
+    /// staged-association apply step (once a newly-created goal is confirmed persisted).
+    /// Extracted out of that view (rather than left as an inline loop there) so this
+    /// stop-on-first-failure sequencing is unit-testable directly (`GoalFormView`'s own
+    /// `createGoal()` is otherwise untestable at the unit level, being private state on a
+    /// SwiftUI `View`) and so no second copy of the same loop shape appears if another
+    /// caller ever needs it (STANDARDS §3).
+    ///
+    /// Does **not** roll back items already associated earlier in the loop if a later one
+    /// fails, and does not attempt any item after the first failure — each individual
+    /// `associate` call is already atomic on its own (see that method's doc comment), and
+    /// a goal ending up with *some* but not all of its intended associations is an
+    /// accepted, self-healable partial state (the caller can retry from Edit), not one
+    /// this method compensates for. Returns `nil` if every item associated successfully,
+    /// or the first failure's message otherwise.
+    static func associateAll(
+        itemIDs: some Sequence<String>,
+        with goal: SavingsGoal,
+        modelContext: ModelContext,
+        logger: Logger = Logger(subsystem: "com.reservoir.app", category: "GoalAccountAssociationService")
+    ) -> String? {
+        for itemID in itemIDs {
+            if let error = associate(itemID: itemID, with: goal, modelContext: modelContext, logger: logger) {
+                return error
+            }
+        }
+        return nil
+    }
+
     /// Dissociates `itemID` from whatever goal currently holds it, if any — a no-op
     /// (returns `nil` immediately, no save attempted) if no goal currently references
     /// `itemID`. Atomic via the same `saveOrRollback` pattern as `associate(itemID:with:)`.

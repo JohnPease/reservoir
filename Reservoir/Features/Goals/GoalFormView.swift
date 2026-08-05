@@ -206,9 +206,6 @@ struct GoalFormView: View {
         // second window) isn't a realistic concern.
         .task {
             linkedItems = linkedItemStore.loadAll()
-            if case .edit(let goal) = mode {
-                stagedAssociatedItemIDs = Set(goal.associatedItemIDs)
-            }
         }
     }
 
@@ -216,11 +213,12 @@ struct GoalFormView: View {
 
     /// Edit mode reads/writes `goal.associatedItemIDs` directly (the live SwiftData
     /// reference); create mode reads the local `stagedAssociatedItemIDs` staging set —
-    /// see that property's doc comment for why. `stagedAssociatedItemIDs` is kept seeded
-    /// from `goal.associatedItemIDs` in edit mode too (via `.task` above) purely so this
-    /// function has one consistent source to read in create mode; edit mode's `isOn`
-    /// binding below reads `goal.associatedItemIDs` directly, never
-    /// `stagedAssociatedItemIDs`, so the two can't drift out of sync with each other.
+    /// see that property's doc comment for why. `stagedAssociatedItemIDs` is never seeded
+    /// from `goal.associatedItemIDs` in edit mode (an earlier version of this code did,
+    /// pointlessly — edit mode's `isOn` binding below reads `goal.associatedItemIDs`
+    /// directly and never touches `stagedAssociatedItemIDs`, so seeding it there was dead
+    /// work). Its default-empty `@State` initial value is correct as-is for both modes:
+    /// create mode genuinely starts with nothing staged, and edit mode never reads it.
     private func isAssociated(_ item: LinkedItem) -> Bool {
         switch mode {
         case .create:
@@ -298,27 +296,22 @@ struct GoalFormView: View {
         // Only once the goal is confirmed persisted (stable `persistentModelID`) does
         // this apply the staged account associations (reservoir-loc.3) — deliberately a
         // second, separate step, not folded into the `mutate` closure above.
-        // `GoalAccountAssociationService.associate` is its own self-contained atomic unit
-        // (own fetch, own `saveOrRollback`); composing it into the goal-insert's `mutate`
-        // would mean its internal `save()` could commit the not-yet-validated insert as a
-        // side effect. Sequencing after success keeps each `save()` owning exactly one
-        // invariant.
-        for itemID in stagedAssociatedItemIDs {
-            let associationError = GoalAccountAssociationService.associate(
-                itemID: itemID,
-                with: goal,
-                modelContext: modelContext
-            )
-            if associationError != nil {
-                // Stop on first failure — don't attempt remaining items, don't roll back
-                // items already associated. The goal itself is validly persisted at this
-                // point; a partial-association failure here is a real but low-stakes edge
-                // case (self-healable from Edit), not worth a second rollback path. Sheet
-                // stays open so the user sees this, rather than dismissing on a partial
-                // failure.
-                saveError = "Goal created, but not all accounts could be linked. Edit the goal to retry."
-                return
-            }
+        // `GoalAccountAssociationService.associateAll` is built on `associate`, itself a
+        // self-contained atomic unit (own fetch, own `saveOrRollback`); composing either
+        // into the goal-insert's `mutate` would mean its internal `save()` could commit
+        // the not-yet-validated insert as a side effect. Sequencing after success keeps
+        // each `save()` owning exactly one invariant. `associateAll` stops at the first
+        // failure and doesn't roll back items already associated — the goal itself is
+        // validly persisted either way; a partial-association failure is a real but
+        // low-stakes edge case (self-healable from Edit), not worth a second rollback
+        // path. Sheet stays open on failure so the user sees this, rather than dismissing.
+        if GoalAccountAssociationService.associateAll(
+            itemIDs: stagedAssociatedItemIDs,
+            with: goal,
+            modelContext: modelContext
+        ) != nil {
+            saveError = "Goal created, but not all accounts could be linked. Edit the goal to retry."
+            return
         }
         dismiss()
     }
