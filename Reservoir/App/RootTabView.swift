@@ -72,12 +72,11 @@ struct RootTabView: View {
         // tab item is currently selected); inactive tabs' `ReservoirTextMuted` tint is
         // set once via `UITabBar.appearance()` in `.task` below — SwiftUI's `TabView`
         // has no direct modifier for the unselected-item color. The pill-shaped
-        // `ReservoirSurfaceAccent` background behind the active tab item in §3.6 is
-        // NOT applied here: stock `TabView` (pre-Liquid-Glass tab bar) has no public
-        // API for a per-item selection background, and the correct-but-heavyweight
-        // fix (a fully custom bottom bar replacing `TabView` outright) is a much
-        // larger, riskier change than this visual-layer story's scope — flagged back
-        // rather than silently built or silently dropped; see reservoir-d02.
+        // `ReservoirSurfaceAccent` background behind the active tab item is NOT
+        // applied here: stock `TabView` (pre-Liquid-Glass tab bar) has no public API
+        // for a per-item selection background, and the correct-but-heavyweight fix
+        // (a fully custom bottom bar replacing `TabView` outright) was assessed and
+        // rejected as disproportionate for this app; won't-fix, see reservoir-d2s.
         .tint(Color("ReservoirAccent"))
         .keepingReferenceDateCurrent($todayClock.referenceDate, calendar: calendar)
         .environment(todayClock)
