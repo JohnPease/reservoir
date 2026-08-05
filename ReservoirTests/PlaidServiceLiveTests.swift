@@ -155,6 +155,85 @@ final class PlaidServiceLiveTests: XCTestCase {
         XCTAssertEqual(sut.linkedItem?.institutionName, "Test Bank")
     }
 
+    // MARK: - linkedItems (reservoir-loc.3)
+
+    func test_init_populatesLinkedItemsFromEveryStoredItem() {
+        let linkedItemStore = StubLinkedItemStore(initial: LinkedItem(itemID: "item-1", institutionName: "Bank One", linkedAt: .now))
+        linkedItemStore.save(LinkedItem(itemID: "item-2", institutionName: "Bank Two", linkedAt: .now))
+
+        let sut = PlaidServiceLive(keychain: StubKeychain(), urlSession: .shared, linkedItemStore: linkedItemStore)
+
+        XCTAssertEqual(Set(sut.linkedItems.map(\.itemID)), ["item-1", "item-2"], "linkedItems must reflect every stored item, not just the single-pointer's first-of-N.")
+    }
+
+    /// Mirrors `test_handleLinkSuccess_whenExchangeAndKeychainBothSucceed_setsLinkedItemWithNoError`
+    /// but asserts on `linkedItems` — a fresh Link succeeding while another item is already
+    /// linked must append to `linkedItems`, not replace it (this is `startLink()`'s
+    /// multi-item-append guarantee, reservoir-loc.1/loc.3).
+    func test_handleLinkSuccess_appendsToLinkedItems_withoutDisturbingExistingItems() async {
+        clearPersistedLinkedItem()
+        addTeardownBlock { self.clearPersistedLinkedItem() }
+        let linkedItemStore = StubLinkedItemStore(initial: LinkedItem(itemID: "item-existing", institutionName: "Existing Bank", linkedAt: .now))
+        let sut = PlaidServiceLive(keychain: StubKeychain(), urlSession: makeSuccessfulExchangeURLSession(), linkedItemStore: linkedItemStore)
+        XCTAssertEqual(sut.linkedItems.count, 1, "sanity check: init loaded the one seeded item.")
+
+        await sut.handleLinkSuccess(publicToken: "public-good", institutionName: "Test Bank")
+
+        XCTAssertEqual(Set(sut.linkedItems.map(\.itemID)), ["item-existing", "item-test"])
+    }
+
+    func test_unlink_removesOnlyThatItem_leavesLinkedItemsWithTheRest() async {
+        let linkedItemStore = StubLinkedItemStore(initial: LinkedItem(itemID: "item-1", institutionName: "Bank One", linkedAt: .now))
+        let itemTwo = LinkedItem(itemID: "item-2", institutionName: "Bank Two", linkedAt: .now)
+        linkedItemStore.save(itemTwo)
+        let sut = PlaidServiceLive(keychain: RecordingKeychain(), urlSession: .shared, linkedItemStore: linkedItemStore)
+
+        await sut.unlink(itemTwo)
+
+        XCTAssertEqual(sut.linkedItems.map(\.itemID), ["item-1"], "unlink(_:) must remove only the targeted item.")
+        XCTAssertEqual(linkedItemStore.loadAll().map(\.itemID), ["item-1"])
+    }
+
+    // MARK: - refreshLinkedItems() (reservoir-loc.3 bug fix)
+
+    /// The actual regression: `sut` never touches `linkedItemStore` itself once
+    /// constructed, so a write from a wholly separate `LinkedItemStoring`-backed object
+    /// (here, direct calls simulating what `TransactionImportService.setNeedsAttention`
+    /// does mid-import) leaves `sut.linkedItems`/`sut.linkedItem` stale until
+    /// `refreshLinkedItems()` is called.
+    func test_refreshLinkedItems_picksUpNeedsAttentionSetByADifferentInstance() {
+        let linkedItemStore = StubLinkedItemStore(initial: LinkedItem(itemID: "item-1", institutionName: "Bank One", linkedAt: .now))
+        let sut = PlaidServiceLive(keychain: StubKeychain(), urlSession: .shared, linkedItemStore: linkedItemStore)
+        XCTAssertEqual(sut.linkedItems.first?.needsAttention, false, "sanity check: not yet flagged.")
+
+        // Simulates a live import (a *different* PlaidServiceLive/TransactionImportService
+        // instance in the real app) classifying ITEM_LOGIN_REQUIRED and writing straight
+        // to the shared store, entirely independent of `sut`.
+        linkedItemStore.setNeedsAttention(true, itemID: "item-1")
+        XCTAssertEqual(sut.linkedItems.first?.needsAttention, false, "sanity check: sut's in-memory copy must still be stale before refreshLinkedItems() is called.")
+
+        sut.refreshLinkedItems()
+
+        XCTAssertEqual(sut.linkedItems.first?.needsAttention, true, "refreshLinkedItems() must re-read the current per-item flag from the store.")
+        XCTAssertEqual(sut.linkedItem?.needsAttention, true, "the single-pointer linkedItem must also be refreshed, not just the linkedItems array.")
+    }
+
+    func test_refreshLinkedItems_picksUpItemsAddedOrRemovedByADifferentInstance() {
+        let linkedItemStore = StubLinkedItemStore(initial: LinkedItem(itemID: "item-1", institutionName: "Bank One", linkedAt: .now))
+        let sut = PlaidServiceLive(keychain: StubKeychain(), urlSession: .shared, linkedItemStore: linkedItemStore)
+        XCTAssertEqual(sut.linkedItems.count, 1, "sanity check.")
+
+        // A second item added, and the original removed, entirely outside `sut`.
+        linkedItemStore.save(LinkedItem(itemID: "item-2", institutionName: "Bank Two", linkedAt: .now))
+        linkedItemStore.remove(itemID: "item-1")
+        XCTAssertEqual(sut.linkedItems.map(\.itemID), ["item-1"], "sanity check: sut's copy must still be stale before refreshLinkedItems().")
+
+        sut.refreshLinkedItems()
+
+        XCTAssertEqual(sut.linkedItems.map(\.itemID), ["item-2"])
+        XCTAssertEqual(sut.linkedItem?.itemID, "item-2", "the pointer must fall back to whatever remains once its previously-pointed-at item is gone.")
+    }
+
     // MARK: - startLink reentrancy guard
 
     func test_startLink_whileAlreadyInFlight_secondCallIsNoOpAndReturnsPromptly() async {
@@ -471,6 +550,40 @@ final class PlaidServiceLiveTests: XCTestCase {
         XCTAssertNil(sut.presentedError, "a successful retry must clear the prior error.")
     }
 
+    /// reservoir-loc.3: the actual ambiguity `lastAttemptedFlow` was added to resolve.
+    /// Before this fix, `retry()`'s `linkedItem`-presence heuristic couldn't tell "a fresh
+    /// `startLink()` add failed" from "a relink failed" once an item was already linked —
+    /// it would always prefer relink whenever `linkedItem` was non-nil, which is wrong once
+    /// "Link another account" (a fresh add) is reachable with an item already linked.
+    func test_retry_afterFailedAddWhileItemAlreadyLinked_retriesAdd_notRelink() async throws {
+        CapturingRelinkURLProtocol.reset()
+        let linkedItemStore = StubLinkedItemStore(
+            initial: LinkedItem(itemID: "item-1", institutionName: "Bank One", linkedAt: .now)
+        )
+        let sut = PlaidServiceLive(
+            keychain: StubKeychainWithToken(token: "access-sandbox-item-1"),
+            urlSession: makeCapturingRelinkURLSession(),
+            linkedItemStore: linkedItemStore
+        )
+        XCTAssertNotNil(sut.linkedItem, "sanity check: an item is already linked.")
+
+        // Attempt to add a second account, but make the token-creation call fail.
+        CapturingRelinkURLProtocol.shouldFail = true
+        await sut.startLink()
+        XCTAssertNotNil(sut.presentedError, "sanity check: the add attempt must have actually failed.")
+
+        // "Try again" — must retry the fresh add (no access_token in the request body), not
+        // silently relink item-1 just because an item happens to already be linked.
+        CapturingRelinkURLProtocol.shouldFail = false
+        CapturingRelinkURLProtocol.capturedBody = nil
+        await sut.retry()
+
+        let body = try XCTUnwrap(CapturingRelinkURLProtocol.capturedBody)
+        XCTAssertNil(body["access_token"], "retry() must re-attempt a fresh Link request (no access_token), not relink item-1.")
+        XCTAssertTrue(sut.isPresentingLink, "retry() must have reached Link presentation this time (the retried call succeeded).")
+        XCTAssertNil(sut.presentedError)
+    }
+
     // MARK: - unlink() (reservoir-adq.7)
 
     /// `RecordingKeychain` mirrors `handleRelinkSuccess`'s existing pattern above but also
@@ -497,9 +610,10 @@ final class PlaidServiceLiveTests: XCTestCase {
         XCTAssertNotNil(sut.linkedItem, "sanity check: init must have loaded the seeded item.")
         sut.presentedError = .network
 
-        await sut.unlink()
+        await sut.unlink(sut.linkedItem!)
 
         XCTAssertNil(sut.linkedItem)
+        XCTAssertTrue(sut.linkedItems.isEmpty)
         XCTAssertNil(sut.presentedError)
     }
 
@@ -509,7 +623,7 @@ final class PlaidServiceLiveTests: XCTestCase {
         )
         let sut = PlaidServiceLive(keychain: RecordingKeychain(), urlSession: .shared, linkedItemStore: linkedItemStore)
 
-        await sut.unlink()
+        await sut.unlink(LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now))
 
         XCTAssertTrue(linkedItemStore.loadAll().isEmpty, "the persisted store must also be cleared, not just the in-memory copy.")
     }
@@ -521,7 +635,7 @@ final class PlaidServiceLiveTests: XCTestCase {
         let keychain = RecordingKeychain()
         let sut = PlaidServiceLive(keychain: keychain, urlSession: .shared, linkedItemStore: linkedItemStore)
 
-        await sut.unlink()
+        await sut.unlink(LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now))
 
         XCTAssertEqual(keychain.deleteCallCount, 1)
         XCTAssertEqual(keychain.lastDeletedKey, PlaidKeychainKey.accessToken(itemID: "item-1"))
@@ -568,7 +682,7 @@ final class PlaidServiceLiveTests: XCTestCase {
         )
         let sut = PlaidServiceLive(keychain: RecordingKeychain(), urlSession: .shared, linkedItemStore: linkedItemStore)
 
-        await sut.unlink()
+        await sut.unlink(LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now))
 
         let transactionsAfterUnlink = try context.fetch(FetchDescriptor<SpendTransaction>())
         XCTAssertEqual(transactionsAfterUnlink.count, 2, "unlink() must not delete any SpendTransaction rows.")

@@ -661,28 +661,89 @@ app-wide setting.
   - **Environment section**: the Sandbox/Production segmented picker and its
     switch-to-Production confirmation dialog, described under "Sandbox/
     Production environment switching" above.
-  - **Linked account section**: shows the linked item's institution name and
-    item ID when present, an inline "needs attention" message
-    (`PlaidErrorText(error: .itemLoginRequired)`, reading
-    `TransactionImportService.needsAttention`) when the connection needs
-    reconnecting, a "Link a bank account" button when unlinked, and a
-    "Relink" button (Plaid's update-mode Link) when linked — see "Plaid Link
-    + Keychain token storage" and "Item relink / update-mode + connection-
-    status UX" above.
-  - **Unlink** (new in this story): a destructive "Unlink" button, gated by a
+  - **Linked accounts section** (reservoir-loc.3 rebuilt this from a single
+    `if let linkedItem` block into an unbounded `ForEach` over
+    `PlaidServiceLive.linkedItems` — no fixed cap on how many accounts can be
+    linked): one row per linked item, each showing that item's institution
+    name/item ID, its own inline "needs attention" message
+    (`PlaidErrorText(error: .itemLoginRequired)`, reading the item's own
+    `LinkedItem.needsAttention` — genuinely per-item data now, not a shared
+    scalar), and its own "Relink"/"Unlink" buttons scoped to that specific
+    item. A persistent "Link another account" button below the list is
+    always available (never gated on whether anything is already linked) and
+    calls `startLink()`, which appends a new item without disturbing any
+    existing one. See "Plaid Link + Keychain token storage" and "Item relink
+    / update-mode + connection-status UX" above.
+  - **Unlink**: each row's destructive "Unlink" button, gated by a
     confirmation dialog ("Unlink \<institution\>?" / "You'll need to go
     through Plaid's login flow again to reconnect. Transactions already
-    imported will stay."), calls `PlaidServiceLive.unlink()`. `unlink()`
-    clears only `LinkedItemStore` (linked-item metadata) and the Keychain
-    access token — the same two things an environment switch's invalidation
-    hook clears — and deliberately does **not** touch `SpendTransaction`
-    rows or the Plaid sync cursor: previously imported transaction history
-    survives an unlink untouched, and relinking the same institution
-    afterward resumes `/transactions/sync` from wherever it left off rather
-    than re-pulling full history.
+    imported will stay. The connection itself still exists on Plaid's side
+    until removed there separately — this only removes it from this app."),
+    calls `PlaidServiceLive.unlink(_ item:)` for that specific item (reservoir-
+    loc.3 changed this from a no-arg method that only ever targeted whichever
+    item the single `linkedItem` pointer happened to reference). `unlink(_:)`
+    clears only that item's `LinkedItemStore` entry and Keychain access
+    token — the same two things an environment switch's invalidation hook
+    clears for every item — and deliberately does **not** touch
+    `SpendTransaction` rows or the Plaid sync cursor: previously imported
+    transaction history survives an unlink untouched, and relinking the same
+    institution afterward resumes `/transactions/sync` from wherever it left
+    off rather than re-pulling full history. Before calling `unlink(_:)`,
+    the confirmation's `onDelete` closure also calls
+    `GoalAccountAssociationService.dissociate(itemID:modelContext:)` for the
+    unlinked item — auto-dissociating it from whatever goal it was tied to,
+    so `SavingsGoal.associatedItemIDs` never holds a stale item ID pointing
+    at a connection that no longer exists locally. A dissociate failure
+    (rare) is logged, not surfaced as a second alert — a stale ID self-heals
+    the next time that goal's account section is retoggled.
   - Both "Relink" and "Unlink" call `TransactionImportService
     .refreshNeedsAttention()` on success so the Settings tab-bar badge
     clears immediately rather than waiting for the next import.
+  - `SettingsView` has no goal-picker UI of its own — associating a linked
+    account with a goal happens on the Goals side, in `GoalFormView` (see
+    "Goal <-> account association" below). JP's call (2026-07-23): since a
+    goal can span multiple accounts, "from a goal, pick which accounts feed
+    it" is the natural direction, not "from an account, pick one goal."
+
+**Goal <-> account association** (reservoir-loc.3): `GoalFormView` (both
+create and edit mode) has a "Linked accounts" section listing every linked
+Plaid item with a toggle, letting a goal claim zero or more accounts as its
+own via `SavingsGoal.associatedItemIDs`. An item already tied to a
+*different* goal shows "Currently linked to \<that goal's `displayName`\>" so
+reassigning it is an informed action, not a silent steal. Enforcement of "at
+most one goal per account at a time" lives entirely in
+`GoalAccountAssociationService.associate(itemID:with:modelContext:)` — it
+atomically detaches the item from whatever goal previously held it before
+attaching it to the new one, in one `PersistenceSaveHelper.saveOrRollback`
+call, so there's never a partial-move state visible to any reader. With zero
+linked accounts, the section shows an inline hint ("Link an account in
+Settings to associate it with this goal") rather than hiding — JP's call
+(2026-08-01) — so the feature stays discoverable even before anything's
+linked.
+  - **Edit mode**: each toggle reads/writes `goal.associatedItemIDs`
+    directly (the live SwiftData reference already held via
+    `case .edit(let goal)`) and calls `associate`/`dissociate` inline,
+    immediately, in the toggle's own `set`.
+  - **Create mode**: the goal doesn't exist yet to associate anything
+    against. Toggles instead write to a purely local
+    `@State private var stagedAssociatedItemIDs: Set<String>` — never
+    calling `GoalAccountAssociationService` directly — and `createGoal()`
+    applies the staged selection only *after* its existing
+    `saveOrRollback(mutate: insert, rollback: delete)` call returns success
+    (a stable `persistentModelID` to associate against), looping
+    `associate(itemID:with:modelContext:)` per staged item. This is a
+    second, separate step, not folded into the goal-insert's own `mutate`
+    closure — `associate` is its own self-contained atomic unit (own fetch,
+    own `saveOrRollback`), and composing it into the outer `mutate` would let
+    its internal `save()` commit the not-yet-validated goal insert as a side
+    effect. If an item partway through the staged loop fails to associate,
+    the loop stops (remaining items aren't attempted, already-associated
+    ones aren't rolled back — the goal itself is validly persisted either
+    way) and surfaces "Goal created, but not all accounts could be linked.
+    Edit the goal to retry." via the existing `saveErrorAlert` mechanism,
+    without dismissing the sheet. Cancelling out of creation is a pure no-op
+    for this state — `stagedAssociatedItemIDs` is local and nothing reads it
+    outside `createGoal()`.
   - The Today screen no longer has a Settings entry point of its own — the
     tab bar's Settings tab is the only way in, and (code-review follow-up)
     it now also carries the `needsAttention` badge directly, replacing the

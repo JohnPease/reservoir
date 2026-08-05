@@ -9,6 +9,7 @@ struct ReservoirApp: App {
         #if DEBUG
         UITestScenario.resetPlaidKeychainIfRequested()
         UITestScenario.resetPlaidEnvironmentIfRequested()
+        UITestScenario.resetPlaidLinkedItemsIfRequested()
         UITestScenario.seedPlaidLinkedItemIfRequested()
         UITestScenario.seedPlaidTokenIfRequested()
         #endif

@@ -17,16 +17,43 @@ struct GoalFormView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
+    /// Every existing goal — used only to resolve "currently linked to <other goal>" for
+    /// the account-association section below (reservoir-loc.3). `@Query` rather than a
+    /// one-shot fetch so the label stays correct if another goal's association changes
+    /// while this sheet happens to be open.
+    @Query private var allGoals: [SavingsGoal]
+
     let mode: Mode
     /// Lets call sites keep their own existing XCUITest identifier (e.g. TodayView's
     /// "today.createGoalSheet") for the create flow reached from the empty state, while
     /// the Goals tab's own create entry point can use a distinct one.
     var accessibilityIdentifier: String = "goalForm.sheet"
 
+    /// Constructor-injected (reservoir-loc.3), same DI convention `SettingsView`/
+    /// `PlaidServiceLive` use for `LinkedItemStoring` — defaults to the real
+    /// `UserDefaults`-backed store so every existing call site
+    /// (`GoalFormView(mode:)`/`GoalFormView(mode:accessibilityIdentifier:)`) keeps
+    /// compiling unchanged, while tests can substitute a stub.
+    private let linkedItemStore: LinkedItemStoring
+
     @State private var targetAmount: Decimal = 0
     @State private var targetDate: Date
     @State private var startingBalance: Decimal = 0
     @State private var startDate: Date = Calendar.current.startOfDay(for: .now)
+
+    /// All linked Plaid items, loaded once when the sheet appears (reservoir-loc.3) — the
+    /// multi-select account-association section below is built from this.
+    @State private var linkedItems: [LinkedItem] = []
+
+    /// **Create mode only.** Plain local staging for which linked items should be
+    /// associated with the goal once it's created — JP's explicit call (2026-08-01):
+    /// the multi-select must be usable during creation, not just edit, but the goal
+    /// doesn't exist yet to associate anything against. Toggling this never calls
+    /// `GoalAccountAssociationService` — see `createGoal()` for where it's actually
+    /// applied, after the goal is confirmed persisted. Untouched, and so risk-free, if
+    /// the user cancels out of creation (no `.onDisappear`/side effect reads this
+    /// anywhere else).
+    @State private var stagedAssociatedItemIDs: Set<String> = []
 
     @State private var isShowingEditConfirmation = false
     @State private var saveError: String?
@@ -35,9 +62,14 @@ struct GoalFormView: View {
     private let calendar: Calendar = .current
     private let logger = Logger(subsystem: "com.reservoir.app", category: "GoalFormView")
 
-    init(mode: Mode, accessibilityIdentifier: String = "goalForm.sheet") {
+    init(
+        mode: Mode,
+        accessibilityIdentifier: String = "goalForm.sheet",
+        linkedItemStore: LinkedItemStoring = LinkedItemStore()
+    ) {
         self.mode = mode
         self.accessibilityIdentifier = accessibilityIdentifier
+        self.linkedItemStore = linkedItemStore
         switch mode {
         case .create:
             _targetDate = State(initialValue: Calendar.current.date(byAdding: .day, value: 30, to: .now) ?? .now)
@@ -107,6 +139,34 @@ struct GoalFormView: View {
                         }
                     }
                 }
+
+                // Account-association section (reservoir-loc.3), present in both create and
+                // edit mode. Always shown — a hint replaces the list when there's nothing to
+                // associate (JP, 2026-08-01), rather than hiding the section outright, so a
+                // user who hasn't linked anything yet still learns the feature exists.
+                Section("Linked accounts") {
+                    if linkedItems.isEmpty {
+                        Text("Link an account in Settings to associate it with this goal")
+                            .foregroundStyle(Color("ReservoirTextSecondary"))
+                    } else {
+                        ForEach(linkedItems, id: \.itemID) { item in
+                            Toggle(isOn: Binding(
+                                get: { isAssociated(item) },
+                                set: { setAssociated($0, item: item) }
+                            )) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.institutionName)
+                                    if let otherGoal = otherGoal(associatedWith: item) {
+                                        Text("Currently linked to \(otherGoal.displayName)")
+                                            .font(.footnote)
+                                            .foregroundStyle(Color("ReservoirTextSecondary"))
+                                    }
+                                }
+                            }
+                            .accessibilityIdentifier("goalForm.accountToggle.\(item.itemID)")
+                        }
+                    }
+                }
             }
             .scrollContentBackground(.hidden)
             .listRowBackground(Color("ReservoirSurface"))
@@ -139,9 +199,69 @@ struct GoalFormView: View {
             .saveErrorAlert($saveError)
         }
         .accessibilityIdentifier(accessibilityIdentifier)
+        // Loaded once per sheet presentation, same "load on appear, no ongoing
+        // subscription" posture `SettingsView` uses for its own Plaid-backed state —
+        // `LinkedItemStore` has no change-notification mechanism to subscribe to, and this
+        // sheet is short-lived enough that a stale list (e.g. a new account linked in a
+        // second window) isn't a realistic concern.
+        .task {
+            linkedItems = linkedItemStore.loadAll()
+        }
     }
 
-    // MARK: - Actions
+    // MARK: - Account association (reservoir-loc.3)
+
+    /// Edit mode reads/writes `goal.associatedItemIDs` directly (the live SwiftData
+    /// reference); create mode reads the local `stagedAssociatedItemIDs` staging set —
+    /// see that property's doc comment for why. `stagedAssociatedItemIDs` is never seeded
+    /// from `goal.associatedItemIDs` in edit mode (an earlier version of this code did,
+    /// pointlessly — edit mode's `isOn` binding below reads `goal.associatedItemIDs`
+    /// directly and never touches `stagedAssociatedItemIDs`, so seeding it there was dead
+    /// work). Its default-empty `@State` initial value is correct as-is for both modes:
+    /// create mode genuinely starts with nothing staged, and edit mode never reads it.
+    private func isAssociated(_ item: LinkedItem) -> Bool {
+        switch mode {
+        case .create:
+            return stagedAssociatedItemIDs.contains(item.itemID)
+        case .edit(let goal):
+            return goal.associatedItemIDs.contains(item.itemID)
+        }
+    }
+
+    /// Create mode only ever mutates local state — never calls
+    /// `GoalAccountAssociationService` — since the goal doesn't exist to associate
+    /// anything against yet (see `createGoal()` for where staged selections are actually
+    /// applied). Edit mode calls the service inline, immediately, against the
+    /// already-persisted `goal`.
+    private func setAssociated(_ isOn: Bool, item: LinkedItem) {
+        switch mode {
+        case .create:
+            if isOn {
+                stagedAssociatedItemIDs.insert(item.itemID)
+            } else {
+                stagedAssociatedItemIDs.remove(item.itemID)
+            }
+        case .edit(let goal):
+            if isOn {
+                _ = GoalAccountAssociationService.associate(itemID: item.itemID, with: goal, modelContext: modelContext)
+            } else {
+                _ = GoalAccountAssociationService.dissociate(itemID: item.itemID, modelContext: modelContext)
+            }
+        }
+    }
+
+    /// The goal (if any) `item` is currently associated with, excluding the goal this form
+    /// itself represents — in edit mode, an item already tied to *this* goal must not show
+    /// its own "currently linked to" label, only a genuinely different goal's.
+    private func otherGoal(associatedWith item: LinkedItem) -> SavingsGoal? {
+        let candidates: [SavingsGoal]
+        if case .edit(let goal) = mode {
+            candidates = allGoals.filter { $0.persistentModelID != goal.persistentModelID }
+        } else {
+            candidates = allGoals
+        }
+        return GoalAccountAssociationService.associatedGoal(for: item.itemID, in: candidates)
+    }
 
     private func createGoal() {
         let dailyBase = DailyLimitCalculator.dailyBase(
@@ -170,9 +290,30 @@ struct GoalFormView: View {
         )
         if let error {
             saveError = error
-        } else {
-            dismiss()
+            return
         }
+
+        // Only once the goal is confirmed persisted (stable `persistentModelID`) does
+        // this apply the staged account associations (reservoir-loc.3) — deliberately a
+        // second, separate step, not folded into the `mutate` closure above.
+        // `GoalAccountAssociationService.associateAll` is built on `associate`, itself a
+        // self-contained atomic unit (own fetch, own `saveOrRollback`); composing either
+        // into the goal-insert's `mutate` would mean its internal `save()` could commit
+        // the not-yet-validated insert as a side effect. Sequencing after success keeps
+        // each `save()` owning exactly one invariant. `associateAll` stops at the first
+        // failure and doesn't roll back items already associated — the goal itself is
+        // validly persisted either way; a partial-association failure is a real but
+        // low-stakes edge case (self-healable from Edit), not worth a second rollback
+        // path. Sheet stays open on failure so the user sees this, rather than dismissing.
+        if GoalAccountAssociationService.associateAll(
+            itemIDs: stagedAssociatedItemIDs,
+            with: goal,
+            modelContext: modelContext
+        ) != nil {
+            saveError = "Goal created, but not all accounts could be linked. Edit the goal to retry."
+            return
+        }
+        dismiss()
     }
 
     private func saveEdit() {
