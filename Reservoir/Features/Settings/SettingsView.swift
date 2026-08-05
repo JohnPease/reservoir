@@ -203,6 +203,16 @@ struct SettingsView: View {
             service.onRelinkSuccess = { [importService] in
                 importService?.refreshNeedsAttention()
             }
+            // Bug fix (JP, reservoir-loc.3): `service` is this view's own long-lived
+            // `PlaidServiceLive` instance, constructed once in `init()`. Its `linkedItems`
+            // only updates in response to its own mutation methods — it has no reactive
+            // subscription to `LinkedItemStore`, so a write from a *different*
+            // `LinkedItemStoring`-backed object (e.g. `TransactionImportService` flagging
+            // `ITEM_LOGIN_REQUIRED` mid-import while the user was on another tab) left this
+            // view showing a stale snapshot on return. Re-reading on every appearance
+            // (harmless if nothing changed, same idempotent posture as the
+            // `onRelinkSuccess` wiring above) fixes that.
+            service.refreshLinkedItems()
         }
     }
 

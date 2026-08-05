@@ -450,6 +450,28 @@ final class PlaidServiceLive: PlaidService {
         try? await keychain.delete(for: PlaidKeychainKey.accessToken(itemID: item.itemID))
     }
 
+    /// Re-reads `linkedItems` (and the `linkedItem` pointer) fresh from `linkedItemStore`
+    /// (reservoir-loc.3 bug fix, JP). `PlaidServiceLive` only ever updates `linkedItems` in
+    /// response to *its own* mutations (`handleLinkSuccess`/`handleRelinkSuccess`/
+    /// `unlink(_:)`/init) — it has no reactive subscription to `LinkedItemStore`, so a
+    /// write made by a *different* `LinkedItemStoring`-backed object (most commonly
+    /// `TransactionImportService.setNeedsAttention` classifying an `ITEM_LOGIN_REQUIRED`
+    /// mid-import) leaves this instance's in-memory `linkedItems` stale until something
+    /// explicitly tells it to re-read. `SettingsView` calls this from `.onAppear` (same
+    /// spot it wires `onRelinkSuccess`) so navigating back to the Settings tab after any
+    /// external mutation always shows current data, not a snapshot from whenever this
+    /// `service` instance happened to be constructed.
+    func refreshLinkedItems() {
+        let items = linkedItemStore.loadAll()
+        linkedItems = items
+        // Re-resolves the single-pointer `linkedItem` too, same "arbitrary first-of-N"
+        // fallback `init`/`unlink(_:)` use — but prefers whichever stored item still
+        // matches the pointer's current itemID (picking up that item's own field
+        // changes, e.g. a freshly-set `needsAttention`) over silently swapping to a
+        // different item.
+        linkedItem = items.first(where: { $0.itemID == linkedItem?.itemID }) ?? items.first
+    }
+
     // MARK: - LinkKit session creation
 
     /// `isRelink` selects which completion path `onSuccess` runs — `handleRelinkSuccess()`

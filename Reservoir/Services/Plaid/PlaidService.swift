@@ -119,4 +119,12 @@ protocol PlaidService: AnyObject {
     /// happened to reference) now that `SettingsView` can present more than one linked
     /// item at a time and needs to unlink a specific row, not "whichever one is current."
     func unlink(_ item: LinkedItem) async
+
+    /// Re-reads `linkedItems`/`linkedItem` fresh from the underlying `LinkedItemStore`
+    /// (reservoir-loc.3 bug fix) — this instance only updates them in response to its own
+    /// mutations, so a write made by a *different* `LinkedItemStoring`-backed object (most
+    /// commonly `TransactionImportService` classifying an `ITEM_LOGIN_REQUIRED` mid-import)
+    /// leaves them stale until something calls this explicitly. `SettingsView` calls it
+    /// from `.onAppear` so navigating back to the tab always reflects current data.
+    func refreshLinkedItems()
 }
