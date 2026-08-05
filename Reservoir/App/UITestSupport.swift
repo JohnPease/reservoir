@@ -23,6 +23,17 @@ enum UITestScenario: String {
     /// whose cumulative carry-forward balance is negative through `targetDate` — the
     /// "not met" completion banner variant (reservoir-4za).
     case completedGoalBannerNotMet
+    /// Two active goals — sorted by `targetDate` ascending, same as `GoalsView`'s own
+    /// `@Query` sort, so a test can address "the first card" / "the second card"
+    /// deterministically. Goal A (`targetAmount` 1000, sooner `targetDate`) already
+    /// holds `associatedItemIDs: ["uitest-item"]` — the same itemID
+    /// `seedPlaidLinkedItemIfRequested()` seeds — so a test pairing this scenario with
+    /// `UITEST_SEED_PLAID_LINKED_ITEM=1` can exercise `GoalFormView`'s edit-mode
+    /// "steal" semantics (reassigning the item to Goal B) and the "Currently linked to
+    /// <goal>" indicator, both of which need a second real goal to reassign away
+    /// from/point at. Goal B (`targetAmount` 2000, later `targetDate`) starts
+    /// unassociated. Backs `GoalAccountAssociationUITests` (reservoir-loc.3).
+    case goalAccountAssociation
     /// One active goal (no spend at all, so Pace reads "on pace" and Simulation reads
     /// "ahead of target") plus one completed-undismissed goal simultaneously — the
     /// Goals tab's (adq.5) "both sections render together" state.
@@ -260,6 +271,22 @@ enum UITestScenario: String {
             linkedAt: Date(),
             needsAttention: needsAttention
         ))
+
+        // `UITEST_SEED_PLAID_SECOND_ITEM=1` (reservoir-loc.3) additionally seeds a
+        // second, distinct item — "uitest-item-2" / "UITest Bank 2" — so a test can
+        // exercise `SettingsView`'s per-row multi-item UI and `RootTabView`'s
+        // needs-attention badge OR-logic across more than one item, which a single
+        // seeded item can never do. `UITEST_SEED_PLAID_SECOND_NEEDS_ATTENTION=1`
+        // controls this second item's flag independently of the first item's own
+        // `UITEST_SEED_PLAID_NEEDS_ATTENTION` above.
+        guard ProcessInfo.processInfo.environment["UITEST_SEED_PLAID_SECOND_ITEM"] == "1" else { return }
+        let secondNeedsAttention = ProcessInfo.processInfo.environment["UITEST_SEED_PLAID_SECOND_NEEDS_ATTENTION"] == "1"
+        LinkedItemStore().save(LinkedItem(
+            itemID: "uitest-item-2",
+            institutionName: "UITest Bank 2",
+            linkedAt: Date(),
+            needsAttention: secondNeedsAttention
+        ))
     }
 
     /// See `seedPlaidLinkedItemIfRequested()` above. Blocks synchronously, same
@@ -267,11 +294,19 @@ enum UITestScenario: String {
     /// token is guaranteed present before `ReservoirApp`'s first view appears.
     static func seedPlaidTokenIfRequested() {
         guard ProcessInfo.processInfo.environment["UITEST_SEED_PLAID_TOKEN"] == "1" else { return }
+        let seedSecondItem = ProcessInfo.processInfo.environment["UITEST_SEED_PLAID_SECOND_ITEM"] == "1"
         let semaphore = DispatchSemaphore(value: 0)
         Task {
             // Keyed to the same "uitest-item" itemID `seedPlaidLinkedItemIfRequested()`
             // seeds (reservoir-loc.1) — Keychain access tokens are now scoped per item ID.
             try? await KeychainService().save("uitest-fake-access-token", for: PlaidKeychainKey.accessToken(itemID: "uitest-item"))
+            // Mirrors the above for the second seeded item (reservoir-loc.3), when
+            // requested — needed for any test that unlinks/relinks "uitest-item-2"
+            // specifically, since `PlaidServiceLive.startRelink(for:)` requires a
+            // stored access token to proceed at all.
+            if seedSecondItem {
+                try? await KeychainService().save("uitest-fake-access-token-2", for: PlaidKeychainKey.accessToken(itemID: "uitest-item-2"))
+            }
             semaphore.signal()
         }
         semaphore.wait()
@@ -323,6 +358,26 @@ enum UITestScenario: String {
     static func resetPlaidEnvironmentIfRequested() {
         guard ProcessInfo.processInfo.environment["UITEST_RESET_PLAID_ENVIRONMENT"] == "1" else { return }
         UserDefaults.standard.removeObject(forKey: "plaid.environment")
+    }
+
+    /// Clears every persisted `LinkedItem` (the whole `plaid.linkedItems` array, not a
+    /// single entry) before the app finishes launching, when
+    /// `UITEST_RESET_PLAID_LINKED_ITEMS=1` is set — same rationale as
+    /// `resetPlaidEnvironmentIfRequested()` above, for the same class of problem:
+    /// `LinkedItemStore` is backed by real `UserDefaults.standard`, which survives across
+    /// launches within a single XCUITest run (unlike this app's SwiftData store, which is
+    /// always a fresh in-memory container per launch under `UITEST_SCENARIO` — see
+    /// `ReservoirApp.makeModelContainer()`). Without this, a test that seeds
+    /// "uitest-item"/"uitest-item-2" and doesn't itself unlink everything before ending
+    /// (e.g. a test that asserts on `SettingsView`'s content mid-flow) leaves that state
+    /// for the next test to unknowingly inherit — reservoir-loc.3's multi-item tests are
+    /// the first ones with enough seeded items/permutations for that cross-test leakage to
+    /// actually bite. Every `PlaidRelinkUITests`/`GoalAccountAssociationUITests` test now
+    /// sets this alongside whatever it explicitly re-seeds, rather than relying on
+    /// leftover state (its own or a prior test's) to be absent.
+    static func resetPlaidLinkedItemsIfRequested() {
+        guard ProcessInfo.processInfo.environment["UITEST_RESET_PLAID_LINKED_ITEMS"] == "1" else { return }
+        UserDefaults.standard.removeObject(forKey: "plaid.linkedItems")
     }
 
     /// Seeds `context` with this scenario's fixtures and saves.
@@ -402,6 +457,33 @@ enum UITestScenario: String {
                 entryMethod: .manual,
                 savingsGoal: goal
             ))
+
+        case .goalAccountAssociation:
+            // See this case's doc comment above — Goal A (sooner targetDate, sorts
+            // first) starts associated with "uitest-item"; Goal B (later targetDate,
+            // sorts second) starts unassociated.
+            let goalAStartDate = Calendar.current.date(byAdding: .day, value: -5, to: .now)!
+            let goalA = SavingsGoal(
+                targetAmount: 1000,
+                targetDate: Calendar.current.date(byAdding: .day, value: 10, to: .now)!,
+                startDate: goalAStartDate,
+                startingBalance: 0,
+                dailyBase: 20,
+                createdAt: goalAStartDate,
+                associatedItemIDs: ["uitest-item"]
+            )
+            context.insert(goalA)
+
+            let goalBStartDate = Calendar.current.date(byAdding: .day, value: -5, to: .now)!
+            let goalB = SavingsGoal(
+                targetAmount: 2000,
+                targetDate: Calendar.current.date(byAdding: .day, value: 20, to: .now)!,
+                startDate: goalBStartDate,
+                startingBalance: 0,
+                dailyBase: 20,
+                createdAt: goalBStartDate
+            )
+            context.insert(goalB)
 
         case .goalsScreenMixed:
             let activeStartDate = Calendar.current.date(byAdding: .day, value: -10, to: .now)!

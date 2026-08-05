@@ -54,7 +54,11 @@ final class PlaidDebugLinkUITests: XCTestCase {
         app.tabBars.buttons["Settings"].tap()
 
         XCTAssertTrue(app.buttons["settings.linkButton"].waitForExistence(timeout: 5))
-        XCTAssertEqual(app.buttons["settings.linkButton"].label, "Link a bank account")
+        // reservoir-loc.3: "Link another account" is now a single, persistent,
+        // non-label-switching affordance regardless of whether any item is already
+        // linked — it no longer reads "Link a bank account" pre-first-link. See
+        // `SettingsView.body`'s doc comment.
+        XCTAssertEqual(app.buttons["settings.linkButton"].label, "Link another account")
         XCTAssertTrue(app.staticTexts["No account linked yet."].exists)
     }
 
