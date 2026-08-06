@@ -178,7 +178,12 @@ final class TransactionImportUITests: XCTestCase {
         let app = launchedApp()
         triggerImport(app)
 
-        let mergeButton = app.buttons["plaidDebug.mergePrompt.merge"]
+        // `.firstMatch` (not the plain identifier subscript): on iOS 26.5,
+        // confirmationDialog buttons occasionally register as two nested accessibility
+        // elements sharing one identifier (see the `.firstMatch` note in
+        // PlaidRelinkUITests.swift), so a plain `app.buttons["id"]` subscript can throw
+        // "multiple matching elements." `.firstMatch` resolves to the same tappable button.
+        let mergeButton = app.buttons.matching(identifier: "plaidDebug.mergePrompt.merge").firstMatch
         XCTAssertTrue(mergeButton.waitForExistence(timeout: 10))
         mergeButton.tap()
 
@@ -193,7 +198,8 @@ final class TransactionImportUITests: XCTestCase {
         let app = launchedApp()
         triggerImport(app)
 
-        let keepBothButton = app.buttons["plaidDebug.mergePrompt.keepBoth"]
+        // See `.firstMatch` note above.
+        let keepBothButton = app.buttons.matching(identifier: "plaidDebug.mergePrompt.keepBoth").firstMatch
         XCTAssertTrue(keepBothButton.waitForExistence(timeout: 10))
         keepBothButton.tap()
 
