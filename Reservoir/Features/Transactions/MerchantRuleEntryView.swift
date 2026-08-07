@@ -60,6 +60,7 @@ struct MerchantRuleEntryView: View {
             Form {
                 LabeledField(label: "Merchant name", error: validation.merchantNameError, errorIdentifierPrefix: "merchantRuleEntry") {
                     TextField("Merchant name", text: $merchantName)
+                        .autocorrectionDisabled()
                         .accessibilityIdentifier("merchantRuleEntry.merchantName")
                 }
 

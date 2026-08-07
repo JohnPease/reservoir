@@ -7,6 +7,15 @@ import SwiftUI
 /// `SettingsView`'s Sandbox -> Production switch confirmation and its Unlink
 /// confirmation, both of which needed a non-"Delete" action label, an optional message,
 /// and accessibility-identifier hooks.
+///
+/// reservoir-wcd: on this iOS version, `confirmationDialog` here renders as a system
+/// popover with no accessible "Cancel" button — the button exists in the view hierarchy
+/// (see the `Button("Cancel", ...)` below) but isn't reachable via XCUITest lookups, and
+/// dismissal only works by tapping outside the popover. We looked into this and are
+/// accepting it as-is rather than working around it: this is a single-user, sideloaded,
+/// personal-use app, and tap-outside-to-dismiss is standard system behavior for a
+/// popover, so the affected UI tests were rewritten to dismiss that way instead of
+/// hunting for a Cancel button.
 extension View {
     /// - Parameters:
     ///   - pendingItem: the item awaiting confirmation, or `nil` when no confirmation

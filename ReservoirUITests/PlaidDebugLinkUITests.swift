@@ -107,9 +107,14 @@ final class PlaidDebugLinkUITests: XCTestCase {
         // A bare tap must not flip the environment by itself — the
         // real-money blast radius of Production requires the confirmation
         // dialog below (reservoir-adq.6.2's acceptance criteria).
-        let cancelButton = app.buttons["settings.cancelProductionSwitch"]
-        XCTAssertTrue(cancelButton.waitForExistence(timeout: 5))
-        cancelButton.tap()
+        let confirmButton = app.buttons["settings.confirmProductionSwitch"]
+        XCTAssertTrue(confirmButton.waitForExistence(timeout: 5))
+
+        // DeleteConfirmation renders as a system popover on this iOS version with no
+        // accessible Cancel button (see DeleteConfirmation.swift's doc comment) —
+        // dismissal only works via tap-outside, not by finding/tapping a Cancel button.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.1)).tap()
+        XCTAssertFalse(confirmButton.waitForExistence(timeout: 3))
 
         XCTAssertTrue(picker.buttons["Sandbox"].isSelected)
         XCTAssertTrue(app.staticTexts["Using Sandbox credentials — test data only."].exists)
@@ -127,7 +132,13 @@ final class PlaidDebugLinkUITests: XCTestCase {
         XCTAssertTrue(picker.waitForExistence(timeout: 5))
         picker.buttons["Production"].tap()
 
-        let confirmButton = app.buttons["settings.confirmProductionSwitch"]
+        // `.firstMatch` (not the plain identifier subscript): the confirmation dialog's
+        // action button is a pre-existing, environment-level quirk observed on this
+        // Xcode/simulator combo — SwiftUI's `confirmationDialog` button occasionally
+        // registers as two nested accessibility elements sharing one identifier (same
+        // quirk documented in PlaidRelinkUITests for the unlink confirmation).
+        // `.firstMatch` resolves to the same tappable button either way.
+        let confirmButton = app.buttons.matching(identifier: "settings.confirmProductionSwitch").firstMatch
         XCTAssertTrue(confirmButton.waitForExistence(timeout: 5))
         confirmButton.tap()
 
