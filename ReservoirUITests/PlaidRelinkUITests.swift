@@ -245,10 +245,7 @@ final class PlaidRelinkUITests: XCTestCase {
         let confirmButton = app.buttons.matching(identifier: "settings.confirmUnlink").firstMatch
         XCTAssertTrue(confirmButton.waitForExistence(timeout: 10))
 
-        // DeleteConfirmation renders as a system popover on this iOS version with no
-        // accessible Cancel button (see DeleteConfirmation.swift's doc comment) —
-        // dismissal only works via tap-outside, not by finding/tapping a Cancel button.
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.1)).tap()
+        app.dismissPopoverByTappingOutside()
         XCTAssertFalse(confirmButton.waitForExistence(timeout: 3))
 
         // Dismissing without confirming must leave both rows exactly as they were.

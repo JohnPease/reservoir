@@ -110,10 +110,7 @@ final class PlaidDebugLinkUITests: XCTestCase {
         let confirmButton = app.buttons["settings.confirmProductionSwitch"]
         XCTAssertTrue(confirmButton.waitForExistence(timeout: 5))
 
-        // DeleteConfirmation renders as a system popover on this iOS version with no
-        // accessible Cancel button (see DeleteConfirmation.swift's doc comment) —
-        // dismissal only works via tap-outside, not by finding/tapping a Cancel button.
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.1)).tap()
+        app.dismissPopoverByTappingOutside()
         XCTAssertFalse(confirmButton.waitForExistence(timeout: 3))
 
         XCTAssertTrue(picker.buttons["Sandbox"].isSelected)
