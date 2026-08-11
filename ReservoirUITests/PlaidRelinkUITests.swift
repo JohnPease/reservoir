@@ -242,11 +242,13 @@ final class PlaidRelinkUITests: XCTestCase {
         // identically on `RootTabView`'s unrelated merge-prompt dialog, which this story
         // never touches), so a plain `app.buttons["id"]` subscript can throw "multiple
         // matching elements." `.firstMatch` resolves to the same tappable button either way.
-        let cancelButton = app.buttons.matching(identifier: "settings.cancelUnlink").firstMatch
-        XCTAssertTrue(cancelButton.waitForExistence(timeout: 10))
-        cancelButton.tap()
+        let confirmButton = app.buttons.matching(identifier: "settings.confirmUnlink").firstMatch
+        XCTAssertTrue(confirmButton.waitForExistence(timeout: 10))
 
-        // Cancelling must leave both rows exactly as they were.
+        app.dismissPopoverByTappingOutside()
+        XCTAssertFalse(confirmButton.waitForExistence(timeout: 3))
+
+        // Dismissing without confirming must leave both rows exactly as they were.
         XCTAssertTrue(app.buttons["settings.unlinkButton.uitest-item"].exists)
         XCTAssertTrue(app.buttons["settings.unlinkButton.uitest-item-2"].exists)
     }
