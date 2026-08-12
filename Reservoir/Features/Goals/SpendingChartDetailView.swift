@@ -72,12 +72,20 @@ struct SpendingChartDetailView: View {
         .accessibilityIdentifier("goals.chartDetailSheet")
     }
 
-    /// `TabView(.page)` — Swift Charts' own tap/drag handling (`chartXSelection`) and
-    /// `TabView(.page)`'s swipe gesture did not conflict in a brief spike: `TabView`
-    /// claims horizontal drags for paging while `Chart`'s tap-to-select is a distinct
-    /// gesture (a tap, not a drag), so both coexist without a hand-rolled
-    /// `DragGesture`/`.simultaneousGesture` pager. Kept as the simpler, more "standard
-    /// SwiftUI" option, per the bead's own stated preference when the two don't conflict.
+    /// `TabView(.page)` — a brief spike found `TabView`'s horizontal swipe-to-page and
+    /// `Chart`'s `chartXSelection` coexist for THIS interaction (horizontal paging vs.
+    /// tap-to-select), so no hand-rolled `DragGesture`/`.simultaneousGesture` pager was
+    /// needed here. Kept as the simpler, more "standard SwiftUI" option.
+    ///
+    /// Correction: `chartXSelection` is NOT tap-only — it's backed by a
+    /// drag-recognizing gesture (confirmed by `GoalSpendingChartUITests
+    /// .testSwipeDownDismissesChartDetailSheet`'s original failure: a touch that starts
+    /// inside the chart's bounds gets claimed as a scrub, pre-empting the system's own
+    /// interactive sheet-dismiss gesture for that same touch). That competition doesn't
+    /// affect this pager (`TabView` claims horizontal drags before they reach `Chart`),
+    /// but it's real for OTHER gestures that start on the chart, like vertical
+    /// swipe-to-dismiss — see that test's inline comment for how the touch start point
+    /// is deliberately kept off the chart to avoid it.
     private var pager: some View {
         TabView(selection: $page) {
             ForEach(0..<windowCount, id: \.self) { pageIndex in

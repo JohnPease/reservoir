@@ -97,7 +97,7 @@ struct ActiveGoalCardView: View {
             Button {
                 isShowingChartDetail = true
             } label: {
-                GoalSpendingChartView(points: chartPoints)
+                GoalSpendingChartView(points: chartPoints(input: carryForwardInput))
                     .frame(height: 80)
             }
             .buttonStyle(.plain)
@@ -137,8 +137,14 @@ struct ActiveGoalCardView: View {
     /// whichever is shorter), ending on `referenceDate` — the `windowEnd = today` case of
     /// `GoalsScreenCalculator.spendChartWindow`. The modal (`SpendingChartDetailView`)
     /// reuses the same underlying function with an earlier `windowEnd` for its paging.
-    private var chartPoints: [GoalsScreenCalculator.DailySpendPoint] {
-        GoalsScreenCalculator.spendChartWindow(for: goal, windowEnd: referenceDate, calendar: calendar)
+    ///
+    /// Takes the render's already-computed `carryForwardInput` rather than using the
+    /// `for goal:` convenience overload (which would re-derive its own copy via a second
+    /// `TodayScreenCalculator.carryForwardInput(for:calendar:)` call — exactly the
+    /// redundant O(n) `goal.transactions` work `body`'s own doc comment above says was
+    /// eliminated for every other per-render computation; code-review fix, reservoir-t5u).
+    private func chartPoints(input: GoalCarryForwardInput) -> [GoalsScreenCalculator.DailySpendPoint] {
+        GoalsScreenCalculator.spendChartWindow(input: input, windowEnd: referenceDate, calendar: calendar)
     }
 
     /// Drives the pace-copy's text color per the bead's instruction to mirror

@@ -328,9 +328,13 @@ the compact card or a given modal page) shows a "Not enough spending history
 yet" state instead of a chart.
 
 The modal pages via `TabView(.page)`, not a hand-rolled `DragGesture` — a
-brief spike found `TabView`'s swipe-to-page and `Chart`'s tap-to-select
-(`chartXSelection`) don't actually conflict, since one claims horizontal
-drags and the other only a tap, so the simpler standard-SwiftUI option works.
+brief spike found `TabView`'s horizontal swipe-to-page and `Chart`'s
+`chartXSelection` don't conflict with each other, so the simpler
+standard-SwiftUI option works for paging. `chartXSelection` is not tap-only,
+though — it's backed by a drag-recognizing gesture, which does compete with
+OTHER gestures that start on the chart, such as the sheet's own vertical
+swipe-to-dismiss (worked around in `GoalSpendingChartUITests` by keeping the
+dismiss swipe's touch-down above the chart, in the header).
 
 **Transactions tab** (adq.3): `Features/Transactions/TransactionsView.swift`
 lists every `SpendTransaction`, day-grouped into `List` `Section`s ("Today,"
