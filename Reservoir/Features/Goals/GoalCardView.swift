@@ -19,6 +19,10 @@ struct ActiveGoalCardView: View {
     /// "per-card segmented control" rationale for why this isn't a single app-wide toggle.
     @State private var selectedSegment: Segment = .pace
 
+    /// Tap-to-expand state for the compact spend chart (reservoir-t5u task 2) — resets
+    /// closed every time the screen is opened, same convention as `selectedSegment`.
+    @State private var isShowingChartDetail = false
+
     private enum Segment: String, CaseIterable, Identifiable {
         case pace = "Pace"
         case simulation = "Simulation"
@@ -90,6 +94,16 @@ struct ActiveGoalCardView: View {
                     .accessibilityIdentifier("goals.card.progressText")
             }
 
+            Button {
+                isShowingChartDetail = true
+            } label: {
+                GoalSpendingChartView(points: chartPoints)
+                    .frame(height: 80)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("goals.card.chart")
+            .accessibilityLabel("Spending chart, tap to expand")
+
             Picker("Pace view", selection: $selectedSegment) {
                 ForEach(Segment.allCases) { segment in
                     Text(segment.rawValue).tag(segment)
@@ -114,6 +128,17 @@ struct ActiveGoalCardView: View {
         .background(Color("ReservoirSurface"), in: RoundedRectangle(cornerRadius: 12))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("goals.card")
+        .sheet(isPresented: $isShowingChartDetail) {
+            SpendingChartDetailView(goal: goal, referenceDate: referenceDate, calendar: calendar)
+        }
+    }
+
+    /// The compact card's chart window: trailing 30 days (or since the goal's own start,
+    /// whichever is shorter), ending on `referenceDate` — the `windowEnd = today` case of
+    /// `GoalsScreenCalculator.spendChartWindow`. The modal (`SpendingChartDetailView`)
+    /// reuses the same underlying function with an earlier `windowEnd` for its paging.
+    private var chartPoints: [GoalsScreenCalculator.DailySpendPoint] {
+        GoalsScreenCalculator.spendChartWindow(for: goal, windowEnd: referenceDate, calendar: calendar)
     }
 
     /// Drives the pace-copy's text color per the bead's instruction to mirror

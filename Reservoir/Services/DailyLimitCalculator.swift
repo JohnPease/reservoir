@@ -118,12 +118,17 @@ public enum DailyLimitCalculator {
         return carryForward(for: goal, asOf: dayAfterTarget, calendar: calendar) >= 0
     }
 
-    // MARK: - Private helpers
+    // MARK: - Shared helpers
 
     /// Sums spend entries per calendar day, counting only `.variable`-kind entries.
     /// `.fixed` entries reduce the goal's account balance elsewhere but are excluded
     /// from the limit/carry-forward math (PROJECT_SPEC "Fixed expenses").
-    private static func variableSpendByDay(
+    ///
+    /// Internal (not `private`) as of reservoir-t5u: `GoalsScreenCalculator
+    /// .spendChartWindow(input:windowEnd:calendar:)` reuses this exact per-day bucketing
+    /// for the per-goal spend chart rather than re-deriving its own copy
+    /// (STANDARDS.md §3 — no duplicated logic). No other change to the implementation.
+    static func variableSpendByDay(
         _ entries: [GoalCarryForwardInput.SpendEntry],
         calendar: Calendar
     ) -> [Date: Decimal] {

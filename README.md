@@ -296,6 +296,42 @@ rollback-on-failure + error-alert helper, `Services/PersistenceSaveHelper.swift`
 — extracted from `TodayView.dismiss(_:)`'s original inline implementation so
 the pattern isn't duplicated four times (STANDARDS.md §3).
 
+**Per-goal spending chart** (reservoir-t5u, Phase 3 of the charts/trends
+roadmap item): each active goal's card (`GoalCardView.swift`) shows a compact
+Swift Charts bar chart of that goal's variable spend, tappable to open an
+enlarged `Features/Goals/SpendingChartDetailView.swift` modal
+(`.sheet`, `.presentationDetents([.large])`, standard swipe-to-dismiss — no
+custom close button). Both the compact and enlarged charts render through one
+shared view, `Features/Goals/GoalSpendingChartView.swift` (a `BarMark` per day
+plus a per-day `RuleMark` for that day's own daily limit), parameterized by
+`showAxisLabels`/`selection` rather than duplicated (STANDARDS.md §3) — the
+compact card passes neither; the modal passes both, wiring `selection` to
+`chartXSelection` for tap-to-annotate. Bars render `ReservoirTextMuted`
+(muted-neutral) when that day's variable spend was under the day's limit, or
+`ReservoirDeficit` (muted-warm, the same color the rest of the app already
+uses for over-limit/deficit states) when over.
+
+The windowing math is pure and lives in `Services/GoalsScreenCalculator.swift`:
+`spendChartWindow(input:windowEnd:calendar:)` builds the `(day,
+variableSpend, dailyLimit)` array for the trailing 30 days or since the
+goal's `effectiveStartDate`, whichever is shorter, ending on any
+`windowEnd` — never `Date()` internally — so the same function serves the
+compact card (`windowEnd = today`) and the modal's swipe-to-page-back history
+(`windowEnd` stepped 30 days further back per page via `chartWindowEnd(page:
+referenceDate:calendar:)`, bounded by `chartWindowCount`, which naturally
+stops at the goal's own start rather than needing separate clamp logic). Each
+day's limit reuses `DailyLimitCalculator.dailyLimit(for:asOf:)` directly, and
+the per-day spend bucketing reuses `DailyLimitCalculator
+.variableSpendByDay` (bumped from `private` to `internal` for this reuse —
+no other change to it). A goal with fewer than 3 days of history (in either
+the compact card or a given modal page) shows a "Not enough spending history
+yet" state instead of a chart.
+
+The modal pages via `TabView(.page)`, not a hand-rolled `DragGesture` — a
+brief spike found `TabView`'s swipe-to-page and `Chart`'s tap-to-select
+(`chartXSelection`) don't actually conflict, since one claims horizontal
+drags and the other only a tap, so the simpler standard-SwiftUI option works.
+
 **Transactions tab** (adq.3): `Features/Transactions/TransactionsView.swift`
 lists every `SpendTransaction`, day-grouped into `List` `Section`s ("Today,"
 "Yesterday," then full dates) and sorted date-descending (`createdAt`-desc
@@ -861,11 +897,14 @@ to confirm rather than decided unilaterally.
   `targetDate` passes, and dismissing it resets to the empty state. See
   "Today screen" under Architecture above.
 - **Goals screen** (implemented): active-goal cards with a progress bar,
-  target/start dates, and a per-card Pace/Simulation toggle for "at current
-  pace" projections; completed-but-undismissed goals with the same banner as
-  Today; a shared zero-goals empty state; and full goal create/edit/delete,
-  including backdatable `startDate` at creation. See "Goals screen" under
-  Architecture above.
+  target/start dates, a per-card Pace/Simulation toggle for "at current
+  pace" projections, and a compact tap-to-expand variable-spend bar chart
+  (trailing 30 days or since goal start, daily-limit overlay, muted
+  under/over-limit coloring, swipe-paged history in the expanded view);
+  completed-but-undismissed goals with the same banner as Today; a shared
+  zero-goals empty state; and full goal create/edit/delete, including
+  backdatable `startDate` at creation. See "Goals screen" and "Per-goal
+  spending chart" under Architecture above.
 - **Transactions tab** (implemented): day-grouped, date-descending list of
   every transaction with an All/Variable/Fixed filter, goal-attribution
   indicator per row, tap-to-edit/swipe-to-delete, and a "+" that opens the
