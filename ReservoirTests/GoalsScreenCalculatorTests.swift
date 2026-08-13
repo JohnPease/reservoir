@@ -487,4 +487,262 @@ final class GoalsScreenCalculatorTests: XCTestCase {
         }
         XCTAssertEqual(projection.avgDailyNet, 10)
     }
+
+    // MARK: - Spend chart window (reservoir-t5u)
+
+    private func makeInput(
+        effectiveStartDate: Date,
+        dailyBase: Decimal = 10,
+        spendEntries: [GoalCarryForwardInput.SpendEntry] = []
+    ) -> GoalCarryForwardInput {
+        GoalCarryForwardInput(
+            id: AnyHashable("chart-test-goal"),
+            dailyBase: dailyBase,
+            effectiveStartDate: effectiveStartDate,
+            spendEntries: spendEntries
+        )
+    }
+
+    // MARK: <3-day "not enough data" cutoff (window-length math at 2/3/4 days)
+
+    func testChartWindowLengthIsOneForGoalCreatedTodayReproSweep() {
+        // reservoir-t5u manual-QA bug report: a goal whose effectiveStartDate IS
+        // windowEnd (created today, zero elapsed days) rendered a chart instead of the
+        // "not enough data" state. Directly exercising that exact boundary via the
+        // production `for goal:` overload (a real SwiftData goal + one same-day
+        // transaction), not just the plain-input overload, to catch anything the
+        // SwiftData mapping layer (`TodayScreenCalculator.carryForwardInput`) might be
+        // doing differently from the hand-built `makeInput` helper.
+        let goal = makeGoal(startDate: today, targetDate: day(400), dailyBase: 10, createdAt: today)
+        makeTransaction(amount: 12, date: today, type: .variable, savingsGoal: goal)
+        try! context.save()
+
+        let length = GoalsScreenCalculator.chartWindowLength(
+            effectiveStartDate: TodayScreenCalculator.carryForwardInput(for: goal, calendar: calendar).effectiveStartDate,
+            windowEnd: today,
+            calendar: calendar
+        )
+        XCTAssertEqual(length, 1, "A goal created today with windowEnd == today must produce exactly 1 day, not more")
+
+        let points = GoalsScreenCalculator.spendChartWindow(for: goal, windowEnd: today, calendar: calendar)
+        XCTAssertEqual(points.count, 1, "Must be below GoalSpendingChartView's minimumPointCount of 3, triggering the 'not enough data' state")
+        XCTAssertEqual(points.first?.day, calendar.startOfDay(for: today))
+        XCTAssertEqual(points.first?.variableSpend, 12)
+    }
+
+    func testChartWindowLengthIsTwoWithExactlyTwoDaysOfHistory() {
+        // effectiveStartDate == day(-1): day(-1) and today, inclusive, is 2 days.
+        let input = makeInput(effectiveStartDate: day(-1))
+        XCTAssertEqual(GoalsScreenCalculator.chartWindowLength(effectiveStartDate: input.effectiveStartDate, windowEnd: today, calendar: calendar), 2)
+
+        let points = GoalsScreenCalculator.spendChartWindow(input: input, windowEnd: today, calendar: calendar)
+        XCTAssertEqual(points.count, 2)
+        // Below GoalSpendingChartView's minimumPointCount of 3 — the view renders the
+        // "not enough data" state at this count, but the calculator itself still
+        // produces a correct (if short) window; that threshold is a view-layer concern.
+        XCTAssertLessThan(points.count, 3)
+    }
+
+    func testChartWindowLengthIsThreeWithExactlyThreeDaysOfHistory() {
+        // effectiveStartDate == day(-2): day(-2), day(-1), today == 3 days, exactly at
+        // the "not enough data" cutoff — this is the first count the view treats as
+        // chartable.
+        let input = makeInput(effectiveStartDate: day(-2))
+        XCTAssertEqual(GoalsScreenCalculator.chartWindowLength(effectiveStartDate: input.effectiveStartDate, windowEnd: today, calendar: calendar), 3)
+
+        let points = GoalsScreenCalculator.spendChartWindow(input: input, windowEnd: today, calendar: calendar)
+        XCTAssertEqual(points.count, 3)
+        XCTAssertEqual(points.first?.day, calendar.startOfDay(for: day(-2)))
+        XCTAssertEqual(points.last?.day, calendar.startOfDay(for: today))
+    }
+
+    func testChartWindowLengthIsFourWithExactlyFourDaysOfHistory() {
+        let input = makeInput(effectiveStartDate: day(-3))
+        XCTAssertEqual(GoalsScreenCalculator.chartWindowLength(effectiveStartDate: input.effectiveStartDate, windowEnd: today, calendar: calendar), 4)
+
+        let points = GoalsScreenCalculator.spendChartWindow(input: input, windowEnd: today, calendar: calendar)
+        XCTAssertEqual(points.count, 4)
+    }
+
+    // MARK: Negative dailyLimit for a goal deeply behind pace (reservoir-t5u manual-QA:
+    // RuleMark escaping the compact card's 80pt frame)
+
+    func testSpendChartWindowProducesNegativeDailyLimitForGoalDeeplyBehindPace() {
+        // A goal that's overspent every day of a 60-day-old window accumulates a deeply
+        // negative carryForward, which makes dailyLimit (dailyBase + carryForward)
+        // negative on recent days — the exact condition that broke
+        // `GoalSpendingChartView`'s Y-domain (hardcoded `0...upperBound`, no room for a
+        // negative RuleMark value, so Swift Charts extrapolated it below the plot,
+        // bleeding into the Pace/Simulation text underneath the compact chart on the
+        // Goals screen). dailyBase 10, overspending $30/day every day for 60 days =>
+        // carryForward ~= -60 * 20 = -1200 by the window's end, dailyLimit ~= -1190.
+        let effectiveStartDate = day(-59)
+        var entries: [GoalCarryForwardInput.SpendEntry] = []
+        for offset in -59...0 {
+            entries.append(GoalCarryForwardInput.SpendEntry(date: day(offset), amount: 30, kind: .variable))
+        }
+        let input = makeInput(effectiveStartDate: effectiveStartDate, dailyBase: 10, spendEntries: entries)
+
+        let points = GoalsScreenCalculator.spendChartWindow(input: input, windowEnd: today, calendar: calendar)
+        XCTAssertEqual(points.count, 30, "Capped to the trailing 30 days of this 60-day-old goal")
+        guard let lastPoint = points.last else {
+            return XCTFail("Expected a last point")
+        }
+        XCTAssertLessThan(lastPoint.dailyLimit, 0, "A goal deeply behind pace must be able to produce a negative dailyLimit — this is the realistic data condition the chart's Y-domain has to accommodate, not a contrived degenerate case")
+    }
+
+    // MARK: Goal-creation-date boundary (earliest page stops exactly at effectiveStartDate)
+
+    func testChartWindowLengthCapsAtThirtyDaysForOlderGoals() {
+        // effectiveStartDate 40 days before windowEnd => 41 days of raw history, capped
+        // to 30.
+        let input = makeInput(effectiveStartDate: day(-40))
+        XCTAssertEqual(GoalsScreenCalculator.chartWindowLength(effectiveStartDate: input.effectiveStartDate, windowEnd: today, calendar: calendar), 30)
+
+        let points = GoalsScreenCalculator.spendChartWindow(input: input, windowEnd: today, calendar: calendar)
+        XCTAssertEqual(points.count, 30)
+        // The window's start is 29 days before windowEnd (30 days inclusive), NOT the
+        // goal's actual effectiveStartDate — confirms the 30-day cap, not the
+        // goal-start boundary, is what's biting here.
+        XCTAssertEqual(points.first?.day, calendar.startOfDay(for: day(-29)))
+        XCTAssertEqual(points.last?.day, calendar.startOfDay(for: today))
+    }
+
+    func testChartWindowCountAndEarliestPageBoundAtGoalCreationDateWithNoOffByOne() {
+        // 66 days of total history (effectiveStartDate through today, inclusive):
+        // page 0 and page 1 are full 30-day windows: totalDays - 30*2 = 6 days left over
+        // for the earliest page => chartWindowCount == ceil(66/30) == 3.
+        let effectiveStartDate = day(-65)
+        let input = makeInput(effectiveStartDate: effectiveStartDate)
+
+        let windowCount = GoalsScreenCalculator.chartWindowCount(effectiveStartDate: effectiveStartDate, referenceDate: today, calendar: calendar)
+        XCTAssertEqual(windowCount, 3)
+
+        // Page 0 (most recent): windowEnd == today, full 30-day window.
+        let page0End = GoalsScreenCalculator.chartWindowEnd(page: 0, referenceDate: today, calendar: calendar)
+        XCTAssertEqual(page0End, calendar.startOfDay(for: today))
+        let page0Points = GoalsScreenCalculator.spendChartWindow(input: input, windowEnd: page0End, calendar: calendar)
+        XCTAssertEqual(page0Points.count, 30)
+
+        // Page 1 (middle): windowEnd == today - 30, another full 30-day window.
+        let page1End = GoalsScreenCalculator.chartWindowEnd(page: 1, referenceDate: today, calendar: calendar)
+        XCTAssertEqual(page1End, calendar.startOfDay(for: day(-30)))
+        let page1Points = GoalsScreenCalculator.spendChartWindow(input: input, windowEnd: page1End, calendar: calendar)
+        XCTAssertEqual(page1Points.count, 30)
+
+        // Page 2 (earliest / last page, index windowCount - 1): windowEnd == today - 60.
+        // Its window must stop EXACTLY at effectiveStartDate — no day before it, and no
+        // gap day skipped (off-by-one in either direction).
+        let page2End = GoalsScreenCalculator.chartWindowEnd(page: windowCount - 1, referenceDate: today, calendar: calendar)
+        XCTAssertEqual(page2End, calendar.startOfDay(for: day(-60)))
+        let page2Points = GoalsScreenCalculator.spendChartWindow(input: input, windowEnd: page2End, calendar: calendar)
+        // 6 days: effectiveStartDate (day(-65)) through page2End (day(-60)) inclusive.
+        XCTAssertEqual(page2Points.count, 6)
+        XCTAssertEqual(page2Points.first?.day, calendar.startOfDay(for: effectiveStartDate), "Earliest page must start exactly at the goal's effectiveStartDate, not before or after it")
+        XCTAssertEqual(page2Points.last?.day, page2End)
+    }
+
+    func testChartWindowCountIsOneForGoalCreatedToday() {
+        // effectiveStartDate == referenceDate: a single (short, 1-day) page, never zero.
+        XCTAssertEqual(GoalsScreenCalculator.chartWindowCount(effectiveStartDate: today, referenceDate: today, calendar: calendar), 1)
+    }
+
+    func testChartWindowLengthIsZeroWhenWindowEndPrecedesEffectiveStartDate() {
+        // Defensive: a windowEnd earlier than the goal's own start shouldn't be reachable
+        // via chartWindowEnd's own page bounding, but the function itself must not
+        // produce a negative-length or garbage window if it is ever called that way.
+        XCTAssertEqual(GoalsScreenCalculator.chartWindowLength(effectiveStartDate: today, windowEnd: day(-1), calendar: calendar), 0)
+        XCTAssertEqual(GoalsScreenCalculator.spendChartWindow(input: makeInput(effectiveStartDate: today), windowEnd: day(-1), calendar: calendar), [])
+    }
+
+    // MARK: Non-"today" windowEnd (paged-back modal view)
+
+    func testSpendChartWindowWithPastWindowEndReflectsThatWindowNotRealToday() {
+        // A goal with 50 days of history; page back to a windowEnd 40 days before
+        // "today" and confirm the returned points are anchored to THAT windowEnd, not
+        // to `today` — this is the crux of paging correctness: the function must never
+        // implicitly reach for "now."
+        let effectiveStartDate = day(-50)
+        let pastWindowEnd = day(-40)
+        let spendDay = day(-45)
+        let input = makeInput(
+            effectiveStartDate: effectiveStartDate,
+            dailyBase: 10,
+            spendEntries: [GoalCarryForwardInput.SpendEntry(date: spendDay, amount: 25, kind: .variable)]
+        )
+
+        let points = GoalsScreenCalculator.spendChartWindow(input: input, windowEnd: pastWindowEnd, calendar: calendar)
+
+        // 11 days: effectiveStartDate (day(-50)) through pastWindowEnd (day(-40))
+        // inclusive.
+        XCTAssertEqual(points.count, 11)
+        XCTAssertEqual(points.last?.day, calendar.startOfDay(for: pastWindowEnd), "Window must end at the passed-in windowEnd, not at today")
+        XCTAssertEqual(points.first?.day, calendar.startOfDay(for: effectiveStartDate))
+
+        guard let spendPoint = points.first(where: { $0.day == calendar.startOfDay(for: spendDay) }) else {
+            return XCTFail("Expected a point for the spend day")
+        }
+        XCTAssertEqual(spendPoint.variableSpend, 25)
+
+        // Every other day in the window has zero variable spend.
+        for point in points where point.day != calendar.startOfDay(for: spendDay) {
+            XCTAssertEqual(point.variableSpend, 0)
+        }
+    }
+
+    func testSpendChartWindowDailyLimitMatchesDailyLimitCalculatorAsOfEachDay() {
+        // Spot-check that each point's dailyLimit is exactly
+        // DailyLimitCalculator.dailyLimit(asOf: point.day).limit — confirming
+        // spendChartWindow reuses that function rather than recomputing its own copy
+        // (STANDARDS.md §3).
+        let effectiveStartDate = day(-5)
+        let input = makeInput(
+            effectiveStartDate: effectiveStartDate,
+            dailyBase: 10,
+            spendEntries: [GoalCarryForwardInput.SpendEntry(date: day(-3), amount: 40, kind: .variable)]
+        )
+
+        let points = GoalsScreenCalculator.spendChartWindow(input: input, windowEnd: today, calendar: calendar)
+        for point in points {
+            let expectedLimit = DailyLimitCalculator.dailyLimit(for: input, asOf: point.day, calendar: calendar).limit
+            XCTAssertEqual(point.dailyLimit, expectedLimit, "Mismatch on \(point.day)")
+        }
+    }
+
+    // MARK: Standard 30-day case / "shorter of 30 days or since goal start"
+
+    func testSpendChartWindowUsesFullThirtyDaysForGoalOlderThanThirtyDays() {
+        let input = makeInput(effectiveStartDate: day(-100))
+        let points = GoalsScreenCalculator.spendChartWindow(input: input, windowEnd: today, calendar: calendar)
+        XCTAssertEqual(points.count, 30)
+    }
+
+    func testSpendChartWindowUsesShorterHistorySinceGoalStartWhenGoalIsYoungerThanThirtyDays() {
+        // effectiveStartDate 12 days before windowEnd => 13 days of history, well under
+        // the 30-day cap, so the window is exactly that history, not padded/truncated.
+        let effectiveStartDate = day(-12)
+        let input = makeInput(effectiveStartDate: effectiveStartDate)
+        let points = GoalsScreenCalculator.spendChartWindow(input: input, windowEnd: today, calendar: calendar)
+        XCTAssertEqual(points.count, 13)
+        XCTAssertEqual(points.first?.day, calendar.startOfDay(for: effectiveStartDate))
+        XCTAssertEqual(points.last?.day, calendar.startOfDay(for: today))
+    }
+
+    // MARK: `for goal:` convenience overload wiring
+
+    func testSpendChartWindowForGoalOverloadDerivesInputFromGoal() throws {
+        let goal = makeGoal(startDate: day(-5), dailyBase: 10, createdAt: day(-5))
+        makeTransaction(amount: 15, date: day(-2), type: .variable, savingsGoal: goal)
+        try context.save()
+
+        let viaOverload = GoalsScreenCalculator.spendChartWindow(for: goal, windowEnd: today, calendar: calendar)
+        let viaInput = GoalsScreenCalculator.spendChartWindow(
+            input: TodayScreenCalculator.carryForwardInput(for: goal, calendar: calendar),
+            windowEnd: today,
+            calendar: calendar
+        )
+        XCTAssertEqual(viaOverload, viaInput)
+        XCTAssertEqual(viaOverload.count, 6)
+        XCTAssertEqual(viaOverload.first(where: { $0.day == calendar.startOfDay(for: day(-2)) })?.variableSpend, 15)
+    }
 }

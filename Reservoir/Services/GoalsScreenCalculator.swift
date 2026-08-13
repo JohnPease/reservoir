@@ -324,6 +324,125 @@ enum GoalsScreenCalculator {
         return .early(days: earlyDays, date: completionDate)
     }
 
+    // MARK: - Spend chart (reservoir-t5u)
+
+    /// One day's plotted point for the per-goal spend chart: that day's variable spend
+    /// and that day's own daily limit (`dailyBase + carryForward`, as of that day),
+    /// suitable for a `BarMark` + per-day `RuleMark` pair. `id` is the day itself — days
+    /// within one goal's window are always unique.
+    public struct DailySpendPoint: Equatable, Identifiable {
+        public var day: Date
+        public var variableSpend: Decimal
+        public var dailyLimit: Decimal
+        public var id: Date { day }
+
+        public init(day: Date, variableSpend: Decimal, dailyLimit: Decimal) {
+            self.day = day
+            self.variableSpend = variableSpend
+            self.dailyLimit = dailyLimit
+        }
+    }
+
+    /// The chart window length for a given goal/`windowEnd` pair: `min(30, days from the
+    /// goal's `effectiveStartDate` through `windowEnd`, inclusive)`. Pulled out as its own
+    /// function so `chartWindowCount`/tests can reason about window length without
+    /// building the full point array.
+    static func chartWindowLength(
+        effectiveStartDate: Date,
+        windowEnd: Date,
+        calendar: Calendar = .current
+    ) -> Int {
+        let start = calendar.startOfDay(for: effectiveStartDate)
+        let end = calendar.startOfDay(for: windowEnd)
+        guard start <= end else { return 0 }
+        let daysSinceStart = (calendar.dateComponents([.day], from: start, to: end).day ?? 0) + 1
+        return min(30, daysSinceStart)
+    }
+
+    /// Builds the windowed `(day, variableSpend, dailyLimit)` array for one goal, ending
+    /// on `windowEnd` (inclusive) and covering the trailing 30 days OR the goal's full
+    /// history since `input.effectiveStartDate`, whichever is shorter — same rule
+    /// `chartWindowLength` computes. `windowEnd` is a parameter, never `Date()` internally,
+    /// so this same function serves both the compact card (`windowEnd = today`) and the
+    /// modal's historical paging (`windowEnd` = an arbitrary earlier date) — see
+    /// `chartWindowEnd(page:referenceDate:calendar:)` for how the modal derives that
+    /// earlier date.
+    ///
+    /// Reuses `DailyLimitCalculator.variableSpendByDay` (now internal, not private — see
+    /// its doc comment) for the per-day spend bucketing, and
+    /// `DailyLimitCalculator.dailyLimit(for:asOf:)` for each day's limit — no
+    /// reimplementation of either (STANDARDS.md §3). Pure Foundation math; no view-layer
+    /// logic, so it's directly unit-testable on boundary cases (goal younger than 30
+    /// days, `windowEnd` before the goal existed, etc.) without SwiftUI or SwiftData.
+    static func spendChartWindow(
+        input: GoalCarryForwardInput,
+        windowEnd: Date,
+        calendar: Calendar = .current
+    ) -> [DailySpendPoint] {
+        let windowLength = chartWindowLength(effectiveStartDate: input.effectiveStartDate, windowEnd: windowEnd, calendar: calendar)
+        guard windowLength > 0 else { return [] }
+
+        let end = calendar.startOfDay(for: windowEnd)
+        let windowStart = calendar.date(byAdding: .day, value: -(windowLength - 1), to: end)!
+        let spentByDay = DailyLimitCalculator.variableSpendByDay(input.spendEntries, calendar: calendar)
+
+        var points: [DailySpendPoint] = []
+        points.reserveCapacity(windowLength)
+        for offset in 0..<windowLength {
+            let day = calendar.date(byAdding: .day, value: offset, to: windowStart)!
+            let limit = DailyLimitCalculator.dailyLimit(for: input, asOf: day, calendar: calendar).limit
+            points.append(DailySpendPoint(day: day, variableSpend: spentByDay[day] ?? 0, dailyLimit: limit))
+        }
+        return points
+    }
+
+    /// Convenience overload that derives the `GoalCarryForwardInput` itself — for call
+    /// sites that only need this one value and aren't already holding a precomputed
+    /// input. See the `input:` overload's doc comment for the full behavior.
+    static func spendChartWindow(
+        for goal: SavingsGoal,
+        windowEnd: Date,
+        calendar: Calendar = .current
+    ) -> [DailySpendPoint] {
+        spendChartWindow(
+            input: TodayScreenCalculator.carryForwardInput(for: goal, calendar: calendar),
+            windowEnd: windowEnd,
+            calendar: calendar
+        )
+    }
+
+    /// How many 30-day (or shorter) windows exist between `effectiveStartDate` and
+    /// `referenceDate`, inclusive — the page count `SpendingChartDetailView`'s pager
+    /// bounds itself to. Always >= 1 so a goal younger than one full window still gets a
+    /// single (short) page rather than zero.
+    static func chartWindowCount(
+        effectiveStartDate: Date,
+        referenceDate: Date,
+        calendar: Calendar = .current
+    ) -> Int {
+        let start = calendar.startOfDay(for: effectiveStartDate)
+        let end = calendar.startOfDay(for: referenceDate)
+        guard start <= end else { return 1 }
+        let totalDays = (calendar.dateComponents([.day], from: start, to: end).day ?? 0) + 1
+        return max(1, Int(ceil(Double(totalDays) / 30.0)))
+    }
+
+    /// The `windowEnd` for page `page` of the modal's pager: `page == 0` is the current
+    /// (most recent) 30-day window ending on `referenceDate`; each increment steps back
+    /// one further 30-day window. The earliest page's resulting window is naturally
+    /// shorter than 30 days (handled by `chartWindowLength`/`spendChartWindow` themselves)
+    /// rather than needing separate clamp logic here — `chartWindowCount` already bounds
+    /// how many pages exist, so callers never pass a `page` that would compute a
+    /// `windowEnd` before the goal's `effectiveStartDate`.
+    static func chartWindowEnd(
+        page: Int,
+        referenceDate: Date,
+        calendar: Calendar = .current
+    ) -> Date {
+        let today = calendar.startOfDay(for: referenceDate)
+        return calendar.date(byAdding: .day, value: -30 * page, to: today)!
+    }
+
     // MARK: - Decimal rounding helpers
 
     /// Every call site passes a non-negative `value` (an `abs(...)` result or a ratio of
