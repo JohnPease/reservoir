@@ -53,13 +53,28 @@ struct GoalSpendingChartView: View {
 
     // MARK: - Chart
 
-    /// The plot's Y domain, padded ~15% above the larger of the two series' peaks so the
+    /// The plot's Y domain. Padded ~15% above the larger of the two series' peaks so the
     /// tallest bar/highest limit tick isn't flush against the chart's top edge.
-    private var yDomainUpperBound: Double {
+    ///
+    /// Lower bound is NOT hardcoded to 0 (code-review fix, reservoir-t5u manual-QA
+    /// report): a goal that's meaningfully behind pace has a deeply negative
+    /// `carryForward`, which makes `dailyLimit` (`dailyBase + carryForward`) negative —
+    /// realistic any time a goal has run an overspending streak, not just a contrived
+    /// edge case. A domain hardcoded to `0...upperBound` has no valid position for a
+    /// negative-y `RuleMark`; Swift Charts extrapolates it far past the plot's bottom
+    /// edge, which (with no `.clipped()`) bled into whatever sibling view sits below the
+    /// chart. Floors at the smaller of 0 and the lowest `dailyLimit` in this window,
+    /// padded the same ~15%, so a negative limit still gets a valid, visible in-bounds
+    /// position instead of extrapolating out of the plot entirely.
+    private var yDomain: ClosedRange<Double> {
         let maxSpend = points.map(\.variableSpend).max() ?? 0
         let maxLimit = points.map(\.dailyLimit).max() ?? 0
+        let minLimit = points.map(\.dailyLimit).min() ?? 0
         let peak = Self.double(max(maxSpend, maxLimit))
-        return max(peak, 1) * 1.15
+        let trough = min(0, Self.double(minLimit))
+        let upper = max(peak, 1) * 1.15
+        let lower = trough < 0 ? trough * 1.15 : 0
+        return lower...upper
     }
 
     @ViewBuilder
@@ -92,9 +107,14 @@ struct GoalSpendingChartView: View {
                 .lineStyle(StrokeStyle(lineWidth: 1.5))
             }
         }
-        .chartYScale(domain: 0...yDomainUpperBound)
+        .chartYScale(domain: yDomain)
         .chartXAxis(showAxisLabels ? .visible : .hidden)
         .chartYAxis(showAxisLabels ? .visible : .hidden)
+        // Defensive backstop (code-review fix, reservoir-t5u manual-QA report): even
+        // with `yDomain` now bounding real data correctly, a mark should never be able
+        // to bleed into sibling views below the chart. `.frame(height:)` alone does not
+        // clip SwiftUI content to its bounds.
+        .clipped()
     }
 
     fileprivate static func double(_ value: Decimal) -> Double {

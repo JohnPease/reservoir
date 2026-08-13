@@ -505,6 +505,31 @@ final class GoalsScreenCalculatorTests: XCTestCase {
 
     // MARK: <3-day "not enough data" cutoff (window-length math at 2/3/4 days)
 
+    func testChartWindowLengthIsOneForGoalCreatedTodayReproSweep() {
+        // reservoir-t5u manual-QA bug report: a goal whose effectiveStartDate IS
+        // windowEnd (created today, zero elapsed days) rendered a chart instead of the
+        // "not enough data" state. Directly exercising that exact boundary via the
+        // production `for goal:` overload (a real SwiftData goal + one same-day
+        // transaction), not just the plain-input overload, to catch anything the
+        // SwiftData mapping layer (`TodayScreenCalculator.carryForwardInput`) might be
+        // doing differently from the hand-built `makeInput` helper.
+        let goal = makeGoal(startDate: today, targetDate: day(400), dailyBase: 10, createdAt: today)
+        makeTransaction(amount: 12, date: today, type: .variable, savingsGoal: goal)
+        try! context.save()
+
+        let length = GoalsScreenCalculator.chartWindowLength(
+            effectiveStartDate: TodayScreenCalculator.carryForwardInput(for: goal, calendar: calendar).effectiveStartDate,
+            windowEnd: today,
+            calendar: calendar
+        )
+        XCTAssertEqual(length, 1, "A goal created today with windowEnd == today must produce exactly 1 day, not more")
+
+        let points = GoalsScreenCalculator.spendChartWindow(for: goal, windowEnd: today, calendar: calendar)
+        XCTAssertEqual(points.count, 1, "Must be below GoalSpendingChartView's minimumPointCount of 3, triggering the 'not enough data' state")
+        XCTAssertEqual(points.first?.day, calendar.startOfDay(for: today))
+        XCTAssertEqual(points.first?.variableSpend, 12)
+    }
+
     func testChartWindowLengthIsTwoWithExactlyTwoDaysOfHistory() {
         // effectiveStartDate == day(-1): day(-1) and today, inclusive, is 2 days.
         let input = makeInput(effectiveStartDate: day(-1))
@@ -537,6 +562,33 @@ final class GoalsScreenCalculatorTests: XCTestCase {
 
         let points = GoalsScreenCalculator.spendChartWindow(input: input, windowEnd: today, calendar: calendar)
         XCTAssertEqual(points.count, 4)
+    }
+
+    // MARK: Negative dailyLimit for a goal deeply behind pace (reservoir-t5u manual-QA:
+    // RuleMark escaping the compact card's 80pt frame)
+
+    func testSpendChartWindowProducesNegativeDailyLimitForGoalDeeplyBehindPace() {
+        // A goal that's overspent every day of a 60-day-old window accumulates a deeply
+        // negative carryForward, which makes dailyLimit (dailyBase + carryForward)
+        // negative on recent days — the exact condition that broke
+        // `GoalSpendingChartView`'s Y-domain (hardcoded `0...upperBound`, no room for a
+        // negative RuleMark value, so Swift Charts extrapolated it below the plot,
+        // bleeding into the Pace/Simulation text underneath the compact chart on the
+        // Goals screen). dailyBase 10, overspending $30/day every day for 60 days =>
+        // carryForward ~= -60 * 20 = -1200 by the window's end, dailyLimit ~= -1190.
+        let effectiveStartDate = day(-59)
+        var entries: [GoalCarryForwardInput.SpendEntry] = []
+        for offset in -59...0 {
+            entries.append(GoalCarryForwardInput.SpendEntry(date: day(offset), amount: 30, kind: .variable))
+        }
+        let input = makeInput(effectiveStartDate: effectiveStartDate, dailyBase: 10, spendEntries: entries)
+
+        let points = GoalsScreenCalculator.spendChartWindow(input: input, windowEnd: today, calendar: calendar)
+        XCTAssertEqual(points.count, 30, "Capped to the trailing 30 days of this 60-day-old goal")
+        guard let lastPoint = points.last else {
+            return XCTFail("Expected a last point")
+        }
+        XCTAssertLessThan(lastPoint.dailyLimit, 0, "A goal deeply behind pace must be able to produce a negative dailyLimit — this is the realistic data condition the chart's Y-domain has to accommodate, not a contrived degenerate case")
     }
 
     // MARK: Goal-creation-date boundary (earliest page stops exactly at effectiveStartDate)
