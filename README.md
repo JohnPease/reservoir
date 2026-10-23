@@ -651,6 +651,30 @@ error toast a flaky connection would falsely trigger.
     flakiness beads, reservoir-bdy/reservoir-tq7) — see the manual-steps
     comment at the bottom of `PlaidRelinkUITests.swift`.
 
+**Post-link auto-import** (reservoir-xle): after a successful fresh Link,
+`PlaidServiceLive.handleLinkSuccess` fires its opt-in `onLinkSuccess(itemID)`
+hook only once the Keychain token AND `LinkedItem` are saved (never on an
+exchange/Keychain failure). `SettingsView` wires it (alongside
+`onRelinkSuccess`, in `onAppear` and when the shared import service arrives) to
+`TransactionImportService.runImportAfterLink(itemID:)`, so the hook is live
+once Settings has appeared, which is always true because Link is launched from
+Settings. That entry point shares one core (`performImport`) with
+`runImport()` and holds `isImporting` for its whole run, so a concurrent
+foreground/refresh trigger no-ops (its scene-phase flag stays armed). Plaid's
+`/transactions/sync` does not error while an item's first pull runs; it returns
+empty arrays with `transactions_update_status: NOT_READY`, so the loop re-calls
+with backoff (2, 4, 8, 15, 30, 30s; injectable sleeper) until data arrives,
+then stops; the remainder backfills on the next normal sync. Pure helpers
+live in `PlaidSyncReadiness`; an empty not-ready page or a nil/empty
+`next_cursor` never persists a cursor. Fresh-link tokens request
+`transactions.days_requested = 730` (`PlaidLinkOptions`); relink tokens don't.
+UI: the Transactions empty state shows "Importing your transactions…" while the
+loop runs, then (if Plaid still isn't ready) a non-error "Still fetching your
+transactions" state with a Refresh button; the empty state is also
+pull-to-refreshable. The linked-account row in Settings shows a small spinner.
+Callers that find a fully linked app unsynced still self-heal on the next
+foreground sync or pull-to-refresh.
+
 **Settings tab** (adq.7): `Features/Settings/SettingsView.swift` is the real,
 shipped Settings screen, replacing the `#if DEBUG`-only `PlaidDebugLinkView`
 that stood in for it during adq.6.1–6.5. Scoped to linked-account management
@@ -866,6 +890,10 @@ to confirm rather than decided unilaterally.
   Today; a shared zero-goals empty state; and full goal create/edit/delete,
   including backdatable `startDate` at creation. See "Goals screen" under
   Architecture above.
+- **Automatic first import** (implemented): linking a bank account starts
+  importing right away, with an "Importing your transactions…" state and a
+  gentle "Still fetching" fallback with a Refresh button if the bank is slow;
+  fresh links request 730 days of history. See "Post-link auto-import" above.
 - **Transactions tab** (implemented): day-grouped, date-descending list of
   every transaction with an All/Variable/Fixed filter, goal-attribution
   indicator per row, tap-to-edit/swipe-to-delete, and a "+" that opens the
@@ -911,6 +939,12 @@ to confirm rather than decided unilaterally.
     -destination 'platform=iOS Simulator,name=<device>,OS=<version>' test
   ```
 - UI tests: `ReservoirUITests/` (XCUITest) — run in the same `test` invocation.
+  `PostLinkImportUITests` covers the post-link import states using
+  `UITEST_PLAID_IMPORT_SCENARIO=notReadyThenReady|neverReady` (scripted
+  NOT_READY responses, shortened poll waits) and a debug-only trigger enabled by
+  `UITEST_ENABLE_POST_LINK_HOOK=1`. Real Plaid Link can't be automated, so the
+  `onLinkSuccess` wiring is covered by unit tests and manual verification, and
+  the UI test calls `runImportAfterLink(itemID:)` directly.
 - Coverage target: 80% minimum on business logic and data model code (see
   `STANDARDS.md` §5). Measure with:
   ```

@@ -16,6 +16,17 @@ Personal iOS app for tracking spending against a daily limit derived from saving
   - No webhooks (no backend to receive them): transactions are refreshed by
     polling on app foreground plus a manual pull-to-refresh, not on a
     background timer.
+  - Post-link import (reservoir-xle): a successful Link also starts one
+    bounded poll for the new item (re-calls `/transactions/sync` while Plaid
+    returns empty + `transactions_update_status: NOT_READY`, backoff
+    2/4/8/15/30/30s, about 89s total, then gives up quietly; the next
+    foreground or pull-to-refresh sync picks the data up). Still no
+    background timer or webhooks.
+  - History depth: fresh links request `transactions.days_requested = 730`
+    (Plaid's max) in `/link/token/create`. It is fixed at first link; update-mode
+    (relink) tokens don't send it because Plaid ignores it for existing items.
+    Items linked before this change keep their original depth (see
+    reservoir-ljr).
 - **Build/distribution**: Xcode, sideloaded, not App Store
 
 ## Core mechanic
