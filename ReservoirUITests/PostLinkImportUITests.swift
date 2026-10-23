@@ -11,9 +11,9 @@ import XCTest
 /// NOT_READY (empty) a couple of times, then data (`notReadyThenReady`), or forever
 /// (`neverReady`); poll waits are shortened to 1.5s in those scenarios.
 final class PostLinkImportUITests: XCTestCase {
-    private func launchedApp(scenario: String) -> XCUIApplication {
+    private func launchedApp(scenario: String, uiScenario: String = "transactionsZeroGoals") -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchEnvironment["UITEST_SCENARIO"] = "transactionsZeroGoals"
+        app.launchEnvironment["UITEST_SCENARIO"] = uiScenario
         app.launchEnvironment["UITEST_SEED_PLAID_LINKED_ITEM"] = "1"
         app.launchEnvironment["UITEST_SEED_PLAID_TOKEN"] = "1"
         app.launchEnvironment["UITEST_PLAID_IMPORT_SCENARIO"] = scenario
@@ -66,5 +66,24 @@ final class PostLinkImportUITests: XCTestCase {
         // A plain refresh is a single sync (no polling); still not ready, so the same state remains.
         XCTAssertTrue(stillFetching.waitForExistence(timeout: 5))
         XCTAssertTrue(refresh.waitForExistence(timeout: 5))
+    }
+
+    /// reservoir-crf: relinking keeps existing rows, so the full-screen importing state never
+    /// shows — a slim banner must.
+    func testPostLinkImport_withExistingRows_showsImportingBannerThenClearsIt() {
+        let app = launchedApp(scenario: "notReadyThenReady", uiScenario: "transactionsList")
+        app.tabBars.buttons["Transactions"].tap()
+        let trigger = app.buttons["transactions.debugPostLinkTrigger"]
+        XCTAssertTrue(trigger.waitForExistence(timeout: 5))
+        trigger.tap()
+
+        XCTAssertTrue(element(app, "transactions.importingBanner").waitForExistence(timeout: 5), "a banner must show while importing even though the list already has rows.")
+        XCTAssertFalse(element(app, "transactions.importingState").exists, "the full-screen state is only for an empty list.")
+
+        XCTAssertTrue(app.staticTexts["Coffee Shop"].waitForExistence(timeout: 15))
+        let banner = element(app, "transactions.importingBanner")
+        let deadline = Date().addingTimeInterval(15)
+        while banner.exists, Date() < deadline { Thread.sleep(forTimeInterval: 0.25) }
+        XCTAssertFalse(banner.exists, "the banner must clear once the import finishes.")
     }
 }

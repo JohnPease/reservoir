@@ -69,6 +69,21 @@ struct TransactionsView: View {
                     .padding(.horizontal)
                     .padding(.vertical, 8)
                 }
+                // reservoir-crf: the full-screen importing state below only shows for an empty
+                // list; when rows already exist (e.g. relinking), show a slim banner instead.
+                if importService?.isInitialImport == true, !transactions.isEmpty {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text("Importing your transactions…")
+                            .font(.footnote)
+                            .foregroundStyle(Color("ReservoirTextSecondary"))
+                        Spacer()
+                    }
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("transactions.importingBanner")
+                }
                 Group {
                     if transactions.isEmpty {
                         // In a ScrollView so the empty states are pull-to-refreshable too
