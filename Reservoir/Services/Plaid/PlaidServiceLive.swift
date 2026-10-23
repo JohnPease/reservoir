@@ -51,6 +51,15 @@ enum PlaidOAuthRedirect {
     static let url = URL(string: "https://johnpease.github.io/oauth")!
 }
 
+/// Link-token options that apply only to FRESH links (reservoir-xle).
+enum PlaidLinkOptions {
+    /// `transactions.days_requested` for `/link/token/create`: the maximum history Plaid
+    /// allows (730 days). It is fixed when the item is first linked — Plaid ignores it for
+    /// an existing item and update mode cannot raise it — so `createRelinkToken` must NOT
+    /// send it.
+    static let freshLinkDaysRequested = 730
+}
+
 /// Live implementation of `PlaidService`: owns the LinkKit session lifecycle
 /// and calls Plaid's REST API directly from the device to create a link
 /// token and to exchange a `public_token` for an `access_token`. The
@@ -114,6 +123,18 @@ final class PlaidServiceLive: PlaidService {
     /// (a deeper, correct-by-construction fix) since there's only one caller today and no
     /// second one to design against yet — revisit if/when adq.7 actually needs it.
     var onRelinkSuccess: (() -> Void)?
+
+    /// Fires at the very end of `handleLinkSuccess` (reservoir-xle) with the new item's ID,
+    /// once the Keychain token AND the `LinkedItem` have both been saved. Never fires when
+    /// the exchange or the Keychain save failed. `SettingsView` wires it to
+    /// `TransactionImportService.runImportAfterLink(itemID:)` so a freshly linked account
+    /// starts importing without waiting for a foreground or pull-to-refresh.
+    ///
+    /// Same single-slot, opt-in idiom as `onRelinkSuccess`, with one caveat: it is wired in
+    /// `SettingsView.onAppear`, so it exists once the Settings tab has appeared. That is
+    /// always true in practice because Link is launched from Settings. If it were unwired,
+    /// nothing is lost permanently: the next foreground/pull-to-refresh import syncs the item.
+    var onLinkSuccess: ((String) -> Void)?
 
     private let keychain: KeychainServicing
     private let urlSession: URLSession
@@ -336,6 +357,7 @@ final class PlaidServiceLive: PlaidService {
         linkedItem = item
         linkedItemStore.save(item)
         linkedItems = linkedItemStore.loadAll()
+        onLinkSuccess?(exchange.itemID)
     }
 
     func handleLinkExit(errorType: String?, errorCode: String?) {
@@ -539,8 +561,10 @@ final class PlaidServiceLive: PlaidService {
             let country_codes: [String]
             let language: String
             let redirect_uri: String
+            let transactions: TransactionsOptions
 
             struct RequestUser: Encodable { let client_user_id: String }
+            struct TransactionsOptions: Encodable { let days_requested: Int }
         }
         struct ResponseBody: Decodable { let link_token: String }
 
@@ -556,7 +580,8 @@ final class PlaidServiceLive: PlaidService {
             products: ["transactions"],
             country_codes: ["US"],
             language: "en",
-            redirect_uri: PlaidOAuthRedirect.url.absoluteString
+            redirect_uri: PlaidOAuthRedirect.url.absoluteString,
+            transactions: .init(days_requested: PlaidLinkOptions.freshLinkDaysRequested)
         )
         let response: ResponseBody = try await post("/link/token/create", body: body)
         return response.link_token

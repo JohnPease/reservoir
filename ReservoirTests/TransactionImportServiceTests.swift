@@ -202,7 +202,9 @@ final class TransactionImportServiceTests: XCTestCase {
         linkedItemStore: LinkedItemStoring = StubLinkedItemStore(
             initial: LinkedItem(itemID: TransactionImportServiceTests.defaultItemID, institutionName: "Test Bank", linkedAt: .now)
         ),
-        urlSession: URLSession? = nil
+        urlSession: URLSession? = nil,
+        postLinkBackoff: [Duration] = [.seconds(1), .seconds(2), .seconds(3)],
+        sleep: @escaping @MainActor (Duration) async throws -> Void = { _ in }
     ) -> TransactionImportService {
         TransactionImportService(
             modelContext: context,
@@ -210,7 +212,9 @@ final class TransactionImportServiceTests: XCTestCase {
             urlSession: urlSession ?? makeScriptedURLSession(),
             environmentStore: StubEnvironmentStore(.sandbox),
             cursorStore: cursorStore,
-            linkedItemStore: linkedItemStore
+            linkedItemStore: linkedItemStore,
+            postLinkBackoff: postLinkBackoff,
+            sleep: sleep
         )
     }
 
@@ -241,9 +245,10 @@ final class TransactionImportServiceTests: XCTestCase {
         return Calendar.current.date(from: components)!
     }
 
-    private func syncResponse(added: [String] = [], modified: [String] = [], removed: [String] = [], nextCursor: String, hasMore: Bool = false) -> Data {
+    private func syncResponse(added: [String] = [], modified: [String] = [], removed: [String] = [], nextCursor: String, hasMore: Bool = false, status: String? = nil) -> Data {
+        let statusField = status.map { #", "transactions_update_status": "\#($0)""# } ?? ""
         let json = """
-        {"added": [\(added.joined(separator: ","))], "modified": [\(modified.joined(separator: ","))], "removed": [\(removed.joined(separator: ","))], "next_cursor": "\(nextCursor)", "has_more": \(hasMore)}
+        {"added": [\(added.joined(separator: ","))], "modified": [\(modified.joined(separator: ","))], "removed": [\(removed.joined(separator: ","))], "next_cursor": "\(nextCursor)", "has_more": \(hasMore)\(statusField)}
         """
         return Data(json.utf8)
     }
@@ -1359,5 +1364,274 @@ final class TransactionImportServiceTests: XCTestCase {
         let fetched = try context.fetch(FetchDescriptor<SpendTransaction>())
         XCTAssertEqual(fetched.count, 2)
         XCTAssertEqual(sut.lastImportSummary?.added, 2)
+    }
+
+    // MARK: - Post-link import (reservoir-xle)
+
+    private func notReady(cursor: String = "") -> Data {
+        syncResponse(nextCursor: cursor, status: "NOT_READY")
+    }
+
+    private func ready(id: String = "plaid-1", cursor: String = "cursor-ready", status: String = "INITIAL_UPDATE_COMPLETE", hasMore: Bool = false) -> Data {
+        syncResponse(added: [transactionJSON(id: id, amount: 12.50)], nextCursor: cursor, hasMore: hasMore, status: status)
+    }
+
+    /// Records every requested wait without actually waiting.
+    @MainActor private final class SleepRecorder {
+        var durations: [Duration] = []
+        var onSleep: ((Int) async -> Void)?
+        func sleep(_ duration: Duration) async throws {
+            durations.append(duration)
+            await onSleep?(durations.count)
+        }
+    }
+
+    func testWireType_decodesWithKnownUnknownAndMissingStatus() throws {
+        func decode(_ extra: String, cursor: String = #""next_cursor": "c","#) throws -> PlaidSyncResponseBody {
+            let json = #"{"added": [], "modified": [], "removed": [], \#(cursor) "has_more": false\#(extra)}"#
+            return try JSONDecoder().decode(PlaidSyncResponseBody.self, from: Data(json.utf8))
+        }
+        XCTAssertEqual(try decode(#", "transactions_update_status": "NOT_READY""#).transactions_update_status, "NOT_READY")
+        XCTAssertEqual(try decode(#", "transactions_update_status": "SOMETHING_NEW""#).transactions_update_status, "SOMETHING_NEW")
+        XCTAssertNil(try decode("").transactions_update_status)
+        XCTAssertNil(try decode("", cursor: "").next_cursor, "a missing next_cursor must decode, not throw.")
+    }
+
+    func testReadiness_shouldRetryOnlyForEmptyNotReady() throws {
+        func response(_ status: String?, added: Bool = false, hasMore: Bool = false) throws -> PlaidSyncResponseBody {
+            let tx = added ? transactionJSON(id: "t", amount: 1) : ""
+            let statusField = status.map { #", "transactions_update_status": "\#($0)""# } ?? ""
+            let json = #"{"added": [\#(tx)], "modified": [], "removed": [], "next_cursor": "c", "has_more": \#(hasMore)\#(statusField)}"#
+            return try JSONDecoder().decode(PlaidSyncResponseBody.self, from: Data(json.utf8))
+        }
+        XCTAssertTrue(PlaidSyncReadiness.shouldRetry(try response("NOT_READY")))
+        XCTAssertFalse(PlaidSyncReadiness.shouldRetry(try response("NOT_READY", added: true)))
+        XCTAssertFalse(PlaidSyncReadiness.shouldRetry(try response("INITIAL_UPDATE_COMPLETE")))
+        XCTAssertFalse(PlaidSyncReadiness.shouldRetry(try response("HISTORICAL_UPDATE_COMPLETE")))
+        XCTAssertFalse(PlaidSyncReadiness.shouldRetry(try response("TRANSACTIONS_UPDATE_STATUS_UNKNOWN")))
+        XCTAssertFalse(PlaidSyncReadiness.shouldRetry(try response(nil)), "an absent or unrecognized status must never loop.")
+        XCTAssertNil(PlaidSyncReadiness.cursorToPersist(from: try response("NOT_READY")), "an empty not-ready page must not persist a cursor.")
+        XCTAssertEqual(PlaidSyncReadiness.cursorToPersist(from: try response("INITIAL_UPDATE_COMPLETE")), "c")
+    }
+
+    func testRunImportAfterLink_retriesOnEmptyNotReady_thenImports() async throws {
+        ScriptedSyncURLProtocol.responses = [notReady(), notReady(), ready()]
+        let recorder = SleepRecorder()
+        let cursorStore = StubCursorStore()
+        let sut = makeSUT(cursorStore: cursorStore, sleep: recorder.sleep)
+
+        await sut.runImportAfterLink(itemID: Self.defaultItemID)
+
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 3)
+        XCTAssertEqual(recorder.durations, [.seconds(1), .seconds(2)])
+        XCTAssertEqual(try context.fetch(FetchDescriptor<SpendTransaction>()).count, 1)
+        XCTAssertEqual(cursorStore.cursor(for: .sandbox, itemID: Self.defaultItemID), "cursor-ready")
+        XCTAssertNil(sut.presentedError)
+        XCTAssertFalse(sut.isInitialDataPending)
+        XCTAssertFalse(sut.isImporting)
+        XCTAssertFalse(sut.isInitialImport)
+    }
+
+    func testRunImportAfterLink_stopsAtBound_withoutError_andMarksPending() async throws {
+        ScriptedSyncURLProtocol.responses = [notReady(cursor: "cursor-empty")]
+        let recorder = SleepRecorder()
+        let cursorStore = StubCursorStore()
+        let sut = makeSUT(cursorStore: cursorStore, sleep: recorder.sleep)
+
+        await sut.runImportAfterLink(itemID: Self.defaultItemID)
+
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 4, "initial call plus one retry per backoff entry.")
+        XCTAssertEqual(recorder.durations.count, 3)
+        XCTAssertNil(sut.presentedError, "giving up is not an error.")
+        XCTAssertTrue(sut.isInitialDataPending)
+        XCTAssertFalse(sut.isImporting)
+        XCTAssertNil(cursorStore.cursor(for: .sandbox, itemID: Self.defaultItemID), "a not-ready empty page must never advance the cursor.")
+    }
+
+    func testRunImportAfterLink_stopsImmediatelyOnInitialUpdateCompleteWithRows() async throws {
+        ScriptedSyncURLProtocol.responses = [ready(status: "INITIAL_UPDATE_COMPLETE")]
+        let recorder = SleepRecorder()
+        let sut = makeSUT(sleep: recorder.sleep)
+
+        await sut.runImportAfterLink(itemID: Self.defaultItemID)
+
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 1)
+        XCTAssertTrue(recorder.durations.isEmpty)
+        XCTAssertEqual(sut.lastImportSummary?.added, 1)
+    }
+
+    func testRunImportAfterLink_historicalUpdateComplete_stopsAndPagingStillWorks() async throws {
+        ScriptedSyncURLProtocol.responses = [
+            notReady(),
+            ready(id: "plaid-1", cursor: "cursor-p1", status: "INITIAL_UPDATE_COMPLETE", hasMore: true),
+            ready(id: "plaid-2", cursor: "cursor-p2", status: "HISTORICAL_UPDATE_COMPLETE"),
+        ]
+        let recorder = SleepRecorder()
+        let cursorStore = StubCursorStore()
+        let sut = makeSUT(cursorStore: cursorStore, sleep: recorder.sleep)
+
+        await sut.runImportAfterLink(itemID: Self.defaultItemID)
+
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 3)
+        XCTAssertEqual(recorder.durations.count, 1)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<SpendTransaction>()).count, 2)
+        XCTAssertEqual(cursorStore.cursor(for: .sandbox, itemID: Self.defaultItemID), "cursor-p2")
+    }
+
+    func testRunImport_neverPersistsEmptyCursor_evenWithData() async throws {
+        ScriptedSyncURLProtocol.responses = [ready(cursor: "")]
+        let cursorStore = StubCursorStore()
+        cursorStore.setCursor("old-cursor", for: .sandbox, itemID: Self.defaultItemID)
+        let sut = makeSUT(cursorStore: cursorStore)
+
+        await sut.runImport()
+
+        XCTAssertEqual(cursorStore.cursor(for: .sandbox, itemID: Self.defaultItemID), "old-cursor")
+        XCTAssertEqual(sut.lastImportSummary?.added, 1)
+    }
+
+    func testRunImport_plainRefresh_doesNotPoll_butFlagsPendingWhenNotReady() async {
+        ScriptedSyncURLProtocol.responses = [notReady()]
+        let recorder = SleepRecorder()
+        let sut = makeSUT(sleep: recorder.sleep)
+
+        await sut.runImport()
+
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 1)
+        XCTAssertTrue(recorder.durations.isEmpty)
+        XCTAssertTrue(sut.isInitialDataPending)
+        XCTAssertFalse(sut.isInitialImport)
+        ScriptedSyncURLProtocol.responses = [ready()]
+        await sut.runImport()
+        XCTAssertFalse(sut.isInitialDataPending, "a later ready sync clears the pending flag.")
+    }
+
+    func testRunImportAfterLink_holdsIsImportingAcrossWaits_andForegroundTriggerIsSkippedWithFlagArmed() async {
+        ScriptedSyncURLProtocol.responses = [notReady(), ready()]
+        let recorder = SleepRecorder()
+        let sut = makeSUT(sleep: recorder.sleep)
+        var sawImportingDuringWait = false
+        var callsBeforeForeground = 0
+        recorder.onSleep = { _ in
+            sawImportingDuringWait = sut.isImporting && sut.isInitialImport
+            await sut.handleScenePhaseTransition(to: .active)
+            await sut.runImport()
+            callsBeforeForeground = ScriptedSyncURLProtocol.callCount
+        }
+        await sut.handleScenePhaseTransition(to: .background)
+
+        await sut.runImportAfterLink(itemID: Self.defaultItemID)
+
+        XCTAssertTrue(sawImportingDuringWait)
+        XCTAssertEqual(callsBeforeForeground, 1, "a concurrent foreground/refresh trigger must not start a second sync.")
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 2)
+
+        ScriptedSyncURLProtocol.responses = [syncResponse(nextCursor: "c2", status: "HISTORICAL_UPDATE_COMPLETE")]
+        recorder.onSleep = nil
+        await sut.handleScenePhaseTransition(to: .active)
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 3, "the skipped foreground trigger stays armed and fires on the next .active.")
+    }
+
+    func testRunImportAfterLink_requestedWhileImporting_isQueuedAndRunsAfter() async {
+        ScriptedSyncURLProtocol.responses = [ready()]
+        let sut = makeSUT()
+        let gateTask = Task { await sut.runImport() }
+        // Let the first run start (it suspends on the network call).
+        await Task.yield()
+        await sut.runImportAfterLink(itemID: Self.defaultItemID)
+        await gateTask.value
+        XCTAssertFalse(sut.isImporting)
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 2, "the queued post-link import runs after the in-flight one finishes.")
+    }
+
+    func testRunImportAfterLink_itemLoginRequiredMidLoop_setsNeedsAttentionAndStops() async {
+        ScriptedSyncURLProtocol.responses = [notReady(), itemErrorResponse(errorCode: "ITEM_LOGIN_REQUIRED"), ready()]
+        ScriptedSyncURLProtocol.statusCodes = [200, 400, 200]
+        let linkedItemStore = StubLinkedItemStore(initial: LinkedItem(itemID: Self.defaultItemID, institutionName: "Test Bank", linkedAt: .now))
+        let sut = makeSUT(linkedItemStore: linkedItemStore)
+
+        await sut.runImportAfterLink(itemID: Self.defaultItemID)
+
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 2)
+        XCTAssertEqual(sut.presentedError, .itemLoginRequired)
+        XCTAssertTrue(sut.needsAttention)
+        XCTAssertEqual(linkedItemStore.setNeedsAttentionCalls, [true])
+        XCTAssertFalse(sut.isImporting)
+    }
+
+    func testRunImportAfterLink_serverFailureMidLoop_surfacesErrorWithoutNeedsAttention() async {
+        ScriptedSyncURLProtocol.responses = [notReady(), Data()]
+        ScriptedSyncURLProtocol.statusCodes = [200, 500]
+        let linkedItemStore = StubLinkedItemStore(initial: LinkedItem(itemID: Self.defaultItemID, institutionName: "Test Bank", linkedAt: .now))
+        let sut = makeSUT(linkedItemStore: linkedItemStore)
+
+        await sut.runImportAfterLink(itemID: Self.defaultItemID)
+
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 2)
+        XCTAssertNotNil(sut.presentedError)
+        XCTAssertFalse(sut.needsAttention)
+        XCTAssertTrue(linkedItemStore.setNeedsAttentionCalls.isEmpty)
+        XCTAssertFalse(sut.isImporting)
+    }
+
+    func testRunImportAfterLink_networkErrorOnFirstCall_surfacesError() async {
+        let sut = makeSUT(urlSession: makeNetworkFailureURLSession())
+
+        await sut.runImportAfterLink(itemID: Self.defaultItemID)
+
+        XCTAssertNotNil(sut.presentedError)
+        XCTAssertFalse(sut.needsAttention)
+        XCTAssertFalse(sut.isImporting)
+    }
+
+    func testRunImportAfterLink_cancellationDuringWait_stopsQuietly() async {
+        ScriptedSyncURLProtocol.responses = [notReady()]
+        let sut = makeSUT(sleep: { _ in throw CancellationError() })
+
+        await sut.runImportAfterLink(itemID: Self.defaultItemID)
+
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 1)
+        XCTAssertNil(sut.presentedError)
+        XCTAssertFalse(sut.isImporting)
+    }
+
+    func testRunImportAfterLink_itemUnlinkedDuringWait_stopsPolling() async {
+        ScriptedSyncURLProtocol.responses = [notReady()]
+        let linkedItemStore = StubLinkedItemStore(initial: LinkedItem(itemID: Self.defaultItemID, institutionName: "Test Bank", linkedAt: .now))
+        let recorder = SleepRecorder()
+        let sut = makeSUT(linkedItemStore: linkedItemStore, sleep: recorder.sleep)
+        recorder.onSleep = { _ in linkedItemStore.remove(itemID: Self.defaultItemID) }
+
+        await sut.runImportAfterLink(itemID: Self.defaultItemID)
+
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 2, "one more call after the first wait, then the item is gone so no further waits.")
+        XCTAssertEqual(recorder.durations.count, 1)
+    }
+
+    func testRunImportAfterLink_syncsOnlyTheNewItem() async {
+        ScriptedSyncURLProtocol.responses = [ready()]
+        let linkedItemStore = StubLinkedItemStore(initial: LinkedItem(itemID: "item-1", institutionName: "Old", linkedAt: .now))
+        linkedItemStore.save(LinkedItem(itemID: "item-2", institutionName: "New", linkedAt: .now))
+        let cursorStore = StubCursorStore()
+        let sut = makeSUT(cursorStore: cursorStore, linkedItemStore: linkedItemStore)
+
+        await sut.runImportAfterLink(itemID: "item-2")
+
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 1)
+        XCTAssertNil(cursorStore.cursor(for: .sandbox, itemID: "item-1"))
+        XCTAssertNotNil(cursorStore.cursor(for: .sandbox, itemID: "item-2"))
+    }
+
+    func testInitialImportItemID_isSetOnlyWhileLoopRuns() async {
+        ScriptedSyncURLProtocol.responses = [notReady(), ready()]
+        let recorder = SleepRecorder()
+        let sut = makeSUT(sleep: recorder.sleep)
+        var seen: String?
+        recorder.onSleep = { _ in seen = sut.initialImportItemID }
+
+        await sut.runImportAfterLink(itemID: Self.defaultItemID)
+
+        XCTAssertEqual(seen, Self.defaultItemID)
+        XCTAssertNil(sut.initialImportItemID)
     }
 }

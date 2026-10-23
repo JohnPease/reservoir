@@ -91,4 +91,19 @@ final class TransactionsScreenCalculatorTests: XCTestCase {
         XCTAssertNotEqual(title, "Yesterday")
         XCTAssertFalse(title.isEmpty)
     }
+
+    // MARK: - emptyStateKind (reservoir-xle)
+
+    func test_emptyStateKind_importingWinsOverPending() {
+        XCTAssertEqual(TransactionsScreenCalculator.emptyStateKind(isInitialImport: true, isInitialDataPending: true), .importing)
+        XCTAssertEqual(TransactionsScreenCalculator.emptyStateKind(isInitialImport: true, isInitialDataPending: false), .importing)
+    }
+
+    func test_emptyStateKind_pendingWhenNotImporting() {
+        XCTAssertEqual(TransactionsScreenCalculator.emptyStateKind(isInitialImport: false, isInitialDataPending: true), .stillFetching)
+    }
+
+    func test_emptyStateKind_noneWhenNothingInFlight() {
+        XCTAssertEqual(TransactionsScreenCalculator.emptyStateKind(isInitialImport: false, isInitialDataPending: false), .none)
+    }
 }

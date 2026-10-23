@@ -110,6 +110,8 @@ struct SettingsView: View {
                                 // Without both, a row's Relink/Unlink stayed tappable
                                 // during that exchange window, racing against it.
                                 isBusy: service.isStartingLink || service.isExchangingToken,
+                                // Post-link import in flight for this account (reservoir-xle).
+                                isImporting: importService?.initialImportItemID == item.itemID,
                                 onRelink: {
                                     // "Relink" opens Plaid's update-mode Link for this
                                     // specific item (re-authenticates in place, clears
@@ -208,9 +210,7 @@ struct SettingsView: View {
         // TransactionImportService instance is current in the environment. See
         // `PlaidServiceLive.onRelinkSuccess`'s doc comment.
         .onAppear {
-            service.onRelinkSuccess = { [importService] in
-                importService?.refreshNeedsAttention()
-            }
+            wireServiceHooks()
             // Bug fix (JP, reservoir-loc.3): `service` is this view's own long-lived
             // `PlaidServiceLive` instance, constructed once in `init()`. Its `linkedItems`
             // only updates in response to its own mutation methods — it has no reactive
@@ -221,6 +221,24 @@ struct SettingsView: View {
             // (harmless if nothing changed, same idempotent posture as the
             // `onRelinkSuccess` wiring above) fixes that.
             service.refreshLinkedItems()
+        }
+        // `importService` is nil until RootTabView's `.task` builds it; if it arrives after
+        // this view first appeared, re-point the hooks at it (the closures capture the
+        // instance, not the environment lookup).
+        .onChange(of: importService.map(ObjectIdentifier.init)) {
+            wireServiceHooks()
+        }
+    }
+
+    /// Points `service`'s opt-in hooks at the current `importService`. Idempotent. Link is
+    /// launched from this view, so `onLinkSuccess` (reservoir-xle) is always wired by the
+    /// time a link can complete; see `PlaidServiceLive.onLinkSuccess`.
+    private func wireServiceHooks() {
+        service.onRelinkSuccess = { [importService] in
+            importService?.refreshNeedsAttention()
+        }
+        service.onLinkSuccess = { [importService] itemID in
+            Task { await importService?.runImportAfterLink(itemID: itemID) }
         }
     }
 
@@ -276,12 +294,22 @@ private struct LinkedAccountRow: View {
     /// in-flight flow (rather than just the row that started it) matches the existing
     /// reentrancy guard `PlaidServiceLive.isStartingLink` already enforces service-wide.
     let isBusy: Bool
+    /// A post-link import is running for this account (reservoir-xle).
+    let isImporting: Bool
     let onRelink: () -> Void
     let onUnlink: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            LabeledContent("Institution", value: item.institutionName)
+            HStack {
+                LabeledContent("Institution", value: item.institutionName)
+                if isImporting {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityIdentifier("settings.importing.\(item.itemID)")
+                        .accessibilityLabel("Importing transactions")
+                }
+            }
             LabeledContent("Item ID", value: item.itemID)
 
             // Reuses the shared `PlaidErrorText`/`.itemLoginRequired` copy (not a second

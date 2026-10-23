@@ -36,8 +36,47 @@ struct PlaidSyncResponseBody: Decodable {
     let added: [PlaidTransaction]
     let modified: [PlaidTransaction]
     let removed: [PlaidRemovedTransaction]
-    let next_cursor: String
+    /// Optional (reservoir-xle): a not-ready item may return an empty or absent cursor,
+    /// and a missing key must not fail the whole decode. See
+    /// `PlaidSyncReadiness.cursorToPersist(from:)` — a nil/empty cursor is never persisted.
+    let next_cursor: String?
     let has_more: Bool
+    /// Plaid's `transactions_update_status` (reservoir-xle): `NOT_READY`,
+    /// `INITIAL_UPDATE_COMPLETE`, `HISTORICAL_UPDATE_COMPLETE`, or
+    /// `TRANSACTIONS_UPDATE_STATUS_UNKNOWN`. A plain optional `String` rather than an enum
+    /// so an absent key or a value Plaid adds later decodes instead of throwing.
+    let transactions_update_status: String?
+}
+
+/// Pure interpretation of a `/transactions/sync` response's readiness (reservoir-xle).
+/// Plaid does NOT error while an item's first pull is still running: it returns empty
+/// `added`/`modified`/`removed` arrays with `transactions_update_status == NOT_READY`.
+enum PlaidSyncReadiness {
+    static let notReadyStatus = "NOT_READY"
+
+    /// True when the response carries no transaction changes at all.
+    static func isEmpty(_ response: PlaidSyncResponseBody) -> Bool {
+        response.added.isEmpty && response.modified.isEmpty && response.removed.isEmpty
+    }
+
+    /// True when Plaid said the item isn't ready AND there is nothing to process — the
+    /// only condition worth re-polling for. Any other status (including unknown values or
+    /// an absent key) or any data at all means "stop and treat this response as usable";
+    /// `INITIAL_UPDATE_COMPLETE`/`HISTORICAL_UPDATE_COMPLETE` data is imported right away
+    /// and the rest backfills on the next normal sync.
+    static func shouldRetry(_ response: PlaidSyncResponseBody) -> Bool {
+        response.transactions_update_status == notReadyStatus && isEmpty(response) && !response.has_more
+    }
+
+    /// The cursor to persist after this response, or `nil` to leave the stored cursor
+    /// untouched. Never a nil/empty cursor (would reset or corrupt the sync position), and
+    /// never one from a not-ready empty page (nothing was delivered, so there is nothing to
+    /// acknowledge; re-requesting from the same position is always safe).
+    static func cursorToPersist(from response: PlaidSyncResponseBody) -> String? {
+        guard let cursor = response.next_cursor, !cursor.isEmpty else { return nil }
+        guard !shouldRetry(response) else { return nil }
+        return cursor
+    }
 }
 
 /// Plaid's documented shape for a REST call's JSON error body (`/transactions/sync`
@@ -87,6 +126,18 @@ struct ImportSummary: Equatable {
 @MainActor
 final class TransactionImportService {
     private(set) var isImporting = false
+    /// True for the whole duration of a post-link import (`runImportAfterLink(itemID:)`),
+    /// including its not-ready retry waits (reservoir-xle). Drives the Transactions tab's
+    /// "Importing your transactions…" state; an ordinary foreground/pull-to-refresh import
+    /// leaves it `false` so an empty app doesn't flash that state on every foreground.
+    var isInitialImport: Bool { initialImportItemID != nil }
+    /// The item a post-link import is currently running for (`nil` otherwise) — lets
+    /// Settings show its spinner on just that account's row.
+    private(set) var initialImportItemID: String?
+    /// True when the most recent completed, error-free run ended with some item's Plaid
+    /// response still `NOT_READY` and empty (reservoir-xle) — i.e. Plaid hasn't finished
+    /// the item's first pull yet. Not an error; backs the "Still fetching…" empty state.
+    private(set) var isInitialDataPending = false
     var presentedError: PlaidErrorCategory?
     /// `true` whenever ANY linked item's `needsAttention` flag (reservoir-adq.6.5) is set
     /// — the most recent import attempt against that item classified as
@@ -143,6 +194,15 @@ final class TransactionImportService {
     private let cursorStore: PlaidSyncCursorStoring
     private let linkedItemStore: LinkedItemStoring
     private let logger: Logger
+    private let sleep: @MainActor (Duration) async throws -> Void
+    private let postLinkBackoff: [Duration]
+    /// Items whose post-link import was requested while another import was already
+    /// running; drained once that run finishes so the new item is never silently skipped.
+    private var pendingPostLinkItemIDs: [String] = []
+
+    /// Waits between not-ready re-polls of the post-link import: 2+4+8+15+30+30 = 89s,
+    /// then give up (the next foreground/pull-to-refresh sync picks the data up).
+    static let defaultPostLinkBackoff: [Duration] = [.seconds(2), .seconds(4), .seconds(8), .seconds(15), .seconds(30), .seconds(30)]
 
     init(
         modelContext: ModelContext,
@@ -151,8 +211,12 @@ final class TransactionImportService {
         environmentStore: PlaidEnvironmentStoring = PlaidEnvironmentStore(),
         cursorStore: PlaidSyncCursorStoring = PlaidSyncCursorStore(),
         linkedItemStore: LinkedItemStoring = LinkedItemStore(),
-        logger: Logger = Logger(subsystem: "com.reservoir.app", category: "TransactionImportService")
+        logger: Logger = Logger(subsystem: "com.reservoir.app", category: "TransactionImportService"),
+        postLinkBackoff: [Duration] = TransactionImportService.defaultPostLinkBackoff,
+        sleep: @escaping @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
+        self.postLinkBackoff = postLinkBackoff
+        self.sleep = sleep
         self.modelContext = modelContext
         self.keychain = keychain
         self.urlSession = urlSession
@@ -244,13 +308,48 @@ final class TransactionImportService {
     /// change needed to `TransactionDedupMatcher.findMatch` itself.
     func runImport() async {
         guard !isImporting else { return }
+        await performImport(onlyItemID: nil, pollsUntilReady: false)
+        await drainPendingPostLinkImports()
+    }
+
+    /// Post-link entry point (reservoir-xle): imports `itemID` right after a successful
+    /// Link, re-polling `/transactions/sync` with backoff while Plaid reports the item
+    /// `NOT_READY` (empty response), up to `postLinkBackoff`'s bound. Shares
+    /// `performImport` with `runImport()`. Holds `isImporting` for the whole loop, so a
+    /// concurrent foreground trigger no-ops (its scene-phase flag stays armed). If another
+    /// import is already running, `itemID` is queued and run when that one finishes.
+    /// Cancelling the calling task ends the wait early without surfacing an error.
+    func runImportAfterLink(itemID: String) async {
+        guard !isImporting else {
+            if !pendingPostLinkItemIDs.contains(itemID) { pendingPostLinkItemIDs.append(itemID) }
+            return
+        }
+        await performImport(onlyItemID: itemID, pollsUntilReady: true)
+        await drainPendingPostLinkImports()
+    }
+
+    private func drainPendingPostLinkImports() async {
+        while !pendingPostLinkItemIDs.isEmpty, !Task.isCancelled {
+            let next = pendingPostLinkItemIDs.removeFirst()
+            await performImport(onlyItemID: next, pollsUntilReady: true)
+        }
+    }
+
+    /// The one import core behind `runImport()` and `runImportAfterLink(itemID:)`. Callers
+    /// have already checked `isImporting`. `onlyItemID` scopes the run to one linked item;
+    /// `pollsUntilReady` enables the bounded not-ready re-poll loop.
+    private func performImport(onlyItemID: String?, pollsUntilReady: Bool) async {
         isImporting = true
-        defer { isImporting = false }
+        initialImportItemID = pollsUntilReady ? onlyItemID : nil
+        defer {
+            isImporting = false
+            initialImportItemID = nil
+        }
 
         presentedError = nil
         presentedErrorDetail = nil
 
-        let items = linkedItemStore.loadAll()
+        let items = linkedItemStore.loadAll().filter { onlyItemID == nil || $0.itemID == onlyItemID }
         guard !items.isEmpty else {
             // No linked item yet — nothing to import, not an error surfaced to the user
             // (background operation). Still resync needsAttention before returning (code
@@ -260,6 +359,7 @@ final class TransactionImportService {
             // a stale linked item would stay stuck `true` forever, since every earlier
             // return path in this method skipped the sync below.
             refreshNeedsAttention()
+            isInitialDataPending = false
             return
         }
 
@@ -283,6 +383,8 @@ final class TransactionImportService {
 
         var summary = ImportSummary()
         var sawAnyAccessToken = false
+        var anyItemStillNotReady = false
+        var sawError = false
 
         for item in items {
             let itemID = item.itemID
@@ -296,6 +398,8 @@ final class TransactionImportService {
 
             var requestCursor = cursorStore.cursor(for: environment, itemID: itemID)
             var hasMore = true
+            var pollAttempt = 0
+            var lastResponseNotReady = false
             while hasMore {
                 let response: PlaidSyncResponseBody
                 do {
@@ -321,6 +425,8 @@ final class TransactionImportService {
                         presentedError = PlaidErrorClassifier.classify(.exchangeError(error))
                     }
                     presentedErrorDetail = String(describing: error)
+                    sawError = true
+                    lastResponseNotReady = false
                     break
                 }
 
@@ -338,13 +444,31 @@ final class TransactionImportService {
                 summary.queuedForMerge += pageResult.summary.queuedForMerge
 
                 if pageResult.allHandled {
-                    cursorStore.setCursor(response.next_cursor, for: environment, itemID: itemID)
-                    requestCursor = response.next_cursor
+                    // Never a nil/empty cursor, never one from a not-ready empty page
+                    // (reservoir-xle) — see `PlaidSyncReadiness.cursorToPersist(from:)`.
+                    if let cursor = PlaidSyncReadiness.cursorToPersist(from: response) {
+                        cursorStore.setCursor(cursor, for: environment, itemID: itemID)
+                        requestCursor = cursor
+                    }
                     hasMore = response.has_more
                 } else {
                     hasMore = false
                 }
+
+                lastResponseNotReady = pageResult.allHandled && PlaidSyncReadiness.shouldRetry(response)
+                if lastResponseNotReady, pollsUntilReady, pollAttempt < postLinkBackoff.count,
+                   !Task.isCancelled, linkedItemStore.loadAll().contains(where: { $0.itemID == itemID }) {
+                    do {
+                        try await sleep(postLinkBackoff[pollAttempt])
+                        pollAttempt += 1
+                        hasMore = true
+                    } catch {
+                        // Cancelled while waiting — stop quietly, no error surfaced.
+                        hasMore = false
+                    }
+                }
             }
+            if lastResponseNotReady { anyItemStillNotReady = true }
         }
 
         guard sawAnyAccessToken else {
@@ -354,6 +478,8 @@ final class TransactionImportService {
             return
         }
 
+        // A failed run says nothing new about readiness; leave the previous value.
+        if !sawError { isInitialDataPending = anyItemStillNotReady }
         lastImportSummary = summary
     }
 

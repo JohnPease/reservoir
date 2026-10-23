@@ -351,6 +351,78 @@ final class PlaidServiceLiveTests: XCTestCase {
         XCTAssertNil(body["products"], "update-mode's request must omit `products` entirely, per Plaid's update-mode API contract.")
     }
 
+    // MARK: - days_requested / onLinkSuccess (reservoir-xle)
+
+    func test_startLink_requestBody_includesDaysRequested730() async throws {
+        CapturingRelinkURLProtocol.reset()
+        let sut = PlaidServiceLive(keychain: StubKeychainWithToken(), urlSession: makeCapturingRelinkURLSession())
+
+        await sut.startLink()
+
+        let body = try XCTUnwrap(CapturingRelinkURLProtocol.capturedBody)
+        let transactions = try XCTUnwrap(body["transactions"] as? [String: Any])
+        XCTAssertEqual(transactions["days_requested"] as? Int, 730)
+        XCTAssertEqual(PlaidLinkOptions.freshLinkDaysRequested, 730)
+        XCTAssertNotNil(body["products"])
+        XCTAssertNil(body["access_token"])
+    }
+
+    func test_startRelink_requestBody_omitsTransactionsDaysRequested() async throws {
+        CapturingRelinkURLProtocol.reset()
+        let sut = PlaidServiceLive(keychain: StubKeychainWithToken(), urlSession: makeCapturingRelinkURLSession())
+
+        await sut.startRelink(for: LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now))
+
+        let body = try XCTUnwrap(CapturingRelinkURLProtocol.capturedBody)
+        XCTAssertNil(body["transactions"], "update mode can't raise days_requested; Plaid ignores it for existing items.")
+    }
+
+    func test_handleLinkSuccess_firesOnLinkSuccessWithItemID_afterSuccessfulSave() async {
+        clearPersistedLinkedItem()
+        addTeardownBlock { self.clearPersistedLinkedItem() }
+        let sut = PlaidServiceLive(keychain: StubKeychain(), urlSession: makeSuccessfulExchangeURLSession())
+        var fired: [String] = []
+        var itemAlreadySaved = false
+        sut.onLinkSuccess = { itemID in
+            fired.append(itemID)
+            itemAlreadySaved = sut.linkedItems.contains { $0.itemID == itemID }
+        }
+
+        await sut.handleLinkSuccess(publicToken: "public-good", institutionName: "Test Bank")
+
+        XCTAssertEqual(fired, ["item-test"])
+        XCTAssertTrue(itemAlreadySaved, "the hook must fire only after the LinkedItem is saved.")
+    }
+
+    func test_handleLinkSuccess_doesNotFireOnLinkSuccess_whenKeychainSaveFails() async {
+        clearPersistedLinkedItem()
+        addTeardownBlock { self.clearPersistedLinkedItem() }
+        let keychain = StubKeychain()
+        keychain.saveError = KeychainError.unhandled(status: -1)
+        let sut = PlaidServiceLive(keychain: keychain, urlSession: makeSuccessfulExchangeURLSession())
+        var fired = false
+        sut.onLinkSuccess = { _ in fired = true }
+
+        await sut.handleLinkSuccess(publicToken: "public-good", institutionName: "Test Bank")
+
+        XCTAssertFalse(fired)
+    }
+
+    func test_handleLinkSuccess_doesNotFireOnLinkSuccess_whenExchangeFails() async {
+        clearPersistedLinkedItem()
+        addTeardownBlock { self.clearPersistedLinkedItem() }
+        CapturingRelinkURLProtocol.reset()
+        CapturingRelinkURLProtocol.shouldFail = true
+        let sut = PlaidServiceLive(keychain: StubKeychain(), urlSession: makeCapturingRelinkURLSession())
+        var fired = false
+        sut.onLinkSuccess = { _ in fired = true }
+
+        await sut.handleLinkSuccess(publicToken: "public-bad", institutionName: "Test Bank")
+
+        XCTAssertFalse(fired)
+        XCTAssertNotNil(sut.presentedError)
+    }
+
     func test_startRelink_onSuccess_setsLinkTokenAndPresentsLink() async {
         CapturingRelinkURLProtocol.reset()
         CapturingRelinkURLProtocol.linkTokenToReturn = "link-sandbox-distinctive-token"

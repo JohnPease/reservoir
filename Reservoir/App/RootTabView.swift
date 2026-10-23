@@ -99,7 +99,8 @@ struct RootTabView: View {
             if importService == nil {
                 importService = TransactionImportService(
                     modelContext: modelContext,
-                    urlSession: UITestScenario.plaidURLSession
+                    urlSession: UITestScenario.plaidURLSession,
+                    postLinkBackoff: UITestScenario.postLinkBackoff ?? TransactionImportService.defaultPostLinkBackoff
                 )
             }
             // Set once per launch (idempotent to set repeatedly, but only needs to run
