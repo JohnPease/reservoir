@@ -132,6 +132,21 @@ final class TransactionImportServiceTests: XCTestCase {
         return URLSession(configuration: configuration)
     }
 
+    private final class CancelledURLProtocol: URLProtocol {
+        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+        override func startLoading() {
+            client?.urlProtocol(self, didFailWithError: URLError(.cancelled))
+        }
+        override func stopLoading() {}
+    }
+
+    private func makeCancelledURLSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CancelledURLProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+
     private func makeScriptedURLSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [ScriptedSyncURLProtocol.self]
@@ -1590,42 +1605,111 @@ final class TransactionImportServiceTests: XCTestCase {
         XCTAssertFalse(sut.isInitialDataPending, "a later ready sync clears the pending flag.")
     }
 
-    func testRunImportAfterLink_holdsIsImportingAcrossWaits_andForegroundTriggerIsSkippedWithFlagArmed() async {
-        ScriptedSyncURLProtocol.responses = [notReady(), ready()]
+    private func makeTwoItemStore() -> StubLinkedItemStore {
+        let store = StubLinkedItemStore(initial: LinkedItem(itemID: "item-1", institutionName: "Polled", linkedAt: .now))
+        store.save(LinkedItem(itemID: "item-2", institutionName: "Other", linkedAt: .now))
+        return store
+    }
+
+    func testRunImportAfterLink_doesNotBlockForegroundSyncOfOtherItems() async throws {
+        // Poll call 1 (item-1) not ready; the foreground sync during the wait syncs item-2
+        // only; poll call 3 (item-1) is ready.
+        ScriptedSyncURLProtocol.responses = [notReady(), ready(id: "p2", cursor: "c2"), ready(id: "p1", cursor: "c1")]
         let recorder = SleepRecorder()
-        let sut = makeSUT(sleep: recorder.sleep)
-        var sawImportingDuringWait = false
-        var callsBeforeForeground = 0
+        let cursorStore = StubCursorStore()
+        let sut = makeSUT(cursorStore: cursorStore, linkedItemStore: makeTwoItemStore(), sleep: recorder.sleep)
+        var isImportingDuringWait: Bool?
+        var isInitialImportDuringWait: Bool?
+        var callsAfterForeground = 0
         recorder.onSleep = { _ in
-            sawImportingDuringWait = sut.isImporting && sut.isInitialImport
+            isImportingDuringWait = sut.isImporting
+            isInitialImportDuringWait = sut.isInitialImport
             await sut.handleScenePhaseTransition(to: .active)
-            await sut.runImport()
-            callsBeforeForeground = ScriptedSyncURLProtocol.callCount
+            callsAfterForeground = ScriptedSyncURLProtocol.callCount
         }
         await sut.handleScenePhaseTransition(to: .background)
 
-        await sut.runImportAfterLink(itemID: Self.defaultItemID)
+        await sut.runImportAfterLink(itemID: "item-1")
 
-        XCTAssertTrue(sawImportingDuringWait)
-        XCTAssertEqual(callsBeforeForeground, 1, "a concurrent foreground/refresh trigger must not start a second sync.")
-        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 2)
-
-        ScriptedSyncURLProtocol.responses = [syncResponse(nextCursor: "c2", status: "HISTORICAL_UPDATE_COMPLETE")]
-        recorder.onSleep = nil
-        await sut.handleScenePhaseTransition(to: .active)
-        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 3, "the skipped foreground trigger stays armed and fires on the next .active.")
+        XCTAssertEqual(isImportingDuringWait, false, "the poll must not mark an ordinary sync as running.")
+        XCTAssertEqual(isInitialImportDuringWait, true)
+        XCTAssertEqual(callsAfterForeground, 2, "the foreground sync ran, and synced only item-2 (one call), skipping the polled item.")
+        XCTAssertEqual(cursorStore.cursor(for: .sandbox, itemID: "item-2"), "c2")
+        XCTAssertEqual(cursorStore.cursor(for: .sandbox, itemID: "item-1"), "c1")
+        XCTAssertEqual(try context.fetch(FetchDescriptor<SpendTransaction>()).count, 2)
+        XCTAssertFalse(sut.isImporting)
+        XCTAssertFalse(sut.isInitialImport)
     }
 
-    func testRunImportAfterLink_requestedWhileImporting_isQueuedAndRunsAfter() async {
-        ScriptedSyncURLProtocol.responses = [ready()]
-        let sut = makeSUT()
-        let gateTask = Task { await sut.runImport() }
-        // Let the first run start (it suspends on the network call).
+    func testRunImport_duringPoll_doesNotClobberPendingFlagOrDrainQueue() async {
+        // Item-1 polls (never ready). During its wait: item-2's post-link is requested
+        // (queued, one poll at a time) and an ordinary refresh runs.
+        ScriptedSyncURLProtocol.responses = [notReady()]
+        let recorder = SleepRecorder()
+        let sut = makeSUT(linkedItemStore: makeTwoItemStore(), postLinkBackoff: [.seconds(1)], sleep: recorder.sleep)
+        var pendingDuringWait: Bool?
+        recorder.onSleep = { count in
+            guard count == 1 else { return }
+            await sut.runImportAfterLink(itemID: "item-2")
+            let callsBefore = ScriptedSyncURLProtocol.callCount
+            await sut.runImport()
+            XCTAssertEqual(ScriptedSyncURLProtocol.callCount, callsBefore + 1, "refresh syncs item-2 once, without polling or draining the queue inline.")
+            XCTAssertEqual(recorder.durations.count, 1, "no extra waits were started by the ordinary run.")
+            pendingDuringWait = sut.isInitialDataPending
+        }
+
+        await sut.runImportAfterLink(itemID: "item-1")
+
+        XCTAssertEqual(pendingDuringWait, false, "an ordinary run must not write the pending flag while the poll owns it.")
+        // Poll 1: 2 calls (initial + 1 retry). Ordinary: 1. Queued item-2 poll: 2 calls.
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 5)
+        XCTAssertFalse(sut.isInitialImport)
+    }
+
+    func testRunImport_pollingItemIsExcluded_onlyItemsNotOwnedByPollSync() async {
+        ScriptedSyncURLProtocol.responses = [notReady(), ready(id: "p2", cursor: "c2"), ready(id: "p1", cursor: "c1")]
+        let cursorStore = StubCursorStore()
+        let recorder = SleepRecorder()
+        let sut = makeSUT(cursorStore: cursorStore, linkedItemStore: makeTwoItemStore(), sleep: recorder.sleep)
+        recorder.onSleep = { _ in
+            // Two overlapping ordinary requests: the second no-ops (single ordinary run).
+            async let first: Void = sut.runImport()
+            async let second: Void = sut.runImport()
+            _ = await (first, second)
+        }
+
+        await sut.runImportAfterLink(itemID: "item-1")
+
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 3, "poll(2) + exactly one ordinary sync of item-2(1).")
+    }
+
+    func testRunImportAfterLink_requestedWhileOrdinaryRunSyncsSameItem_isQueuedAndPolledAfterWithoutBlockingRefresh() async {
+        ScriptedSyncURLProtocol.responses = [ready(), notReady()]
+        let recorder = SleepRecorder()
+        let sut = makeSUT(sleep: recorder.sleep)
+        let ordinary = Task { await sut.runImport() }
         await Task.yield()
         await sut.runImportAfterLink(itemID: Self.defaultItemID)
-        await gateTask.value
-        XCTAssertFalse(sut.isImporting)
-        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 2, "the queued post-link import runs after the in-flight one finishes.")
+        XCTAssertNil(sut.initialImportItemID, "queued, not started alongside the in-flight sync of the same item.")
+        await ordinary.value
+
+        XCTAssertFalse(sut.isImporting, "the ordinary run returned without waiting on the queued poll.")
+        await sut.waitForQueuedPostLinkImports()
+
+        XCTAssertEqual(recorder.durations.count, 3, "the queued item is polled by the detached drain, not inline.")
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 1 + 4)
+    }
+
+    func testRunImportAfterLink_requestedWhileAnotherPollRuns_isQueuedAndRunsAfter() async {
+        ScriptedSyncURLProtocol.responses = [ready()]
+        let sut = makeSUT(linkedItemStore: makeTwoItemStore())
+        let first = Task { await sut.runImportAfterLink(itemID: "item-1") }
+        await Task.yield()
+        await sut.runImportAfterLink(itemID: "item-2")
+        await first.value
+
+        XCTAssertNil(sut.initialImportItemID)
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 2, "the queued post-link import runs after the in-flight poll finishes.")
     }
 
     func testRunImportAfterLink_itemLoginRequiredMidLoop_setsNeedsAttentionAndStops() async {
@@ -1679,17 +1763,69 @@ final class TransactionImportServiceTests: XCTestCase {
         XCTAssertFalse(sut.isImporting)
     }
 
-    func testRunImportAfterLink_itemUnlinkedDuringWait_stopsPolling() async {
-        ScriptedSyncURLProtocol.responses = [notReady()]
+    func testRunImportAfterLink_itemUnlinkedDuringWait_stopsWithoutWriting() async throws {
+        ScriptedSyncURLProtocol.responses = [notReady(), ready()]
         let linkedItemStore = StubLinkedItemStore(initial: LinkedItem(itemID: Self.defaultItemID, institutionName: "Test Bank", linkedAt: .now))
+        let cursorStore = StubCursorStore()
         let recorder = SleepRecorder()
-        let sut = makeSUT(linkedItemStore: linkedItemStore, sleep: recorder.sleep)
+        let sut = makeSUT(cursorStore: cursorStore, linkedItemStore: linkedItemStore, sleep: recorder.sleep)
         recorder.onSleep = { _ in linkedItemStore.remove(itemID: Self.defaultItemID) }
 
         await sut.runImportAfterLink(itemID: Self.defaultItemID)
 
-        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 2, "one more call after the first wait, then the item is gone so no further waits.")
+        XCTAssertEqual(ScriptedSyncURLProtocol.callCount, 1, "after the wait the item is gone: no further sync call at all.")
         XCTAssertEqual(recorder.durations.count, 1)
+        XCTAssertTrue(try context.fetch(FetchDescriptor<SpendTransaction>()).isEmpty, "nothing may be inserted for an unlinked item.")
+        XCTAssertNil(cursorStore.cursor(for: .sandbox, itemID: Self.defaultItemID), "no cursor may be written for an unlinked item.")
+        XCTAssertNil(sut.presentedError)
+        XCTAssertFalse(sut.isInitialDataPending)
+        XCTAssertNil(sut.initialImportItemID)
+    }
+
+    func testRunImport_itemUnlinkedWhileRequestInFlight_discardsResponse() async throws {
+        SlowSyncURLProtocol.response = ready()
+        let linkedItemStore = StubLinkedItemStore(initial: LinkedItem(itemID: Self.defaultItemID, institutionName: "Test Bank", linkedAt: .now))
+        let cursorStore = StubCursorStore()
+        let sut = makeSUT(cursorStore: cursorStore, linkedItemStore: linkedItemStore, urlSession: makeSlowURLSession())
+
+        let task = Task { await sut.runImport() }
+        await Task.yield()
+        linkedItemStore.remove(itemID: Self.defaultItemID)
+        SlowSyncURLProtocol.gate.signal()
+        await task.value
+
+        XCTAssertTrue(try context.fetch(FetchDescriptor<SpendTransaction>()).isEmpty)
+        XCTAssertNil(cursorStore.cursor(for: .sandbox, itemID: Self.defaultItemID))
+        XCTAssertNil(sut.presentedError)
+    }
+
+    func testRunImport_cancelledRequest_returnsQuietlyWithoutError() async {
+        ScriptedSyncURLProtocol.responses = [ready()]
+        let sut = makeSUT(urlSession: makeCancelledURLSession())
+
+        await sut.runImport()
+
+        XCTAssertNil(sut.presentedError, "URLError.cancelled is not a user-facing failure.")
+        XCTAssertNil(sut.presentedErrorDetail)
+        XCTAssertFalse(sut.isImporting)
+    }
+
+    func testIsCancellation_recognizesCancellationErrorAndURLErrorCancelled() async {
+        XCTAssertTrue(TransactionImportService.isCancellation(CancellationError()))
+        XCTAssertTrue(TransactionImportService.isCancellation(URLError(.cancelled)))
+        XCTAssertFalse(TransactionImportService.isCancellation(URLError(.notConnectedToInternet)))
+    }
+
+    func testRunImport_errorClearsStillFetchingFlag() async {
+        // Same instance: flag set by a not-ready run, then cleared by a failing run.
+        ScriptedSyncURLProtocol.responses = [notReady(), Data()]
+        ScriptedSyncURLProtocol.statusCodes = [200, 500]
+        let same = makeSUT()
+        await same.runImport()
+        XCTAssertTrue(same.isInitialDataPending)
+        await same.runImport()
+        XCTAssertNotNil(same.presentedError)
+        XCTAssertFalse(same.isInitialDataPending, "\"Still fetching\" must not sit beside an error.")
     }
 
     func testRunImportAfterLink_syncsOnlyTheNewItem() async {

@@ -659,8 +659,14 @@ exchange/Keychain failure). `SettingsView` wires it (alongside
 `TransactionImportService.runImportAfterLink(itemID:)`, so the hook is live
 once Settings has appeared, which is always true because Link is launched from
 Settings. That entry point shares one core (`performImport`) with
-`runImport()` and holds `isImporting` for its whole run, so a concurrent
-foreground/refresh trigger no-ops (its scene-phase flag stays armed). Plaid's
+`runImport()` but tracks the poll separately (`initialImportItemID`) and does
+NOT set `isImporting`, so pull-to-refresh and foreground syncs keep working
+during the up-to-~89s wait: they sync every other linked item, skip the polled
+item, never poll on NOT_READY themselves, and hand any queued post-link items
+to a detached drain rather than waiting on them. No item is ever synced by two
+runs at once (an in-flight item set guards cursor writes). If the item is
+unlinked mid-poll, the loop exits without inserting rows or writing a cursor.
+Cancelled requests end quietly with no error banner. Plaid's
 `/transactions/sync` does not error while an item's first pull runs; it returns
 empty arrays with `transactions_update_status: NOT_READY`, so the loop re-calls
 with backoff (2, 4, 8, 15, 30, 30s; injectable sleeper) until data arrives,
@@ -673,7 +679,11 @@ loop runs, then (if Plaid still isn't ready) a non-error "Still fetching your
 transactions" state with a Refresh button; the empty state is also
 pull-to-refreshable. The linked-account row in Settings shows a small spinner.
 Callers that find a fully linked app unsynced still self-heal on the next
-foreground sync or pull-to-refresh.
+foreground sync or pull-to-refresh. Link-flow state (`isPresentingLink`, session, pin,
+relink target) is reset on unlink and at the start of every flow, and the
+"Link another account" button is disabled while Link is presenting
+(reservoir-brn; root cause of the dead-button report is not proven, so
+`startLink`/exit/success paths also log via os_log).
 
 **Settings tab** (adq.7): `Features/Settings/SettingsView.swift` is the real,
 shipped Settings screen, replacing the `#if DEBUG`-only `PlaidDebugLinkView`

@@ -70,7 +70,9 @@ struct TransactionsView: View {
                     .padding(.vertical, 8)
                 }
                 // reservoir-crf: the full-screen importing state below only shows for an empty
-                // list; when rows already exist (e.g. relinking), show a slim banner instead.
+                // list; when rows already exist and a new account is linked (a fresh Link,
+                // including re-adding one after an unlink — an update-mode relink does not
+                // import), show a slim banner instead.
                 if importService?.isInitialImport == true, !transactions.isEmpty {
                     HStack(spacing: 8) {
                         ProgressView()
