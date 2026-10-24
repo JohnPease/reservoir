@@ -439,6 +439,73 @@ final class PlaidServiceLiveTests: XCTestCase {
         XCTAssertNil(sut.presentedError)
     }
 
+    // MARK: - Stale presentation state (reservoir-brn; root cause unproven, defensive reset)
+
+    func test_startLink_withStaleIsPresentingLink_resetsThenPresentsAgain() async {
+        CapturingRelinkURLProtocol.reset()
+        let sut = PlaidServiceLive(keychain: StubKeychainWithToken(), urlSession: makeCapturingRelinkURLSession())
+        sut.isPresentingLink = true
+        final class Flag: @unchecked Sendable { var value = false }
+        let sawChange = Flag()
+        withObservationTracking({ _ = sut.isPresentingLink }, onChange: { sawChange.value = true })
+
+        await sut.startLink()
+
+        XCTAssertTrue(sawChange.value, "a stale true must be reset to false first so the sheet binding sees a real false -> true transition.")
+        XCTAssertTrue(sut.isPresentingLink)
+        XCTAssertNotNil(sut.linkSession)
+        XCTAssertNil(sut.presentedError)
+    }
+
+    func test_startLink_afterUnlinkOfRelinkedItem_presentsAgain() async {
+        CapturingRelinkURLProtocol.reset()
+        let linkedItemStore = StubLinkedItemStore(initial: LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now))
+        let sut = PlaidServiceLive(keychain: StubKeychainWithToken(), urlSession: makeCapturingRelinkURLSession(), linkedItemStore: linkedItemStore)
+        await sut.startRelink(for: sut.linkedItem!)
+        XCTAssertTrue(sut.isPresentingLink, "sanity: relink sheet is up.")
+
+        await sut.unlink(sut.linkedItem!)
+
+        XCTAssertFalse(sut.isPresentingLink, "unlink must drop stale presentation state.")
+        XCTAssertNil(sut.linkSession)
+        XCTAssertNil(sut.linkToken)
+
+        await sut.startLink()
+        XCTAssertTrue(sut.isPresentingLink)
+        XCTAssertNotNil(sut.linkSession)
+    }
+
+    func test_unlink_clearsRememberedRelinkFlowForThatItem_soRetryStartsFreshLink() async {
+        CapturingRelinkURLProtocol.reset()
+        let linkedItemStore = StubLinkedItemStore(initial: LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now))
+        let sut = PlaidServiceLive(keychain: StubKeychainWithToken(), urlSession: makeCapturingRelinkURLSession(), linkedItemStore: linkedItemStore)
+        let item = sut.linkedItem!
+        await sut.startRelink(for: item)
+        XCTAssertNotNil(CapturingRelinkURLProtocol.capturedBody?["access_token"], "sanity: that was an update-mode token request.")
+
+        await sut.unlink(item)
+        CapturingRelinkURLProtocol.capturedBody = nil
+        await sut.retry()
+
+        XCTAssertNotNil(CapturingRelinkURLProtocol.capturedBody, "retry must have requested a token.")
+        XCTAssertNil(CapturingRelinkURLProtocol.capturedBody?["access_token"], "retry must start a fresh Link, not an update-mode relink of the unlinked item.")
+    }
+
+    func test_unlink_ofOtherItem_keepsRememberedRelinkFlow() async {
+        CapturingRelinkURLProtocol.reset()
+        let linkedItemStore = StubLinkedItemStore(initial: LinkedItem(itemID: "item-1", institutionName: "A", linkedAt: .now))
+        linkedItemStore.save(LinkedItem(itemID: "item-2", institutionName: "B", linkedAt: .now))
+        let sut = PlaidServiceLive(keychain: StubKeychainWithToken(), urlSession: makeCapturingRelinkURLSession(), linkedItemStore: linkedItemStore)
+        let relinked = sut.linkedItems[0]
+        await sut.startRelink(for: relinked)
+
+        await sut.unlink(sut.linkedItems[1])
+        CapturingRelinkURLProtocol.capturedBody = nil
+        await sut.retry()
+
+        XCTAssertNotNil(CapturingRelinkURLProtocol.capturedBody?["access_token"], "unlinking a different item must not forget this item's relink flow.")
+    }
+
     func test_startRelink_withNoStoredAccessToken_doesNotMakeNetworkCall_setsError() async {
         CapturingRelinkURLProtocol.reset()
         let sut = PlaidServiceLive(

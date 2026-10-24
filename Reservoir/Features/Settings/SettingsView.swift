@@ -148,7 +148,9 @@ struct SettingsView: View {
                         // would show as a mismatched border around the button's rounded
                         // corners.
                         .listRowBackground(Color("ReservoirBackground"))
-                        .disabled(service.isStartingLink)
+                        // Also disabled while Link is presenting (reservoir-brn): a second
+                        // tap can't start a competing flow over a live (or stale) session.
+                        .disabled(service.isStartingLink || service.isPresentingLink)
                         .accessibilityIdentifier("settings.linkButton")
                     }
 
