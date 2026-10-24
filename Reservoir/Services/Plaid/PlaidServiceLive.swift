@@ -444,14 +444,12 @@ final class PlaidServiceLive: PlaidService {
     /// clears only `LinkedItemStore` (linked-item metadata) and the Keychain access
     /// token, the same two things `PlaidEnvironmentStore.onChange`'s existing
     /// invalidation hook clears on an environment switch. It never touches
-    /// `SpendTransaction` rows — previously imported transaction history survives an
-    /// unlink untouched.
+    /// `SpendTransaction` rows — whether those are kept or deleted is the caller's choice.
     ///
-    /// Does **not** clear the Plaid sync cursor (`PlaidSyncCursorStore`), unlike that
-    /// same environment-switch hook: an environment switch permanently invalidates the
-    /// environment's whole data scope, but relinking the *same* institution after an
-    /// unlink should resume `/transactions/sync` from wherever it left off rather than
-    /// re-pulling full history and re-running dedup against everything again.
+    /// Also clears that item's Plaid sync cursor (reservoir-wo1): relinking mints a new
+    /// Plaid item_id, so the old cursor is orphaned either way. Deleting (or deliberately
+    /// keeping) the item's imported rows is `TransactionImportService.removeLocalData`'s
+    /// job, called by `SettingsView` per the user's choice in the unlink confirmation.
     ///
     /// Takes an explicit `item` (reservoir-loc.3) rather than always targeting the single
     /// `linkedItem` pointer — `SettingsView` now presents a row per linked item, and each
@@ -469,6 +467,7 @@ final class PlaidServiceLive: PlaidService {
         if linkedItem?.itemID == item.itemID {
             linkedItem = remaining.first
         }
+        cursorStore.clearCursor(for: environment, itemID: item.itemID)
         try? await keychain.delete(for: PlaidKeychainKey.accessToken(itemID: item.itemID))
     }
 

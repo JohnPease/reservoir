@@ -700,6 +700,25 @@ final class PlaidServiceLiveTests: XCTestCase {
         XCTAssertTrue(linkedItemStore.loadAll().isEmpty, "the persisted store must also be cleared, not just the in-memory copy.")
     }
 
+    func test_unlink_clearsOnlyThatItemsSyncCursor() async {
+        let linkedItemStore = StubLinkedItemStore(
+            initial: LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now)
+        )
+        let cursorStore = StubCursorStore()
+        cursorStore.setCursor("c1", for: .sandbox, itemID: "item-1")
+        cursorStore.setCursor("c2", for: .sandbox, itemID: "item-2")
+        let sut = PlaidServiceLive(
+            keychain: RecordingKeychain(), urlSession: .shared,
+            environmentStore: StubEnvironmentStore(.sandbox),
+            cursorStore: cursorStore, linkedItemStore: linkedItemStore
+        )
+
+        await sut.unlink(LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now))
+
+        XCTAssertNil(cursorStore.cursor(for: .sandbox, itemID: "item-1"))
+        XCTAssertEqual(cursorStore.cursor(for: .sandbox, itemID: "item-2"), "c2")
+    }
+
     func test_unlink_deletesKeychainAccessToken() async {
         let linkedItemStore = StubLinkedItemStore(
             initial: LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now)

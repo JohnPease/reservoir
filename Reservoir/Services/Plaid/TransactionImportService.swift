@@ -929,6 +929,54 @@ final class TransactionImportService {
         }
     }
 
+    // MARK: - Unlink cleanup (reservoir-wo1)
+
+    /// Local-data cleanup for an unlinked item. Always discards that item's queued merge
+    /// decisions (they reference an incoming Plaid transaction that can never be resolved
+    /// once the item is gone); when `deleteTransactions` is `true`, also deletes the item's
+    /// imported `SpendTransaction` rows so a relink starts fresh instead of duplicating
+    /// kept rows (relinking mints a new Plaid item_id and restarts the sync cursor).
+    ///
+    /// Scoping: only rows with `plaidItemID == itemID`, `entryMethod == .imported`, and
+    /// `wasMergedFromManual == false`. A manual entry the user merged with an import
+    /// (`TransactionDedupMatcher.applyMerge`) flips to `.imported` but is user-authored,
+    /// so it is always kept. Goal totals are derived from `SavingsGoal.transactions`
+    /// (inverse relationship, nullify rule) rather than stored, so deleting rows keeps
+    /// them consistent; the goal link is restored on rollback. All of it is one
+    /// `saveOrRollback`. Returns `nil` on success or a user-facing failure message.
+    func removeLocalData(forItemID itemID: String, deleteTransactions: Bool) -> String? {
+        let records = ((try? modelContext.fetch(FetchDescriptor<PendingTransactionMerge>())) ?? [])
+            .filter { $0.plaidItemID == itemID }
+        let doomed: [SpendTransaction] = deleteTransactions
+            ? fetchAllTransactions().filter {
+                $0.plaidItemID == itemID && $0.entryMethod == .imported && !$0.wasMergedFromManual
+            }
+            : []
+        let goalLinks = doomed.map { ($0, $0.savingsGoal) }
+
+        let failure = PersistenceSaveHelper.saveOrRollback(
+            modelContext: modelContext,
+            mutate: {
+                for record in records { modelContext.delete(record) }
+                for transaction in doomed { modelContext.delete(transaction) }
+            },
+            rollback: {
+                for record in records { modelContext.insert(record) }
+                for (transaction, goal) in goalLinks {
+                    modelContext.insert(transaction)
+                    transaction.savingsGoal = goal
+                }
+            },
+            logger: logger,
+            failureMessage: "The account's data couldn't be removed. Please try again."
+        )
+        if failure == nil {
+            let removedIDs = Set(records.map(\.plaidTransactionID))
+            mergeQueue.removeAll { removedIDs.contains($0.id) }
+        }
+        return failure
+    }
+
     private func fetchPendingMerge(plaidTransactionID: String) -> PendingTransactionMerge? {
         var descriptor = FetchDescriptor<PendingTransactionMerge>(
             predicate: #Predicate { $0.plaidTransactionID == plaidTransactionID }

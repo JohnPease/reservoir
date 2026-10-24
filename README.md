@@ -699,27 +699,25 @@ app-wide setting.
     existing one. See "Plaid Link + Keychain token storage" and "Item relink
     / update-mode + connection-status UX" above.
   - **Unlink**: each row's destructive "Unlink" button, gated by a
-    confirmation dialog ("Unlink \<institution\>?" / "You'll need to go
-    through Plaid's login flow again to reconnect. Transactions already
-    imported will stay. The connection itself still exists on Plaid's side
-    until removed there separately — this only removes it from this app."),
-    calls `PlaidServiceLive.unlink(_ item:)` for that specific item (reservoir-
-    loc.3 changed this from a no-arg method that only ever targeted whichever
-    item the single `linkedItem` pointer happened to reference). `unlink(_:)`
-    clears only that item's `LinkedItemStore` entry and Keychain access
-    token — the same two things an environment switch's invalidation hook
-    clears for every item — and deliberately does **not** touch
-    `SpendTransaction` rows or the Plaid sync cursor: previously imported
-    transaction history survives an unlink untouched, and relinking the same
-    institution afterward resumes `/transactions/sync` from wherever it left
-    off rather than re-pulling full history. Before calling `unlink(_:)`,
-    the confirmation's `onDelete` closure also calls
-    `GoalAccountAssociationService.dissociate(itemID:modelContext:)` for the
-    unlinked item — auto-dissociating it from whatever goal it was tied to,
-    so `SavingsGoal.associatedItemIDs` never holds a stale item ID pointing
-    at a connection that no longer exists locally. A dissociate failure
-    (rare) is logged, not surfaced as a second alert — a stale ID self-heals
-    the next time that goal's account section is retoggled.
+    confirmation dialog ("Unlink \<institution\>?") offering two choices plus
+    Cancel: "Unlink and delete its transactions" (first/default, so relinking
+    starts fresh) and "Unlink and keep transactions". The message warns that
+    deleting also removes any edits or goal assignments on those
+    transactions, and that keeping may create duplicates if the account is
+    relinked (relinking mints a new Plaid item_id and restarts the sync
+    cursor). The dialog is the shared `deleteConfirmation` modifier with an
+    optional secondary action. On confirm, `SettingsView` auto-dissociates the
+    item from its goal (`GoalAccountAssociationService.dissociate`), then calls
+    `TransactionImportService.removeLocalData(forItemID:deleteTransactions:)`,
+    which in one save discards that item's queued merge decisions and, for the
+    delete choice, deletes `SpendTransaction` rows with that `plaidItemID` that
+    are purely imported. Manual rows and manual rows merged with an import
+    (`wasMergedFromManual`) are always kept; goal totals are derived from
+    `SavingsGoal.transactions`, so they stay consistent. A failure is shown in
+    a "Couldn't save" alert and the item stays linked. Finally
+    `PlaidServiceLive.unlink(_ item:)` clears that item's `LinkedItemStore`
+    entry, Keychain access token, and sync cursor (reservoir-wo1; both
+    choices, since the cursor is orphaned either way).
   - Both "Relink" and "Unlink" call `TransactionImportService
     .refreshNeedsAttention()` on success so the Settings tab-bar badge
     clears immediately rather than waiting for the next import.

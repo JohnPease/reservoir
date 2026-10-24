@@ -218,6 +218,90 @@ final class TransactionImportServiceTests: XCTestCase {
         )
     }
 
+    // MARK: - removeLocalData (reservoir-wo1)
+
+    private func seedUnlinkFixture() throws -> (goal: SavingsGoal, keep: [SpendTransaction], doomed: [SpendTransaction]) {
+        let goal = makeGoal()
+        context.insert(goal)
+        let doomed = [
+            SpendTransaction(amount: 5, date: .now, merchantName: "A", type: .variable, entryMethod: .imported, plaidTransactionID: "p1", plaidItemID: "item-1", savingsGoal: goal),
+            SpendTransaction(amount: 6, date: .now, merchantName: "B", type: .variable, entryMethod: .imported, plaidTransactionID: "p2", plaidItemID: "item-1")
+        ]
+        let keep = [
+            SpendTransaction(amount: 7, date: .now, merchantName: "Other item", type: .variable, entryMethod: .imported, plaidTransactionID: "p3", plaidItemID: "item-2", savingsGoal: goal),
+            SpendTransaction(amount: 8, date: .now, merchantName: "Manual", type: .variable, entryMethod: .manual, savingsGoal: goal),
+            SpendTransaction(amount: 9, date: .now, merchantName: "Merged", type: .variable, entryMethod: .imported, plaidTransactionID: "p4", plaidItemID: "item-1", savingsGoal: goal, wasMergedFromManual: true)
+        ]
+        (doomed + keep).forEach(context.insert)
+        try context.save()
+        return (goal, keep, doomed)
+    }
+
+    func test_removeLocalData_delete_removesOnlyThatItemsPureImportedRows() throws {
+        let fixture = try seedUnlinkFixture()
+        let sut = makeSUT()
+
+        let failure = sut.removeLocalData(forItemID: "item-1", deleteTransactions: true)
+
+        XCTAssertNil(failure)
+        let remaining = Set(try context.fetch(FetchDescriptor<SpendTransaction>()).map(\.merchantName))
+        XCTAssertEqual(remaining, ["Other item", "Manual", "Merged"])
+        XCTAssertEqual(Set(fixture.goal.transactions.map(\.merchantName)), ["Other item", "Manual", "Merged"], "goal's transaction list (and thus any derived totals) must drop the deleted rows.")
+    }
+
+    func test_removeLocalData_keep_leavesAllTransactions() throws {
+        _ = try seedUnlinkFixture()
+        let sut = makeSUT()
+
+        XCTAssertNil(sut.removeLocalData(forItemID: "item-1", deleteTransactions: false))
+
+        XCTAssertEqual(try context.fetch(FetchDescriptor<SpendTransaction>()).count, 5)
+    }
+
+    func test_removeLocalData_discardsOnlyThatItemsPendingMerges_bothChoices() throws {
+        for deleteTransactions in [true, false] {
+            let manual1 = SpendTransaction(amount: 3, date: .now, merchantName: "M1", type: .variable, entryMethod: .manual)
+            let manual2 = SpendTransaction(amount: 4, date: .now, merchantName: "M2", type: .variable, entryMethod: .manual)
+            context.insert(manual1)
+            context.insert(manual2)
+            context.insert(PendingTransactionMerge(plaidTransactionID: "q1", incomingAmount: 3, incomingDate: .now, incomingMerchantName: "M1", manualTransaction: manual1, plaidItemID: "item-1"))
+            context.insert(PendingTransactionMerge(plaidTransactionID: "q2", incomingAmount: 4, incomingDate: .now, incomingMerchantName: "M2", manualTransaction: manual2, plaidItemID: "item-2"))
+            try context.save()
+            let sut = makeSUT()
+            XCTAssertEqual(sut.mergeQueue.count, 2, "sanity: both decisions hydrated.")
+
+            XCTAssertNil(sut.removeLocalData(forItemID: "item-1", deleteTransactions: deleteTransactions))
+
+            XCTAssertEqual(sut.mergeQueue.map(\.id), ["q2"])
+            XCTAssertEqual(try context.fetch(FetchDescriptor<PendingTransactionMerge>()).map(\.plaidTransactionID), ["q2"])
+            XCTAssertEqual(try context.fetch(FetchDescriptor<SpendTransaction>()).count, 2, "manual rows are never deleted.")
+
+            for r in try context.fetch(FetchDescriptor<PendingTransactionMerge>()) { context.delete(r) }
+            for t in try context.fetch(FetchDescriptor<SpendTransaction>()) { context.delete(t) }
+            try context.save()
+        }
+    }
+
+    func test_removeLocalData_saveFailure_returnsMessageAndKeepsRows() throws {
+        let (readOnlyContext, _) = try makeReadOnlyContext()
+        // Unrelated unsaved insert guarantees the context has pending changes, so the
+        // (read-only) save genuinely throws even if the scoped delete nets out to nothing.
+        readOnlyContext.insert(SpendTransaction(amount: 1, date: .now, merchantName: "Pending", type: .variable, entryMethod: .manual))
+        readOnlyContext.insert(SpendTransaction(amount: 5, date: .now, merchantName: "A", type: .variable, entryMethod: .imported, plaidTransactionID: "p1", plaidItemID: "item-1"))
+        let sut = TransactionImportService(
+            modelContext: readOnlyContext,
+            keychain: StubKeychainWithToken(),
+            urlSession: makeScriptedURLSession(),
+            environmentStore: StubEnvironmentStore(.sandbox),
+            cursorStore: StubCursorStore(),
+            linkedItemStore: StubLinkedItemStore(initial: LinkedItem(itemID: "item-1", institutionName: "B", linkedAt: .now))
+        )
+
+        let failure = sut.removeLocalData(forItemID: "item-1", deleteTransactions: true)
+
+        XCTAssertNotNil(failure)
+    }
+
     // MARK: - JSON fixtures
 
     private func transactionJSON(id: String, amount: Decimal, date: String = "2026-07-10", merchantName: String? = "Coffee Shop", name: String = "COFFEE SHOP") -> String {

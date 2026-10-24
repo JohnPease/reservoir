@@ -19,6 +19,7 @@ struct SettingsView: View {
     @State private var environment: PlaidEnvironment
     @State private var pendingEnvironment: PlaidEnvironment?
     @State private var pendingUnlink: LinkedItem?
+    @State private var unlinkError: String?
 
     /// The one shared `TransactionImportService` instance, owned by `RootTabView` and
     /// injected via `.environment(_:)` — read here only to refresh it immediately after a
@@ -167,36 +168,20 @@ struct SettingsView: View {
                     title: { item in "Unlink \(item.institutionName)?" },
                     message: { _ in
                         "You'll need to go through Plaid's login flow again to reconnect. "
-                            + "Transactions already imported will stay. The connection itself "
-                            + "still exists on Plaid's side until removed there separately — "
-                            + "this only removes it from this app."
+                            + "Deleting this account's transactions also removes any edits or goal "
+                            + "assignments on them. Keeping them may create duplicates if you relink "
+                            + "this account. The connection itself still exists on Plaid's side until "
+                            + "removed there separately — this only removes it from this app."
                     },
-                    actionTitle: { _ in "Unlink" },
-                    actionAccessibilityIdentifier: "settings.confirmUnlink",
+                    actionTitle: { _ in "Unlink and delete its transactions" },
+                    actionAccessibilityIdentifier: "settings.confirmUnlinkDelete",
                     cancelAccessibilityIdentifier: "settings.cancelUnlink",
-                    onDelete: { item in
-                        Task {
-                            // Auto-dissociate before unlink (JP, reservoir-loc.3): an
-                            // unlinked item's `itemID` must never linger in any goal's
-                            // `associatedItemIDs` — a stale reference there would be a
-                            // silent, permanent mismatch (`GoalAccountAssociationService
-                            // .associatedGoal` simply never matching anything real again).
-                            // Runs before `service.unlink(_:)` so the local-data cleanup
-                            // happens before the Keychain/LinkedItemStore cleanup. Failure
-                            // here (rare — same `PersistenceSaveHelper.saveOrRollback`
-                            // failure mode as any other save) is logged by the service
-                            // itself and otherwise swallowed: no dedicated alert channel
-                            // for it, since a stale itemID self-heals the next time the
-                            // affected goal's account section is retoggled, and adding a
-                            // second failure-surfacing path to this view for a rare,
-                            // self-healing, non-destructive edge case isn't worth the
-                            // added UI surface.
-                            _ = GoalAccountAssociationService.dissociate(itemID: item.itemID, modelContext: modelContext)
-                            await service.unlink(item)
-                            importService?.refreshNeedsAttention()
-                        }
-                    }
+                    secondaryActionTitle: { _ in "Unlink and keep transactions" },
+                    secondaryActionAccessibilityIdentifier: "settings.confirmUnlink",
+                    onSecondaryConfirm: { item in unlink(item, deleteTransactions: false) },
+                    onDelete: { item in unlink(item, deleteTransactions: true) }
                 )
+                .saveErrorAlert($unlinkError)
             }
             .scrollContentBackground(.hidden)
             .listRowBackground(Color("ReservoirSurface"))
@@ -239,6 +224,28 @@ struct SettingsView: View {
         }
         service.onLinkSuccess = { [importService] itemID in
             Task { await importService?.runImportAfterLink(itemID: itemID) }
+        }
+    }
+
+    /// Runs the confirmed unlink. Auto-dissociates the item from any goal first
+    /// (reservoir-loc.3: an unlinked item's `itemID` must never linger in a goal's
+    /// `associatedItemIDs`; failure there is logged by the service and self-heals), then
+    /// removes the item's queued merges and — when `deleteTransactions` — its imported
+    /// rows (reservoir-wo1), and only then severs the connection. If that local cleanup
+    /// fails the item stays linked and the failure is surfaced, so the user can retry.
+    private func unlink(_ item: LinkedItem, deleteTransactions: Bool) {
+        Task {
+            _ = GoalAccountAssociationService.dissociate(itemID: item.itemID, modelContext: modelContext)
+            guard let importService else {
+                unlinkError = "The account's data couldn't be removed. Please try again."
+                return
+            }
+            if let failure = importService.removeLocalData(forItemID: item.itemID, deleteTransactions: deleteTransactions) {
+                unlinkError = failure
+                return
+            }
+            await service.unlink(item)
+            importService.refreshNeedsAttention()
         }
     }
 

@@ -159,3 +159,5 @@ Reference mockup was built as a rough guide for the SwiftUI implementation, not 
 
 - Plaid's token exchange flow is a best practice for distributed apps, not a platform restriction — direct SDK calls from the app are viable for personal/sideloaded use.
 - Starting with Plaid integration from day one (vs. manual-only first) is the right call for this use case.
+
+- Unlink (reservoir-wo1): the unlink confirmation lets the user choose to delete the account's imported transactions (default; relinking starts fresh) or keep them (may duplicate on relink). Manual and merged-manual rows are always kept; the item's sync cursor and pending merge decisions are cleared either way.
