@@ -110,4 +110,20 @@ final class PlaidSyncCursorStoreTests: XCTestCase {
         XCTAssertNil(cursorStore.cursor(for: .production, itemID: "item-1"))
         XCTAssertNil(cursorStore.cursor(for: .sandbox, itemID: "item-2"), "every linked item's cursors must be invalidated, not just the first.")
     }
+
+    /// reservoir-xxm: orphan cleanup enumerates stored cursors, including item IDs that contain dots.
+    func testStoredEntries_listsEveryEnvironmentAndItem_ignoringUnrelatedKeys() {
+        let suiteName = "PlaidSyncCursorStoreTests.\(UUID().uuidString)"
+        addTeardownBlock { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.set("x", forKey: "plaid.linkedItems")
+        defaults.set("x", forKey: "plaid.syncCursor.bogus.item")
+        let store = PlaidSyncCursorStore(defaults: defaults)
+        store.setCursor("a", for: .sandbox, itemID: "item-1")
+        store.setCursor("b", for: .production, itemID: "item.with.dots")
+
+        let entries = store.storedEntries().map { "\($0.environment.rawValue)|\($0.itemID)" }
+
+        XCTAssertEqual(Set(entries), ["sandbox|item-1", "production|item.with.dots"])
+    }
 }

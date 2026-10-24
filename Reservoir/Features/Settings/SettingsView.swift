@@ -20,6 +20,10 @@ struct SettingsView: View {
     @State private var pendingEnvironment: PlaidEnvironment?
     @State private var pendingUnlink: LinkedItem?
     @State private var unlinkError: String?
+    /// Leftovers from accounts that are no longer linked (reservoir-xxm); refreshed by
+    /// `refreshOrphanedData()`. `pendingOrphanCleanup` holds the summary being confirmed.
+    @State private var orphanedData = TransactionImportService.OrphanedDataSummary()
+    @State private var pendingOrphanCleanup: TransactionImportService.OrphanedDataSummary?
 
     /// The one shared `TransactionImportService` instance, owned by `RootTabView` and
     /// injected via `.environment(_:)` — read here only to refresh it immediately after a
@@ -184,6 +188,40 @@ struct SettingsView: View {
                     onDelete: { item in unlink(item, deleteTransactions: true) }
                 )
                 .saveErrorAlert($unlinkError)
+
+                // Hidden (not disabled) when nothing is left over, matching the "Linked
+                // accounts" section's own empty handling; disabled only while a sync runs.
+                if !orphanedData.isEmpty {
+                    Section {
+                        Button(role: .destructive) {
+                            pendingOrphanCleanup = orphanedData
+                        } label: {
+                            Text("Remove transactions from unlinked accounts")
+                        }
+                        .disabled(importService?.isSyncActive ?? true)
+                        .accessibilityIdentifier("settings.removeOrphanedData")
+                    } footer: {
+                        Text("Imported transactions from accounts you've since unlinked.")
+                            .foregroundStyle(Color("ReservoirTextSecondary"))
+                    }
+                    .deleteConfirmation(
+                        pendingItem: $pendingOrphanCleanup,
+                        title: { summary in
+                            summary.transactionCount > 0
+                                ? "Remove \(summary.transactionCount) imported transaction\(summary.transactionCount == 1 ? "" : "s")?"
+                                : "Clear leftover sync data?"
+                        },
+                        message: { _ in
+                            "These came from accounts that are no longer linked. Removing them also "
+                                + "deletes any edits or goal assignments on them. Manual transactions "
+                                + "and manual entries you merged with an import are kept."
+                        },
+                        actionTitle: { _ in "Remove" },
+                        actionAccessibilityIdentifier: "settings.confirmRemoveOrphanedData",
+                        cancelAccessibilityIdentifier: "settings.cancelRemoveOrphanedData",
+                        onDelete: { _ in removeOrphanedData() }
+                    )
+                }
             }
             .scrollContentBackground(.hidden)
             .listRowBackground(Color("ReservoirSurface"))
@@ -208,7 +246,10 @@ struct SettingsView: View {
             // (harmless if nothing changed, same idempotent posture as the
             // `onRelinkSuccess` wiring above) fixes that.
             service.refreshLinkedItems()
+            refreshOrphanedData()
         }
+        .onChange(of: service.linkedItems.map(\.itemID)) { refreshOrphanedData() }
+        .onChange(of: importService?.isSyncActive) { refreshOrphanedData() }
         // `importService` is nil until RootTabView's `.task` builds it; if it arrives after
         // this view first appeared, re-point the hooks at it (the closures capture the
         // instance, not the environment lookup).
@@ -249,6 +290,18 @@ struct SettingsView: View {
             await service.unlink(item)
             importService.refreshNeedsAttention()
         }
+    }
+
+    private func refreshOrphanedData() {
+        orphanedData = importService?.orphanedDataSummary() ?? TransactionImportService.OrphanedDataSummary()
+    }
+
+    /// Runs the confirmed orphan cleanup (reservoir-xxm); failures use the same alert as unlink.
+    private func removeOrphanedData() {
+        if let failure = importService?.removeOrphanedLocalData() {
+            unlinkError = failure
+        }
+        refreshOrphanedData()
     }
 
     /// Switching *to* Production requires the confirmation dialog above (real-money blast

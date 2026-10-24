@@ -1031,13 +1031,95 @@ final class TransactionImportService {
     /// them consistent; the goal link is restored on rollback. All of it is one
     /// `saveOrRollback`. Returns `nil` on success or a user-facing failure message.
     func removeLocalData(forItemID itemID: String, deleteTransactions: Bool) -> String? {
-        let records = ((try? modelContext.fetch(FetchDescriptor<PendingTransactionMerge>())) ?? [])
-            .filter { $0.plaidItemID == itemID }
+        let records = fetchPendingMerges().filter { $0.plaidItemID == itemID }
         let doomed: [SpendTransaction] = deleteTransactions
-            ? fetchAllTransactions().filter {
-                $0.plaidItemID == itemID && $0.entryMethod == .imported && !$0.wasMergedFromManual
-            }
+            ? fetchAllTransactions().filter { $0.plaidItemID == itemID && Self.isPureImported($0) }
             : []
+        return deleteLocalData(
+            records: records,
+            doomed: doomed,
+            failureMessage: "The account's data couldn't be removed. Please try again."
+        )
+    }
+
+    // MARK: - Orphaned-data cleanup (reservoir-xxm)
+
+    /// What `removeOrphanedLocalData()` would remove right now. `isEmpty` backs Settings'
+    /// hide-when-nothing-to-do convention.
+    struct OrphanedDataSummary: Equatable {
+        var transactionCount = 0
+        var pendingMergeCount = 0
+        var cursorCount = 0
+        var isEmpty: Bool { transactionCount == 0 && pendingMergeCount == 0 && cursorCount == 0 }
+    }
+
+    /// True while any sync (ordinary or post-link) is running; orphan cleanup must not
+    /// race it. Reading the observable properties also lets Settings react to changes.
+    var isSyncActive: Bool {
+        isImporting || initialImportItemID != nil || !inFlightItemIDs.isEmpty
+    }
+
+    /// Everything tied to an item that is no longer linked (`linkedItemStore.loadAll()`).
+    ///
+    /// **Legacy rows with a nil/empty `plaidItemID` are deliberately left alone** (rows
+    /// and pending merges alike): without an item ID there is no way to tell they belong
+    /// to an unlinked account rather than one that is linked today, and deleting a linked
+    /// account's data is worse than leaving a few stale rows. They are only removed by
+    /// deleting the rows individually.
+    private func orphanedTargets() -> (records: [PendingTransactionMerge], doomed: [SpendTransaction], cursors: [(environment: PlaidEnvironment, itemID: String)]) {
+        let linkedIDs = Set(linkedItemStore.loadAll().map(\.itemID))
+        func isOrphanedID(_ id: String?) -> Bool {
+            guard let id, !id.isEmpty else { return false }
+            return !linkedIDs.contains(id)
+        }
+        return (
+            fetchPendingMerges().filter { isOrphanedID($0.plaidItemID) },
+            fetchAllTransactions().filter { isOrphanedID($0.plaidItemID) && Self.isPureImported($0) },
+            cursorStore.storedEntries().filter { isOrphanedID($0.itemID) }
+        )
+    }
+
+    func orphanedDataSummary() -> OrphanedDataSummary {
+        let targets = orphanedTargets()
+        return OrphanedDataSummary(
+            transactionCount: targets.doomed.count,
+            pendingMergeCount: targets.records.count,
+            cursorCount: targets.cursors.count
+        )
+    }
+
+    /// Deletes imported transactions (same scoping as `removeLocalData`), discards queued
+    /// merges, and clears sync cursors for every item that is not currently linked. One
+    /// `saveOrRollback`; cursors (not transactional) are cleared only after it succeeds.
+    /// No-ops with a message while a sync is running. Returns `nil` on success.
+    func removeOrphanedLocalData() -> String? {
+        guard !isSyncActive else {
+            return "An import is in progress. Try again when it finishes."
+        }
+        let targets = orphanedTargets()
+        let failure = deleteLocalData(
+            records: targets.records,
+            doomed: targets.doomed,
+            failureMessage: "The transactions couldn't be removed. Please try again."
+        )
+        if failure == nil {
+            for entry in targets.cursors {
+                cursorStore.clearCursor(for: entry.environment, itemID: entry.itemID)
+            }
+        }
+        return failure
+    }
+
+    /// Imported by Plaid and not user-authored: a manual entry merged with an import
+    /// (`TransactionDedupMatcher.applyMerge`) flips to `.imported` but is always kept.
+    private static func isPureImported(_ transaction: SpendTransaction) -> Bool {
+        transaction.entryMethod == .imported && !transaction.wasMergedFromManual
+    }
+
+    /// Shared single-save delete for `removeLocalData` and `removeOrphanedLocalData`:
+    /// rollback re-inserts the rows and their goal links; on success the in-memory
+    /// `mergeQueue` is pruned to match.
+    private func deleteLocalData(records: [PendingTransactionMerge], doomed: [SpendTransaction], failureMessage: String) -> String? {
         let goalLinks = doomed.map { ($0, $0.savingsGoal) }
 
         let failure = PersistenceSaveHelper.saveOrRollback(
@@ -1054,13 +1136,17 @@ final class TransactionImportService {
                 }
             },
             logger: logger,
-            failureMessage: "The account's data couldn't be removed. Please try again."
+            failureMessage: failureMessage
         )
         if failure == nil {
             let removedIDs = Set(records.map(\.plaidTransactionID))
             mergeQueue.removeAll { removedIDs.contains($0.id) }
         }
         return failure
+    }
+
+    private func fetchPendingMerges() -> [PendingTransactionMerge] {
+        (try? modelContext.fetch(FetchDescriptor<PendingTransactionMerge>())) ?? []
     }
 
     private func fetchPendingMerge(plaidTransactionID: String) -> PendingTransactionMerge? {

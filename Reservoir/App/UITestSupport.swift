@@ -65,6 +65,11 @@ enum UITestScenario: String {
     /// `TransactionImportUITests` (adq.6.3's mandated merge-prompt end-to-end coverage).
     case transactionImportMergePrompt
 
+    /// Three imported rows tagged with an item that is not linked ("gone-item") plus one
+    /// manual row — backs the "Remove transactions from unlinked accounts" UI test
+    /// (reservoir-xxm). Pair with `UITEST_SEED_PLAID_LINKED_ITEM=1`.
+    case orphanedImportedTransactions
+
     static var current: UITestScenario? {
         ProcessInfo.processInfo.environment["UITEST_SCENARIO"].flatMap(UITestScenario.init(rawValue:))
     }
@@ -623,6 +628,26 @@ enum UITestScenario: String {
 
         case .transactionsZeroGoals:
             break
+
+        case .orphanedImportedTransactions:
+            for index in 1...3 {
+                context.insert(SpendTransaction(
+                    amount: Decimal(index),
+                    date: .now,
+                    merchantName: "Orphan \(index)",
+                    type: .variable,
+                    entryMethod: .imported,
+                    plaidTransactionID: "gone-\(index)",
+                    plaidItemID: "gone-item"
+                ))
+            }
+            context.insert(SpendTransaction(
+                amount: 9,
+                date: .now,
+                merchantName: "Manual Keep",
+                type: .variable,
+                entryMethod: .manual
+            ))
 
         case .merchantRulesManage:
             context.insert(MerchantRule(merchantName: "Starbucks", type: .variable))

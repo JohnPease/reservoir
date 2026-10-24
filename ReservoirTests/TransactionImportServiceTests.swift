@@ -317,6 +317,136 @@ final class TransactionImportServiceTests: XCTestCase {
         XCTAssertNotNil(failure)
     }
 
+    // MARK: - removeOrphanedLocalData (reservoir-xxm)
+
+    private func makeLinkedStore(_ ids: [String]) -> StubLinkedItemStore {
+        let store = StubLinkedItemStore()
+        for id in ids { store.save(LinkedItem(itemID: id, institutionName: id, linkedAt: .now)) }
+        return store
+    }
+
+    private func imported(_ name: String, item: String?, goal: SavingsGoal? = nil, merged: Bool = false) -> SpendTransaction {
+        SpendTransaction(amount: 5, date: .now, merchantName: name, type: .variable, entryMethod: .imported, plaidTransactionID: "id-\(name)", plaidItemID: item, savingsGoal: goal, wasMergedFromManual: merged)
+    }
+
+    func test_removeOrphaned_removesOnlyUnlinkedImportedRows_keepsEverythingElse() throws {
+        let goal = makeGoal()
+        context.insert(goal)
+        [
+            imported("linked", item: "live"),
+            imported("orphanA", item: "gone-1", goal: goal),
+            imported("orphanB", item: "gone-2"),
+            imported("mergedOrphan", item: "gone-1", merged: true),
+            imported("legacyNil", item: nil),
+            imported("legacyEmpty", item: ""),
+            SpendTransaction(amount: 1, date: .now, merchantName: "manual", type: .variable, entryMethod: .manual, savingsGoal: goal)
+        ].forEach(context.insert)
+        try context.save()
+        let sut = makeSUT(linkedItemStore: makeLinkedStore(["live"]))
+        XCTAssertEqual(sut.orphanedDataSummary().transactionCount, 2)
+
+        XCTAssertNil(sut.removeOrphanedLocalData())
+
+        let remaining = Set(try context.fetch(FetchDescriptor<SpendTransaction>()).map(\.merchantName))
+        XCTAssertEqual(remaining, ["linked", "mergedOrphan", "legacyNil", "legacyEmpty", "manual"])
+        XCTAssertEqual(Set(goal.transactions.map(\.merchantName)), ["manual"])
+        XCTAssertTrue(sut.orphanedDataSummary().isEmpty)
+    }
+
+    func test_removeOrphaned_clearsOnlyNonLinkedCursors_acrossEnvironments() throws {
+        let cursors = StubCursorStore()
+        cursors.setCursor("a", for: .sandbox, itemID: "live")
+        cursors.setCursor("b", for: .sandbox, itemID: "gone-1")
+        cursors.setCursor("c", for: .production, itemID: "gone-2")
+        cursors.setCursor("d", for: .production, itemID: "live")
+        let sut = makeSUT(cursorStore: cursors, linkedItemStore: makeLinkedStore(["live"]))
+        XCTAssertEqual(sut.orphanedDataSummary().cursorCount, 2)
+
+        XCTAssertNil(sut.removeOrphanedLocalData())
+
+        XCTAssertNil(cursors.cursor(for: .sandbox, itemID: "gone-1"))
+        XCTAssertNil(cursors.cursor(for: .production, itemID: "gone-2"))
+        XCTAssertEqual(cursors.cursor(for: .sandbox, itemID: "live"), "a")
+        XCTAssertEqual(cursors.cursor(for: .production, itemID: "live"), "d")
+    }
+
+    func test_removeOrphaned_discardsOnlyUnlinkedPendingMerges_andPrunesQueue() throws {
+        let manual1 = SpendTransaction(amount: 3, date: .now, merchantName: "M1", type: .variable, entryMethod: .manual)
+        let manual2 = SpendTransaction(amount: 4, date: .now, merchantName: "M2", type: .variable, entryMethod: .manual)
+        let manual3 = SpendTransaction(amount: 5, date: .now, merchantName: "M3", type: .variable, entryMethod: .manual)
+        [manual1, manual2, manual3].forEach(context.insert)
+        context.insert(PendingTransactionMerge(plaidTransactionID: "q1", incomingAmount: 3, incomingDate: .now, incomingMerchantName: "M1", manualTransaction: manual1, plaidItemID: "gone-1"))
+        context.insert(PendingTransactionMerge(plaidTransactionID: "q2", incomingAmount: 4, incomingDate: .now, incomingMerchantName: "M2", manualTransaction: manual2, plaidItemID: "live"))
+        context.insert(PendingTransactionMerge(plaidTransactionID: "q3", incomingAmount: 5, incomingDate: .now, incomingMerchantName: "M3", manualTransaction: manual3, plaidItemID: nil))
+        try context.save()
+        let sut = makeSUT(linkedItemStore: makeLinkedStore(["live"]))
+        XCTAssertEqual(sut.mergeQueue.count, 3)
+
+        XCTAssertNil(sut.removeOrphanedLocalData())
+
+        XCTAssertEqual(Set(sut.mergeQueue.map(\.id)), ["q2", "q3"])
+        XCTAssertEqual(Set(try context.fetch(FetchDescriptor<PendingTransactionMerge>()).map(\.plaidTransactionID)), ["q2", "q3"])
+        XCTAssertEqual(try context.fetch(FetchDescriptor<SpendTransaction>()).count, 3, "manual rows are never deleted.")
+    }
+
+    func test_removeOrphaned_noLinkedItems_treatsEveryTaggedImportAsOrphaned_butNotNilID() throws {
+        [imported("tagged", item: "gone-1"), imported("legacy", item: nil)].forEach(context.insert)
+        try context.save()
+        let sut = makeSUT(linkedItemStore: StubLinkedItemStore())
+
+        XCTAssertNil(sut.removeOrphanedLocalData())
+
+        XCTAssertEqual(try context.fetch(FetchDescriptor<SpendTransaction>()).map(\.merchantName), ["legacy"])
+    }
+
+    func test_removeOrphaned_saveFailure_returnsMessage_keepsCursorsAndQueue() throws {
+        let (readOnlyContext, _) = try makeReadOnlyContext()
+        readOnlyContext.insert(SpendTransaction(amount: 1, date: .now, merchantName: "Pending", type: .variable, entryMethod: .manual))
+        let goal = makeGoal()
+        readOnlyContext.insert(goal)
+        readOnlyContext.insert(imported("orphan", item: "gone-1", goal: goal))
+        let cursors = StubCursorStore()
+        cursors.setCursor("b", for: .sandbox, itemID: "gone-1")
+        let sut = TransactionImportService(
+            modelContext: readOnlyContext,
+            keychain: StubKeychainWithToken(),
+            urlSession: makeScriptedURLSession(),
+            environmentStore: StubEnvironmentStore(.sandbox),
+            cursorStore: cursors,
+            linkedItemStore: StubLinkedItemStore()
+        )
+
+        XCTAssertNotNil(sut.removeOrphanedLocalData())
+
+        XCTAssertEqual(cursors.cursor(for: .sandbox, itemID: "gone-1"), "b", "cursors must survive a failed save so a retry still finds them.")
+        let rows = try readOnlyContext.fetch(FetchDescriptor<SpendTransaction>()).filter { $0.merchantName == "orphan" }
+        XCTAssertEqual(rows.count, 1, "rollback must restore the deleted row.")
+        XCTAssertNotNil(rows.first?.savingsGoal, "rollback must restore the goal link.")
+    }
+
+    func test_removeOrphaned_whileImportInFlight_noOpsWithMessage() async throws {
+        SlowSyncURLProtocol.response = syncResponse(nextCursor: "c")
+        context.insert(imported("orphan", item: "gone-1"))
+        try context.save()
+        let sut = makeSUT(urlSession: makeSlowURLSession())
+        let inFlight = Task { await sut.runImport() }
+        var waited = 0
+        while !sut.isSyncActive, waited < 50 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+            waited += 1
+        }
+        XCTAssertTrue(sut.isSyncActive)
+
+        XCTAssertNotNil(sut.removeOrphanedLocalData())
+        XCTAssertEqual(try context.fetch(FetchDescriptor<SpendTransaction>()).count, 1)
+
+        SlowSyncURLProtocol.gate.signal()
+        await inFlight.value
+        XCTAssertFalse(sut.isSyncActive)
+        XCTAssertNil(sut.removeOrphanedLocalData())
+        XCTAssertEqual(try context.fetch(FetchDescriptor<SpendTransaction>()).count, 0)
+    }
+
     // MARK: - JSON fixtures
 
     private func transactionJSON(id: String, amount: Decimal, date: String = "2026-07-10", merchantName: String? = "Coffee Shop", name: String = "COFFEE SHOP") -> String {

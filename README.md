@@ -728,6 +728,24 @@ app-wide setting.
     `PlaidServiceLive.unlink(_ item:)` clears that item's `LinkedItemStore`
     entry, Keychain access token, and sync cursor (reservoir-wo1; both
     choices, since the cursor is orphaned either way).
+  - **Remove transactions from unlinked accounts** (reservoir-xxm): a
+    destructive button in its own Settings section, shown only when leftovers
+    exist (hidden otherwise) and disabled while any import is running. It
+    cleans up data stranded by unlinks that predate the delete/keep choice (or
+    chose "keep"). `TransactionImportService.removeOrphanedLocalData()` deletes
+    imported `SpendTransaction` rows whose `plaidItemID` is not among
+    `LinkedItemStore.loadAll()`, discards `PendingTransactionMerge` records for
+    non-linked items, and, after the save succeeds, clears
+    `plaid.syncCursor.<env>.<itemID>` cursors for non-linked items in every
+    environment (`PlaidSyncCursorStoring.storedEntries()` enumerates them).
+    Scoping matches unlink-delete: manual rows and manual rows merged with an
+    import are never deleted, and rows or pending merges with a nil/empty
+    `plaidItemID` (legacy) are left alone because they can't be attributed to
+    an unlinked account. A confirmation (the shared `deleteConfirmation`) states
+    the transaction count and that edits/goal assignments are lost. One
+    `saveOrRollback` (rollback restores rows and goal links), shared with
+    `removeLocalData` via a private helper; failure shows the "Couldn't save"
+    alert.
   - Both "Relink" and "Unlink" call `TransactionImportService
     .refreshNeedsAttention()` on success so the Settings tab-bar badge
     clears immediately rather than waiting for the next import.

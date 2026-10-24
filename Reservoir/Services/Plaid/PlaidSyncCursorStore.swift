@@ -15,6 +15,9 @@ protocol PlaidSyncCursorStoring: Sendable {
     func cursor(for environment: PlaidEnvironment, itemID: String) -> String?
     func setCursor(_ cursor: String?, for environment: PlaidEnvironment, itemID: String)
     func clearCursor(for environment: PlaidEnvironment, itemID: String)
+    /// Every `(environment, itemID)` with a stored cursor — lets orphan cleanup
+    /// (reservoir-xxm) find cursors for items that are no longer linked.
+    func storedEntries() -> [(environment: PlaidEnvironment, itemID: String)]
 }
 
 final class PlaidSyncCursorStore: PlaidSyncCursorStoring, @unchecked Sendable {
@@ -40,7 +43,21 @@ final class PlaidSyncCursorStore: PlaidSyncCursorStoring, @unchecked Sendable {
         defaults.removeObject(forKey: key(for: environment, itemID: itemID))
     }
 
+    private static let keyPrefix = "plaid.syncCursor."
+
+    func storedEntries() -> [(environment: PlaidEnvironment, itemID: String)] {
+        defaults.dictionaryRepresentation().keys.compactMap { key in
+            guard key.hasPrefix(Self.keyPrefix) else { return nil }
+            // "<environment>.<itemID>": environment raw values contain no dots, item IDs may.
+            let rest = key.dropFirst(Self.keyPrefix.count)
+            guard let dot = rest.firstIndex(of: "."),
+                  let environment = PlaidEnvironment(rawValue: String(rest[..<dot])) else { return nil }
+            let itemID = String(rest[rest.index(after: dot)...])
+            return itemID.isEmpty ? nil : (environment, itemID)
+        }
+    }
+
     private func key(for environment: PlaidEnvironment, itemID: String) -> String {
-        "plaid.syncCursor.\(environment.rawValue).\(itemID)"
+        "\(Self.keyPrefix)\(environment.rawValue).\(itemID)"
     }
 }
