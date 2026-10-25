@@ -253,6 +253,30 @@ final class PlaidRelinkUITests: XCTestCase {
         XCTAssertTrue(app.buttons["settings.unlinkButton.uitest-item-2"].exists)
     }
 
+    /// reservoir-brn regression: Relink and Unlink share one Form row, and with default button
+    /// styles a tap on Unlink also fired Relink, whose Link flow collided with the unlink
+    /// dialog and wedged the sheet presenter. Tapping Unlink must start ONLY the unlink
+    /// confirmation — no Link flow (which, with no real Plaid token service in UI tests,
+    /// would surface as a Settings error message).
+    func testTappingUnlink_doesNotAlsoStartRelinkFlow() {
+        let app = launchedApp { app in
+            app.launchEnvironment["UITEST_SEED_PLAID_LINKED_ITEM"] = "1"
+            app.launchEnvironment["UITEST_SEED_PLAID_TOKEN"] = "1"
+        }
+        app.tabBars.buttons["Settings"].tap()
+
+        let unlink = app.buttons["settings.unlinkButton.uitest-item"]
+        XCTAssertTrue(unlink.waitForExistence(timeout: 5))
+        unlink.tap()
+
+        let confirmButton = app.buttons.matching(identifier: "settings.confirmUnlink").firstMatch
+        XCTAssertTrue(confirmButton.waitForExistence(timeout: 10))
+        // Give a (buggy) simultaneous Relink time to fail token creation and surface its error.
+        sleep(3)
+        XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "settings.errorMessage").firstMatch.exists,
+                       "tapping Unlink must not also start a Relink flow.")
+    }
+
     func testConfirmingUnlink_removesOnlyThatItem_leavesTheOtherItemIntact() {
         let app = launchedApp { app in
             app.launchEnvironment["UITEST_SEED_PLAID_LINKED_ITEM"] = "1"
@@ -276,6 +300,28 @@ final class PlaidRelinkUITests: XCTestCase {
         XCTAssertTrue(app.buttons["settings.relinkButton.uitest-item-2"].exists)
         // Not back to the empty state — one item still remains.
         XCTAssertFalse(app.staticTexts["No account linked yet."].exists)
+    }
+
+    /// reservoir-wo1: the confirmation offers both "delete" and "keep" choices; choosing
+    /// "Unlink and delete its transactions" unlinks the item.
+    func testUnlinkDialog_offersDeleteAndKeepChoices_deleteChoiceUnlinks() {
+        let app = launchedApp { app in
+            app.launchEnvironment["UITEST_SEED_PLAID_LINKED_ITEM"] = "1"
+            app.launchEnvironment["UITEST_SEED_PLAID_TOKEN"] = "1"
+        }
+        app.tabBars.buttons["Settings"].tap()
+        XCTAssertTrue(app.buttons["settings.unlinkButton.uitest-item"].waitForExistence(timeout: 5))
+        app.buttons["settings.unlinkButton.uitest-item"].tap()
+
+        let deleteButton = app.buttons.matching(identifier: "settings.confirmUnlinkDelete").firstMatch
+        XCTAssertTrue(deleteButton.waitForExistence(timeout: 10))
+        XCTAssertEqual(deleteButton.label, "Unlink and delete its transactions")
+        let keepButton = app.buttons.matching(identifier: "settings.confirmUnlink").firstMatch
+        XCTAssertTrue(keepButton.exists)
+        XCTAssertEqual(keepButton.label, "Unlink and keep transactions")
+
+        deleteButton.tap()
+        XCTAssertTrue(app.staticTexts["No account linked yet."].waitForExistence(timeout: 5))
     }
 
     func testConfirmingUnlink_ofLastRemainingItem_returnsToEmptyState() {

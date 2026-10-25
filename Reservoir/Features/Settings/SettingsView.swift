@@ -19,6 +19,11 @@ struct SettingsView: View {
     @State private var environment: PlaidEnvironment
     @State private var pendingEnvironment: PlaidEnvironment?
     @State private var pendingUnlink: LinkedItem?
+    @State private var unlinkError: String?
+    /// Leftovers from accounts that are no longer linked (reservoir-xxm); refreshed by
+    /// `refreshOrphanedData()`. `pendingOrphanCleanup` holds the summary being confirmed.
+    @State private var orphanedData = TransactionImportService.OrphanedDataSummary()
+    @State private var pendingOrphanCleanup: TransactionImportService.OrphanedDataSummary?
 
     /// The one shared `TransactionImportService` instance, owned by `RootTabView` and
     /// injected via `.environment(_:)` — read here only to refresh it immediately after a
@@ -110,6 +115,8 @@ struct SettingsView: View {
                                 // Without both, a row's Relink/Unlink stayed tappable
                                 // during that exchange window, racing against it.
                                 isBusy: service.isStartingLink || service.isExchangingToken,
+                                // Post-link import in flight for this account (reservoir-xle).
+                                isImporting: importService?.initialImportItemID == item.itemID,
                                 onRelink: {
                                     // "Relink" opens Plaid's update-mode Link for this
                                     // specific item (re-authenticates in place, clears
@@ -145,7 +152,9 @@ struct SettingsView: View {
                         // would show as a mismatched border around the button's rounded
                         // corners.
                         .listRowBackground(Color("ReservoirBackground"))
-                        .disabled(service.isStartingLink)
+                        // Also disabled while Link is presenting (reservoir-brn): a second
+                        // tap can't start a competing flow over a live (or stale) session.
+                        .disabled(service.isStartingLink || service.isPresentingLink)
                         .accessibilityIdentifier("settings.linkButton")
                     }
 
@@ -165,36 +174,54 @@ struct SettingsView: View {
                     title: { item in "Unlink \(item.institutionName)?" },
                     message: { _ in
                         "You'll need to go through Plaid's login flow again to reconnect. "
-                            + "Transactions already imported will stay. The connection itself "
-                            + "still exists on Plaid's side until removed there separately — "
-                            + "this only removes it from this app."
+                            + "Deleting this account's transactions also removes any edits or goal "
+                            + "assignments on them. Keeping them may create duplicates if you relink "
+                            + "this account. The connection itself still exists on Plaid's side until "
+                            + "removed there separately — this only removes it from this app."
                     },
-                    actionTitle: { _ in "Unlink" },
-                    actionAccessibilityIdentifier: "settings.confirmUnlink",
+                    actionTitle: { _ in "Unlink and delete its transactions" },
+                    actionAccessibilityIdentifier: "settings.confirmUnlinkDelete",
                     cancelAccessibilityIdentifier: "settings.cancelUnlink",
-                    onDelete: { item in
-                        Task {
-                            // Auto-dissociate before unlink (JP, reservoir-loc.3): an
-                            // unlinked item's `itemID` must never linger in any goal's
-                            // `associatedItemIDs` — a stale reference there would be a
-                            // silent, permanent mismatch (`GoalAccountAssociationService
-                            // .associatedGoal` simply never matching anything real again).
-                            // Runs before `service.unlink(_:)` so the local-data cleanup
-                            // happens before the Keychain/LinkedItemStore cleanup. Failure
-                            // here (rare — same `PersistenceSaveHelper.saveOrRollback`
-                            // failure mode as any other save) is logged by the service
-                            // itself and otherwise swallowed: no dedicated alert channel
-                            // for it, since a stale itemID self-heals the next time the
-                            // affected goal's account section is retoggled, and adding a
-                            // second failure-surfacing path to this view for a rare,
-                            // self-healing, non-destructive edge case isn't worth the
-                            // added UI surface.
-                            _ = GoalAccountAssociationService.dissociate(itemID: item.itemID, modelContext: modelContext)
-                            await service.unlink(item)
-                            importService?.refreshNeedsAttention()
-                        }
-                    }
+                    secondaryActionTitle: { _ in "Unlink and keep transactions" },
+                    secondaryActionAccessibilityIdentifier: "settings.confirmUnlink",
+                    onSecondaryConfirm: { item in unlink(item, deleteTransactions: false) },
+                    onDelete: { item in unlink(item, deleteTransactions: true) }
                 )
+                .saveErrorAlert($unlinkError)
+
+                // Hidden (not disabled) when nothing is left over, matching the "Linked
+                // accounts" section's own empty handling; disabled only while a sync runs.
+                if !orphanedData.isEmpty {
+                    Section {
+                        Button(role: .destructive) {
+                            pendingOrphanCleanup = orphanedData
+                        } label: {
+                            Text("Remove transactions from unlinked accounts")
+                        }
+                        .disabled(importService?.isSyncActive ?? true)
+                        .accessibilityIdentifier("settings.removeOrphanedData")
+                    } footer: {
+                        Text("Imported transactions from accounts you've since unlinked.")
+                            .foregroundStyle(Color("ReservoirTextSecondary"))
+                    }
+                    .deleteConfirmation(
+                        pendingItem: $pendingOrphanCleanup,
+                        title: { summary in
+                            summary.transactionCount > 0
+                                ? "Remove \(summary.transactionCount) imported transaction\(summary.transactionCount == 1 ? "" : "s")?"
+                                : "Clear leftover sync data?"
+                        },
+                        message: { _ in
+                            "These came from accounts that are no longer linked. Removing them also "
+                                + "deletes any edits or goal assignments on them. Manual transactions "
+                                + "and manual entries you merged with an import are kept."
+                        },
+                        actionTitle: { _ in "Remove" },
+                        actionAccessibilityIdentifier: "settings.confirmRemoveOrphanedData",
+                        cancelAccessibilityIdentifier: "settings.cancelRemoveOrphanedData",
+                        onDelete: { _ in removeOrphanedData() }
+                    )
+                }
             }
             .scrollContentBackground(.hidden)
             .listRowBackground(Color("ReservoirSurface"))
@@ -208,9 +235,7 @@ struct SettingsView: View {
         // TransactionImportService instance is current in the environment. See
         // `PlaidServiceLive.onRelinkSuccess`'s doc comment.
         .onAppear {
-            service.onRelinkSuccess = { [importService] in
-                importService?.refreshNeedsAttention()
-            }
+            wireServiceHooks()
             // Bug fix (JP, reservoir-loc.3): `service` is this view's own long-lived
             // `PlaidServiceLive` instance, constructed once in `init()`. Its `linkedItems`
             // only updates in response to its own mutation methods — it has no reactive
@@ -221,7 +246,62 @@ struct SettingsView: View {
             // (harmless if nothing changed, same idempotent posture as the
             // `onRelinkSuccess` wiring above) fixes that.
             service.refreshLinkedItems()
+            refreshOrphanedData()
         }
+        .onChange(of: service.linkedItems.map(\.itemID)) { refreshOrphanedData() }
+        .onChange(of: importService?.isSyncActive) { refreshOrphanedData() }
+        // `importService` is nil until RootTabView's `.task` builds it; if it arrives after
+        // this view first appeared, re-point the hooks at it (the closures capture the
+        // instance, not the environment lookup).
+        .onChange(of: importService.map(ObjectIdentifier.init)) {
+            wireServiceHooks()
+        }
+    }
+
+    /// Points `service`'s opt-in hooks at the current `importService`. Idempotent. Link is
+    /// launched from this view, so `onLinkSuccess` (reservoir-xle) is always wired by the
+    /// time a link can complete; see `PlaidServiceLive.onLinkSuccess`.
+    private func wireServiceHooks() {
+        service.onRelinkSuccess = { [importService] in
+            importService?.refreshNeedsAttention()
+        }
+        service.onLinkSuccess = { [importService] itemID in
+            Task { await importService?.runImportAfterLink(itemID: itemID) }
+        }
+    }
+
+    /// Runs the confirmed unlink. Auto-dissociates the item from any goal first
+    /// (reservoir-loc.3: an unlinked item's `itemID` must never linger in a goal's
+    /// `associatedItemIDs`; failure there is logged by the service and self-heals), then
+    /// removes the item's queued merges and — when `deleteTransactions` — its imported
+    /// rows (reservoir-wo1), and only then severs the connection. If that local cleanup
+    /// fails the item stays linked and the failure is surfaced, so the user can retry.
+    private func unlink(_ item: LinkedItem, deleteTransactions: Bool) {
+        Task {
+            _ = GoalAccountAssociationService.dissociate(itemID: item.itemID, modelContext: modelContext)
+            guard let importService else {
+                unlinkError = "The account's data couldn't be removed. Please try again."
+                return
+            }
+            if let failure = importService.removeLocalData(forItemID: item.itemID, deleteTransactions: deleteTransactions) {
+                unlinkError = failure
+                return
+            }
+            await service.unlink(item)
+            importService.refreshNeedsAttention()
+        }
+    }
+
+    private func refreshOrphanedData() {
+        orphanedData = importService?.orphanedDataSummary() ?? TransactionImportService.OrphanedDataSummary()
+    }
+
+    /// Runs the confirmed orphan cleanup (reservoir-xxm); failures use the same alert as unlink.
+    private func removeOrphanedData() {
+        if let failure = importService?.removeOrphanedLocalData() {
+            unlinkError = failure
+        }
+        refreshOrphanedData()
     }
 
     /// Switching *to* Production requires the confirmation dialog above (real-money blast
@@ -276,12 +356,22 @@ private struct LinkedAccountRow: View {
     /// in-flight flow (rather than just the row that started it) matches the existing
     /// reentrancy guard `PlaidServiceLive.isStartingLink` already enforces service-wide.
     let isBusy: Bool
+    /// A post-link import is running for this account (reservoir-xle).
+    let isImporting: Bool
     let onRelink: () -> Void
     let onUnlink: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            LabeledContent("Institution", value: item.institutionName)
+            HStack {
+                LabeledContent("Institution", value: item.institutionName)
+                if isImporting {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityIdentifier("settings.importing.\(item.itemID)")
+                        .accessibilityLabel("Importing transactions")
+                }
+            }
             LabeledContent("Item ID", value: item.itemID)
 
             // Reuses the shared `PlaidErrorText`/`.itemLoginRequired` copy (not a second
@@ -293,14 +383,21 @@ private struct LinkedAccountRow: View {
                     .accessibilityIdentifier("settings.needsAttention.\(item.itemID)")
             }
 
+            // `.borderless` is required (reservoir-brn root cause): two default-style Buttons
+            // in one Form/List row make the whole row the tap target, and a tap fires BOTH
+            // actions. Tapping Unlink also started a Relink, whose Link sheet collided with
+            // the unlink confirmation dialog, wedging SwiftUI's sheet presenter so later
+            // "Link another account" taps silently did nothing until relaunch.
             HStack {
                 Button("Relink", action: onRelink)
+                    .buttonStyle(.borderless)
                     .disabled(isBusy)
                     .accessibilityIdentifier("settings.relinkButton.\(item.itemID)")
 
                 Spacer()
 
                 Button("Unlink", role: .destructive, action: onUnlink)
+                    .buttonStyle(.borderless)
                     .disabled(isBusy)
                     .accessibilityIdentifier("settings.unlinkButton.\(item.itemID)")
             }

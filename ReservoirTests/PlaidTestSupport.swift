@@ -45,6 +45,9 @@ final class StubCursorStore: PlaidSyncCursorStoring, @unchecked Sendable {
     func clearCursor(for environment: PlaidEnvironment, itemID: String) {
         cursors[Key(environment: environment, itemID: itemID)] = nil
     }
+    func storedEntries() -> [(environment: PlaidEnvironment, itemID: String)] {
+        cursors.keys.map { ($0.environment, $0.itemID) }
+    }
 }
 
 /// A simple in-memory `LinkedItemStoring` stub (reservoir-adq.6.5, rebuilt as a

@@ -36,8 +36,47 @@ struct PlaidSyncResponseBody: Decodable {
     let added: [PlaidTransaction]
     let modified: [PlaidTransaction]
     let removed: [PlaidRemovedTransaction]
-    let next_cursor: String
+    /// Optional (reservoir-xle): a not-ready item may return an empty or absent cursor,
+    /// and a missing key must not fail the whole decode. See
+    /// `PlaidSyncReadiness.cursorToPersist(from:)` — a nil/empty cursor is never persisted.
+    let next_cursor: String?
     let has_more: Bool
+    /// Plaid's `transactions_update_status` (reservoir-xle): `NOT_READY`,
+    /// `INITIAL_UPDATE_COMPLETE`, `HISTORICAL_UPDATE_COMPLETE`, or
+    /// `TRANSACTIONS_UPDATE_STATUS_UNKNOWN`. A plain optional `String` rather than an enum
+    /// so an absent key or a value Plaid adds later decodes instead of throwing.
+    let transactions_update_status: String?
+}
+
+/// Pure interpretation of a `/transactions/sync` response's readiness (reservoir-xle).
+/// Plaid does NOT error while an item's first pull is still running: it returns empty
+/// `added`/`modified`/`removed` arrays with `transactions_update_status == NOT_READY`.
+enum PlaidSyncReadiness {
+    static let notReadyStatus = "NOT_READY"
+
+    /// True when the response carries no transaction changes at all.
+    static func isEmpty(_ response: PlaidSyncResponseBody) -> Bool {
+        response.added.isEmpty && response.modified.isEmpty && response.removed.isEmpty
+    }
+
+    /// True when Plaid said the item isn't ready AND there is nothing to process — the
+    /// only condition worth re-polling for. Any other status (including unknown values or
+    /// an absent key) or any data at all means "stop and treat this response as usable";
+    /// `INITIAL_UPDATE_COMPLETE`/`HISTORICAL_UPDATE_COMPLETE` data is imported right away
+    /// and the rest backfills on the next normal sync.
+    static func shouldRetry(_ response: PlaidSyncResponseBody) -> Bool {
+        response.transactions_update_status == notReadyStatus && isEmpty(response) && !response.has_more
+    }
+
+    /// The cursor to persist after this response, or `nil` to leave the stored cursor
+    /// untouched. Never a nil/empty cursor (would reset or corrupt the sync position), and
+    /// never one from a not-ready empty page (nothing was delivered, so there is nothing to
+    /// acknowledge; re-requesting from the same position is always safe).
+    static func cursorToPersist(from response: PlaidSyncResponseBody) -> String? {
+        guard let cursor = response.next_cursor, !cursor.isEmpty else { return nil }
+        guard !shouldRetry(response) else { return nil }
+        return cursor
+    }
 }
 
 /// Plaid's documented shape for a REST call's JSON error body (`/transactions/sync`
@@ -86,7 +125,31 @@ struct ImportSummary: Equatable {
 @Observable
 @MainActor
 final class TransactionImportService {
+    /// True while an ordinary `runImport()` (foreground, pull-to-refresh, retry) is in
+    /// flight. Deliberately NOT set by the post-link poll: that poll is tracked separately
+    /// by `initialImportItemID` so it can never starve or no-op an ordinary sync (code
+    /// review finding on reservoir-xle). Backs the Refresh/Retry buttons' disabled state.
     private(set) var isImporting = false
+    /// True for the whole duration of a post-link import (`runImportAfterLink(itemID:)`),
+    /// including its not-ready retry waits (reservoir-xle). Drives the Transactions tab's
+    /// "Importing your transactions…" state; an ordinary foreground/pull-to-refresh import
+    /// leaves it `false` so an empty app doesn't flash that state on every foreground.
+    var isInitialImport: Bool { initialImportItemID != nil }
+    /// The item a post-link import is currently polling (`nil` otherwise) — lets
+    /// Settings show its spinner on just that account's row. Also the exclusion key:
+    /// an ordinary `runImport()` skips this item while the poll owns its cursor.
+    private(set) var initialImportItemID: String?
+    /// Items with a `/transactions/sync` page loop running right now (either kind of
+    /// run). Guarantees no two syncs touch the same item's cursor at once; main-actor
+    /// confined, so the check-then-insert has no suspension point between them.
+    private var inFlightItemIDs: Set<String> = []
+    /// Detached drain of `pendingPostLinkItemIDs` started when an ordinary run finishes —
+    /// kept off the ordinary run's own `await` so a pull-to-refresh never waits on a poll.
+    private var queuedPostLinkDrainTask: Task<Void, Never>?
+    /// True when the most recent completed, error-free run ended with some item's Plaid
+    /// response still `NOT_READY` and empty (reservoir-xle) — i.e. Plaid hasn't finished
+    /// the item's first pull yet. Not an error; backs the "Still fetching…" empty state.
+    private(set) var isInitialDataPending = false
     var presentedError: PlaidErrorCategory?
     /// `true` whenever ANY linked item's `needsAttention` flag (reservoir-adq.6.5) is set
     /// — the most recent import attempt against that item classified as
@@ -143,6 +206,16 @@ final class TransactionImportService {
     private let cursorStore: PlaidSyncCursorStoring
     private let linkedItemStore: LinkedItemStoring
     private let logger: Logger
+    private let sleep: @MainActor (Duration) async throws -> Void
+    private let postLinkBackoff: [Duration]
+    /// Items whose post-link import was requested while another post-link poll was
+    /// running (or an ordinary run was mid-sync on that very item); drained one poll at a
+    /// time once that finishes so the new item is never silently skipped.
+    private var pendingPostLinkItemIDs: [String] = []
+
+    /// Waits between not-ready re-polls of the post-link import: 2+4+8+15+30+30 = 89s,
+    /// then give up (the next foreground/pull-to-refresh sync picks the data up).
+    static let defaultPostLinkBackoff: [Duration] = [.seconds(2), .seconds(4), .seconds(8), .seconds(15), .seconds(30), .seconds(30)]
 
     init(
         modelContext: ModelContext,
@@ -151,8 +224,12 @@ final class TransactionImportService {
         environmentStore: PlaidEnvironmentStoring = PlaidEnvironmentStore(),
         cursorStore: PlaidSyncCursorStoring = PlaidSyncCursorStore(),
         linkedItemStore: LinkedItemStoring = LinkedItemStore(),
-        logger: Logger = Logger(subsystem: "com.reservoir.app", category: "TransactionImportService")
+        logger: Logger = Logger(subsystem: "com.reservoir.app", category: "TransactionImportService"),
+        postLinkBackoff: [Duration] = TransactionImportService.defaultPostLinkBackoff,
+        sleep: @escaping @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
+        self.postLinkBackoff = postLinkBackoff
+        self.sleep = sleep
         self.modelContext = modelContext
         self.keychain = keychain
         self.urlSession = urlSession
@@ -242,15 +319,82 @@ final class TransactionImportService {
     /// same untagged manual transaction resolve first-match-wins, with the match removed
     /// from the pool immediately — consistent with the existing single-item behavior, no
     /// change needed to `TransactionDedupMatcher.findMatch` itself.
+    ///
+    /// Concurrency with the post-link poll (`runImportAfterLink`): this run never waits on
+    /// the poll and is never skipped because of it. It syncs every linked item EXCEPT the
+    /// one the poll currently owns (`initialImportItemID`, checked per item at the moment
+    /// that item's turn comes, so a poll that starts mid-run is respected). It never polls
+    /// on NOT_READY and never runs the queued post-link items inline — if any are waiting
+    /// it hands them to a detached task when it finishes, so a refresh returns promptly.
     func runImport() async {
         guard !isImporting else { return }
         isImporting = true
         defer { isImporting = false }
+        await performImport(onlyItemID: nil, pollsUntilReady: false)
+        startQueuedPostLinkDrainIfNeeded()
+    }
 
+    /// Post-link entry point (reservoir-xle): imports `itemID` right after a successful
+    /// Link, re-polling `/transactions/sync` with backoff while Plaid reports the item
+    /// `NOT_READY` (empty response), up to `postLinkBackoff`'s bound. Shares
+    /// `performImport` with `runImport()`.
+    ///
+    /// Only the single polled item is held (`initialImportItemID`); `isImporting` is NOT
+    /// set, so pull-to-refresh and foreground syncs keep working for every other item
+    /// during the up-to-~89s wait. At most one poll runs at a time and no item is ever
+    /// synced by two runs at once: if a poll is already running, or an ordinary run is
+    /// mid-sync on this very item, `itemID` is queued and polled afterwards (by this
+    /// poll's drain loop, or by the detached drain an ordinary run starts on completion).
+    /// If the item is unlinked while waiting, the poll exits without writing anything.
+    /// Cancelling the calling task ends the wait early without surfacing an error.
+    func runImportAfterLink(itemID: String) async {
+        guard initialImportItemID == nil, !inFlightItemIDs.contains(itemID) else {
+            if !pendingPostLinkItemIDs.contains(itemID) { pendingPostLinkItemIDs.append(itemID) }
+            return
+        }
+        await pollPostLink(itemID: itemID)
+        await drainPendingPostLinkImports()
+    }
+
+    private func pollPostLink(itemID: String) async {
+        initialImportItemID = itemID
+        defer { initialImportItemID = nil }
+        await performImport(onlyItemID: itemID, pollsUntilReady: true)
+    }
+
+    /// Polls queued post-link items one at a time. An item currently mid-sync in an
+    /// ordinary run is left queued (that run starts another drain when it finishes).
+    private func drainPendingPostLinkImports() async {
+        while initialImportItemID == nil, !Task.isCancelled,
+              let index = pendingPostLinkItemIDs.firstIndex(where: { !inFlightItemIDs.contains($0) }) {
+            let next = pendingPostLinkItemIDs.remove(at: index)
+            await pollPostLink(itemID: next)
+        }
+    }
+
+    private func startQueuedPostLinkDrainIfNeeded() {
+        guard !pendingPostLinkItemIDs.isEmpty, initialImportItemID == nil, queuedPostLinkDrainTask == nil else { return }
+        queuedPostLinkDrainTask = Task { [weak self] in
+            await self?.drainPendingPostLinkImports()
+            self?.queuedPostLinkDrainTask = nil
+        }
+    }
+
+    /// Awaits the detached queued-post-link drain, if one is running. Test seam (and
+    /// harmless otherwise): an ordinary `runImport()` deliberately does not wait for it.
+    func waitForQueuedPostLinkImports() async {
+        await queuedPostLinkDrainTask?.value
+    }
+
+    /// The one import core behind `runImport()` and `runImportAfterLink(itemID:)`. The
+    /// caller owns the run-level flag (`isImporting` / `initialImportItemID`).
+    /// `onlyItemID` scopes the run to one linked item; `pollsUntilReady` enables the
+    /// bounded not-ready re-poll loop.
+    private func performImport(onlyItemID: String?, pollsUntilReady: Bool) async {
         presentedError = nil
         presentedErrorDetail = nil
 
-        let items = linkedItemStore.loadAll()
+        let items = linkedItemStore.loadAll().filter { onlyItemID == nil || $0.itemID == onlyItemID }
         guard !items.isEmpty else {
             // No linked item yet — nothing to import, not an error surfaced to the user
             // (background operation). Still resync needsAttention before returning (code
@@ -260,6 +404,7 @@ final class TransactionImportService {
             // a stale linked item would stay stuck `true` forever, since every earlier
             // return path in this method skipped the sync below.
             refreshNeedsAttention()
+            if pollsUntilReady || initialImportItemID == nil { isInitialDataPending = false }
             return
         }
 
@@ -283,9 +428,17 @@ final class TransactionImportService {
 
         var summary = ImportSummary()
         var sawAnyAccessToken = false
+        var anyItemStillNotReady = false
+        var sawError = false
 
         for item in items {
             let itemID = item.itemID
+            // Skip an item another run owns right now: the post-link poll's item (for an
+            // ordinary run; checked at this item's turn so a poll starting mid-run is
+            // respected) or any item already mid-sync. Keeps cursor writes per item serial.
+            if !pollsUntilReady, initialImportItemID == itemID { continue }
+            guard inFlightItemIDs.insert(itemID).inserted else { continue }
+            defer { inFlightItemIDs.remove(itemID) }
             guard let accessToken = try? await keychain.read(for: PlaidKeychainKey.accessToken(itemID: itemID)) else {
                 // A keychain read failure for this one item shouldn't abort every other
                 // linked item's sync — skip it and move on, same "log and continue"
@@ -296,11 +449,22 @@ final class TransactionImportService {
 
             var requestCursor = cursorStore.cursor(for: environment, itemID: itemID)
             var hasMore = true
+            var pollAttempt = 0
+            var lastResponseNotReady = false
             while hasMore {
+                // Unlinked while we waited or paged (reservoir-xle review): stop quietly
+                // before touching the network, the store, or the cursor.
+                guard isStillLinked(itemID) else { lastResponseNotReady = false; break }
                 let response: PlaidSyncResponseBody
                 do {
                     response = try await syncPage(accessToken: accessToken, cursor: requestCursor, environment: environment)
                 } catch {
+                    // Cancellation (task cancelled, or URLSession reporting `.cancelled`) is
+                    // not a failure: stop this item quietly, no banner, no pending change.
+                    if Self.isCancellation(error) {
+                        lastResponseNotReady = false
+                        break
+                    }
                     // A decoded Plaid item-level error body (reservoir-adq.6.5) is
                     // classified distinctly from every other failure here — a genuine
                     // ITEM_LOGIN_REQUIRED sets the persistent needsAttention flag; a
@@ -321,8 +485,16 @@ final class TransactionImportService {
                         presentedError = PlaidErrorClassifier.classify(.exchangeError(error))
                     }
                     presentedErrorDetail = String(describing: error)
+                    sawError = true
+                    // "Still fetching" must not sit beside an error banner.
+                    isInitialDataPending = false
+                    lastResponseNotReady = false
                     break
                 }
+
+                // The item may have been unlinked during the network call; its response
+                // must not be written either.
+                guard isStillLinked(itemID) else { lastResponseNotReady = false; break }
 
                 let pageResult = processPage(
                     response,
@@ -338,13 +510,31 @@ final class TransactionImportService {
                 summary.queuedForMerge += pageResult.summary.queuedForMerge
 
                 if pageResult.allHandled {
-                    cursorStore.setCursor(response.next_cursor, for: environment, itemID: itemID)
-                    requestCursor = response.next_cursor
+                    // Never a nil/empty cursor, never one from a not-ready empty page
+                    // (reservoir-xle) — see `PlaidSyncReadiness.cursorToPersist(from:)`.
+                    if let cursor = PlaidSyncReadiness.cursorToPersist(from: response) {
+                        cursorStore.setCursor(cursor, for: environment, itemID: itemID)
+                        requestCursor = cursor
+                    }
                     hasMore = response.has_more
                 } else {
                     hasMore = false
                 }
+
+                lastResponseNotReady = pageResult.allHandled && PlaidSyncReadiness.shouldRetry(response)
+                if lastResponseNotReady, pollsUntilReady, pollAttempt < postLinkBackoff.count,
+                   !Task.isCancelled, isStillLinked(itemID) {
+                    do {
+                        try await sleep(postLinkBackoff[pollAttempt])
+                        pollAttempt += 1
+                        hasMore = true
+                    } catch {
+                        // Cancelled while waiting — stop quietly, no error surfaced.
+                        hasMore = false
+                    }
+                }
             }
+            if lastResponseNotReady { anyItemStillNotReady = true }
         }
 
         guard sawAnyAccessToken else {
@@ -354,7 +544,21 @@ final class TransactionImportService {
             return
         }
 
+        // A failed run cleared the flag when it presented its error (above); an ordinary
+        // run while a post-link poll is active leaves it to the poll, which owns the
+        // not-ready state of the item it is waiting on.
+        if !sawError, pollsUntilReady || initialImportItemID == nil { isInitialDataPending = anyItemStillNotReady }
         lastImportSummary = summary
+    }
+
+    private func isStillLinked(_ itemID: String) -> Bool {
+        linkedItemStore.loadAll().contains { $0.itemID == itemID }
+    }
+
+    /// True for the ways a cancelled import surfaces: structured-concurrency cancellation,
+    /// a cancelled task, or `URLSession` reporting `URLError.cancelled`.
+    static func isCancellation(_ error: Error) -> Bool {
+        Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled
     }
 
     /// Resolves the current `pendingMergeDecision` (the queue's head). Synchronous — no
@@ -388,6 +592,14 @@ final class TransactionImportService {
         sourceItemID: String
     ) -> PageResult {
         var result = PageResult()
+
+        // A concurrent run (ordinary sync vs. post-link poll, other item) may have queued a
+        // decision for a manual row since this run fetched its candidate pool at start;
+        // re-exclude those so one manual row is never offered for merge twice.
+        if !mergeQueue.isEmpty {
+            let queuedManualIDs = Set(mergeQueue.map(\.manualTransaction.persistentModelID))
+            manualTransactions.removeAll { queuedManualIDs.contains($0.persistentModelID) }
+        }
 
         for raw in response.added {
             guard let mapped = PlaidTransactionMapper.map(raw) else { continue }
@@ -801,6 +1013,140 @@ final class TransactionImportService {
             )
             return PendingMergeDecision(id: record.plaidTransactionID, manualTransaction: manual, incoming: incoming)
         }
+    }
+
+    // MARK: - Unlink cleanup (reservoir-wo1)
+
+    /// Local-data cleanup for an unlinked item. Always discards that item's queued merge
+    /// decisions (they reference an incoming Plaid transaction that can never be resolved
+    /// once the item is gone); when `deleteTransactions` is `true`, also deletes the item's
+    /// imported `SpendTransaction` rows so a relink starts fresh instead of duplicating
+    /// kept rows (relinking mints a new Plaid item_id and restarts the sync cursor).
+    ///
+    /// Scoping: only rows with `plaidItemID == itemID`, `entryMethod == .imported`, and
+    /// `wasMergedFromManual == false`. A manual entry the user merged with an import
+    /// (`TransactionDedupMatcher.applyMerge`) flips to `.imported` but is user-authored,
+    /// so it is always kept. Goal totals are derived from `SavingsGoal.transactions`
+    /// (inverse relationship, nullify rule) rather than stored, so deleting rows keeps
+    /// them consistent; the goal link is restored on rollback. All of it is one
+    /// `saveOrRollback`. Returns `nil` on success or a user-facing failure message.
+    func removeLocalData(forItemID itemID: String, deleteTransactions: Bool) -> String? {
+        let records = fetchPendingMerges().filter { $0.plaidItemID == itemID }
+        let doomed: [SpendTransaction] = deleteTransactions
+            ? fetchAllTransactions().filter { $0.plaidItemID == itemID && Self.isPureImported($0) }
+            : []
+        return deleteLocalData(
+            records: records,
+            doomed: doomed,
+            failureMessage: "The account's data couldn't be removed. Please try again."
+        )
+    }
+
+    // MARK: - Orphaned-data cleanup (reservoir-xxm)
+
+    /// What `removeOrphanedLocalData()` would remove right now. `isEmpty` backs Settings'
+    /// hide-when-nothing-to-do convention.
+    struct OrphanedDataSummary: Equatable {
+        var transactionCount = 0
+        var pendingMergeCount = 0
+        var cursorCount = 0
+        var isEmpty: Bool { transactionCount == 0 && pendingMergeCount == 0 && cursorCount == 0 }
+    }
+
+    /// True while any sync (ordinary or post-link) is running; orphan cleanup must not
+    /// race it. Reading the observable properties also lets Settings react to changes.
+    var isSyncActive: Bool {
+        isImporting || initialImportItemID != nil || !inFlightItemIDs.isEmpty
+    }
+
+    /// Everything tied to an item that is no longer linked (`linkedItemStore.loadAll()`).
+    ///
+    /// **Legacy rows with a nil/empty `plaidItemID` are deliberately left alone** (rows
+    /// and pending merges alike): without an item ID there is no way to tell they belong
+    /// to an unlinked account rather than one that is linked today, and deleting a linked
+    /// account's data is worse than leaving a few stale rows. They are only removed by
+    /// deleting the rows individually.
+    private func orphanedTargets() -> (records: [PendingTransactionMerge], doomed: [SpendTransaction], cursors: [(environment: PlaidEnvironment, itemID: String)]) {
+        let linkedIDs = Set(linkedItemStore.loadAll().map(\.itemID))
+        func isOrphanedID(_ id: String?) -> Bool {
+            guard let id, !id.isEmpty else { return false }
+            return !linkedIDs.contains(id)
+        }
+        return (
+            fetchPendingMerges().filter { isOrphanedID($0.plaidItemID) },
+            fetchAllTransactions().filter { isOrphanedID($0.plaidItemID) && Self.isPureImported($0) },
+            cursorStore.storedEntries().filter { isOrphanedID($0.itemID) }
+        )
+    }
+
+    func orphanedDataSummary() -> OrphanedDataSummary {
+        let targets = orphanedTargets()
+        return OrphanedDataSummary(
+            transactionCount: targets.doomed.count,
+            pendingMergeCount: targets.records.count,
+            cursorCount: targets.cursors.count
+        )
+    }
+
+    /// Deletes imported transactions (same scoping as `removeLocalData`), discards queued
+    /// merges, and clears sync cursors for every item that is not currently linked. One
+    /// `saveOrRollback`; cursors (not transactional) are cleared only after it succeeds.
+    /// No-ops with a message while a sync is running. Returns `nil` on success.
+    func removeOrphanedLocalData() -> String? {
+        guard !isSyncActive else {
+            return "An import is in progress. Try again when it finishes."
+        }
+        let targets = orphanedTargets()
+        let failure = deleteLocalData(
+            records: targets.records,
+            doomed: targets.doomed,
+            failureMessage: "The transactions couldn't be removed. Please try again."
+        )
+        if failure == nil {
+            for entry in targets.cursors {
+                cursorStore.clearCursor(for: entry.environment, itemID: entry.itemID)
+            }
+        }
+        return failure
+    }
+
+    /// Imported by Plaid and not user-authored: a manual entry merged with an import
+    /// (`TransactionDedupMatcher.applyMerge`) flips to `.imported` but is always kept.
+    private static func isPureImported(_ transaction: SpendTransaction) -> Bool {
+        transaction.entryMethod == .imported && !transaction.wasMergedFromManual
+    }
+
+    /// Shared single-save delete for `removeLocalData` and `removeOrphanedLocalData`:
+    /// rollback re-inserts the rows and their goal links; on success the in-memory
+    /// `mergeQueue` is pruned to match.
+    private func deleteLocalData(records: [PendingTransactionMerge], doomed: [SpendTransaction], failureMessage: String) -> String? {
+        let goalLinks = doomed.map { ($0, $0.savingsGoal) }
+
+        let failure = PersistenceSaveHelper.saveOrRollback(
+            modelContext: modelContext,
+            mutate: {
+                for record in records { modelContext.delete(record) }
+                for transaction in doomed { modelContext.delete(transaction) }
+            },
+            rollback: {
+                for record in records { modelContext.insert(record) }
+                for (transaction, goal) in goalLinks {
+                    modelContext.insert(transaction)
+                    transaction.savingsGoal = goal
+                }
+            },
+            logger: logger,
+            failureMessage: failureMessage
+        )
+        if failure == nil {
+            let removedIDs = Set(records.map(\.plaidTransactionID))
+            mergeQueue.removeAll { removedIDs.contains($0.id) }
+        }
+        return failure
+    }
+
+    private func fetchPendingMerges() -> [PendingTransactionMerge] {
+        (try? modelContext.fetch(FetchDescriptor<PendingTransactionMerge>())) ?? []
     }
 
     private func fetchPendingMerge(plaidTransactionID: String) -> PendingTransactionMerge? {

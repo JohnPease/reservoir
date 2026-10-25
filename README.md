@@ -651,6 +651,40 @@ error toast a flaky connection would falsely trigger.
     flakiness beads, reservoir-bdy/reservoir-tq7) — see the manual-steps
     comment at the bottom of `PlaidRelinkUITests.swift`.
 
+**Post-link auto-import** (reservoir-xle): after a successful fresh Link,
+`PlaidServiceLive.handleLinkSuccess` fires its opt-in `onLinkSuccess(itemID)`
+hook only once the Keychain token AND `LinkedItem` are saved (never on an
+exchange/Keychain failure). `SettingsView` wires it (alongside
+`onRelinkSuccess`, in `onAppear` and when the shared import service arrives) to
+`TransactionImportService.runImportAfterLink(itemID:)`, so the hook is live
+once Settings has appeared, which is always true because Link is launched from
+Settings. That entry point shares one core (`performImport`) with
+`runImport()` but tracks the poll separately (`initialImportItemID`) and does
+NOT set `isImporting`, so pull-to-refresh and foreground syncs keep working
+during the up-to-~89s wait: they sync every other linked item, skip the polled
+item, never poll on NOT_READY themselves, and hand any queued post-link items
+to a detached drain rather than waiting on them. No item is ever synced by two
+runs at once (an in-flight item set guards cursor writes). If the item is
+unlinked mid-poll, the loop exits without inserting rows or writing a cursor.
+Cancelled requests end quietly with no error banner. Plaid's
+`/transactions/sync` does not error while an item's first pull runs; it returns
+empty arrays with `transactions_update_status: NOT_READY`, so the loop re-calls
+with backoff (2, 4, 8, 15, 30, 30s; injectable sleeper) until data arrives,
+then stops; the remainder backfills on the next normal sync. Pure helpers
+live in `PlaidSyncReadiness`; an empty not-ready page or a nil/empty
+`next_cursor` never persists a cursor. Fresh-link tokens request
+`transactions.days_requested = 730` (`PlaidLinkOptions`); relink tokens don't.
+UI: the Transactions empty state shows "Importing your transactions…" while the
+loop runs, then (if Plaid still isn't ready) a non-error "Still fetching your
+transactions" state with a Refresh button; the empty state is also
+pull-to-refreshable. The linked-account row in Settings shows a small spinner.
+Callers that find a fully linked app unsynced still self-heal on the next
+foreground sync or pull-to-refresh. Link-flow state (`isPresentingLink`, session, pin,
+relink target) is reset on unlink and at the start of every flow, and the
+"Link another account" button is disabled while Link is presenting
+(reservoir-brn; root cause of the dead-button report is not proven, so
+`startLink`/exit/success paths also log via os_log).
+
 **Settings tab** (adq.7): `Features/Settings/SettingsView.swift` is the real,
 shipped Settings screen, replacing the `#if DEBUG`-only `PlaidDebugLinkView`
 that stood in for it during adq.6.1–6.5. Scoped to linked-account management
@@ -675,27 +709,43 @@ app-wide setting.
     existing one. See "Plaid Link + Keychain token storage" and "Item relink
     / update-mode + connection-status UX" above.
   - **Unlink**: each row's destructive "Unlink" button, gated by a
-    confirmation dialog ("Unlink \<institution\>?" / "You'll need to go
-    through Plaid's login flow again to reconnect. Transactions already
-    imported will stay. The connection itself still exists on Plaid's side
-    until removed there separately — this only removes it from this app."),
-    calls `PlaidServiceLive.unlink(_ item:)` for that specific item (reservoir-
-    loc.3 changed this from a no-arg method that only ever targeted whichever
-    item the single `linkedItem` pointer happened to reference). `unlink(_:)`
-    clears only that item's `LinkedItemStore` entry and Keychain access
-    token — the same two things an environment switch's invalidation hook
-    clears for every item — and deliberately does **not** touch
-    `SpendTransaction` rows or the Plaid sync cursor: previously imported
-    transaction history survives an unlink untouched, and relinking the same
-    institution afterward resumes `/transactions/sync` from wherever it left
-    off rather than re-pulling full history. Before calling `unlink(_:)`,
-    the confirmation's `onDelete` closure also calls
-    `GoalAccountAssociationService.dissociate(itemID:modelContext:)` for the
-    unlinked item — auto-dissociating it from whatever goal it was tied to,
-    so `SavingsGoal.associatedItemIDs` never holds a stale item ID pointing
-    at a connection that no longer exists locally. A dissociate failure
-    (rare) is logged, not surfaced as a second alert — a stale ID self-heals
-    the next time that goal's account section is retoggled.
+    confirmation dialog ("Unlink \<institution\>?") offering two choices plus
+    Cancel: "Unlink and delete its transactions" (first/default, so relinking
+    starts fresh) and "Unlink and keep transactions". The message warns that
+    deleting also removes any edits or goal assignments on those
+    transactions, and that keeping may create duplicates if the account is
+    relinked (relinking mints a new Plaid item_id and restarts the sync
+    cursor). The dialog is the shared `deleteConfirmation` modifier with an
+    optional secondary action. On confirm, `SettingsView` auto-dissociates the
+    item from its goal (`GoalAccountAssociationService.dissociate`), then calls
+    `TransactionImportService.removeLocalData(forItemID:deleteTransactions:)`,
+    which in one save discards that item's queued merge decisions and, for the
+    delete choice, deletes `SpendTransaction` rows with that `plaidItemID` that
+    are purely imported. Manual rows and manual rows merged with an import
+    (`wasMergedFromManual`) are always kept; goal totals are derived from
+    `SavingsGoal.transactions`, so they stay consistent. A failure is shown in
+    a "Couldn't save" alert and the item stays linked. Finally
+    `PlaidServiceLive.unlink(_ item:)` clears that item's `LinkedItemStore`
+    entry, Keychain access token, and sync cursor (reservoir-wo1; both
+    choices, since the cursor is orphaned either way).
+  - **Remove transactions from unlinked accounts** (reservoir-xxm): a
+    destructive button in its own Settings section, shown only when leftovers
+    exist (hidden otherwise) and disabled while any import is running. It
+    cleans up data stranded by unlinks that predate the delete/keep choice (or
+    chose "keep"). `TransactionImportService.removeOrphanedLocalData()` deletes
+    imported `SpendTransaction` rows whose `plaidItemID` is not among
+    `LinkedItemStore.loadAll()`, discards `PendingTransactionMerge` records for
+    non-linked items, and, after the save succeeds, clears
+    `plaid.syncCursor.<env>.<itemID>` cursors for non-linked items in every
+    environment (`PlaidSyncCursorStoring.storedEntries()` enumerates them).
+    Scoping matches unlink-delete: manual rows and manual rows merged with an
+    import are never deleted, and rows or pending merges with a nil/empty
+    `plaidItemID` (legacy) are left alone because they can't be attributed to
+    an unlinked account. A confirmation (the shared `deleteConfirmation`) states
+    the transaction count and that edits/goal assignments are lost. One
+    `saveOrRollback` (rollback restores rows and goal links), shared with
+    `removeLocalData` via a private helper; failure shows the "Couldn't save"
+    alert.
   - Both "Relink" and "Unlink" call `TransactionImportService
     .refreshNeedsAttention()` on success so the Settings tab-bar badge
     clears immediately rather than waiting for the next import.
@@ -866,6 +916,10 @@ to confirm rather than decided unilaterally.
   Today; a shared zero-goals empty state; and full goal create/edit/delete,
   including backdatable `startDate` at creation. See "Goals screen" under
   Architecture above.
+- **Automatic first import** (implemented): linking a bank account starts
+  importing right away, with an "Importing your transactions…" state and a
+  gentle "Still fetching" fallback with a Refresh button if the bank is slow;
+  fresh links request 730 days of history. See "Post-link auto-import" above.
 - **Transactions tab** (implemented): day-grouped, date-descending list of
   every transaction with an All/Variable/Fixed filter, goal-attribution
   indicator per row, tap-to-edit/swipe-to-delete, and a "+" that opens the
@@ -911,6 +965,12 @@ to confirm rather than decided unilaterally.
     -destination 'platform=iOS Simulator,name=<device>,OS=<version>' test
   ```
 - UI tests: `ReservoirUITests/` (XCUITest) — run in the same `test` invocation.
+  `PostLinkImportUITests` covers the post-link import states using
+  `UITEST_PLAID_IMPORT_SCENARIO=notReadyThenReady|neverReady` (scripted
+  NOT_READY responses, shortened poll waits) and a debug-only trigger enabled by
+  `UITEST_ENABLE_POST_LINK_HOOK=1`. Real Plaid Link can't be automated, so the
+  `onLinkSuccess` wiring is covered by unit tests and manual verification, and
+  the UI test calls `runImportAfterLink(itemID:)` directly.
 - Coverage target: 80% minimum on business logic and data model code (see
   `STANDARDS.md` §5). Measure with:
   ```

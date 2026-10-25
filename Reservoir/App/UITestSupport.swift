@@ -65,6 +65,11 @@ enum UITestScenario: String {
     /// `TransactionImportUITests` (adq.6.3's mandated merge-prompt end-to-end coverage).
     case transactionImportMergePrompt
 
+    /// Three imported rows tagged with an item that is not linked ("gone-item") plus one
+    /// manual row — backs the "Remove transactions from unlinked accounts" UI test
+    /// (reservoir-xxm). Pair with `UITEST_SEED_PLAID_LINKED_ITEM=1`.
+    case orphanedImportedTransactions
+
     static var current: UITestScenario? {
         ProcessInfo.processInfo.environment["UITEST_SCENARIO"].flatMap(UITestScenario.init(rawValue:))
     }
@@ -84,6 +89,26 @@ enum UITestScenario: String {
     /// `UITEST_ENABLE_REFRESH_HOOK=1`, which no real launch sets.
     static var isRefreshHookEnabled: Bool {
         ProcessInfo.processInfo.environment["UITEST_ENABLE_REFRESH_HOOK"] == "1"
+    }
+
+    /// Whether `TransactionsView` renders its debug-only "post-link import" trigger
+    /// (reservoir-xle), gated behind `UITEST_ENABLE_POST_LINK_HOOK=1`. Real Plaid Link
+    /// cannot be automated, so this stands in for the `onLinkSuccess` wiring: it calls
+    /// the exact `TransactionImportService.runImportAfterLink(itemID:)` that hook calls,
+    /// for the seeded `uitest-item`. Modeled on `isRefreshHookEnabled`.
+    static var isPostLinkHookEnabled: Bool {
+        ProcessInfo.processInfo.environment["UITEST_ENABLE_POST_LINK_HOOK"] == "1"
+    }
+
+    /// Short not-ready poll waits for the post-link scenarios below, so UI tests don't wait
+    /// out production's 2s/4s/8s/15s/30s backoff. `nil` for every other launch (production
+    /// default). 1.5s x 3: long enough for XCUITest to observe the importing state, and the
+    /// never-ready scenario gives up after about 4.5s.
+    static var postLinkBackoff: [Duration]? {
+        switch ProcessInfo.processInfo.environment["UITEST_PLAID_IMPORT_SCENARIO"] {
+        case "notReadyThenReady", "neverReady": [.milliseconds(1500), .milliseconds(1500), .milliseconds(1500)]
+        default: nil
+        }
     }
 
     /// Shared boilerplate for every stubbed `URLProtocol` below (code review finding:
@@ -193,6 +218,37 @@ enum UITestScenario: String {
         }
     }
 
+    /// Scripted Plaid "initial pull not finished yet" behavior (reservoir-xle). For
+    /// `UITEST_PLAID_IMPORT_SCENARIO=notReadyThenReady`, the first two
+    /// `/transactions/sync` calls return empty arrays with `NOT_READY` (exactly what Plaid
+    /// does, no HTTP error), then one `added` "Coffee Shop" row with
+    /// `INITIAL_UPDATE_COMPLETE`. For `neverReady`, every call returns `NOT_READY`.
+    private final class PlaidNotReadyURLProtocol: StubURLProtocol {
+        nonisolated(unsafe) static var syncCallCount = 0
+        private static let notReadyResponsesBeforeReady = 2
+
+        override func startLoading() {
+            guard request.url?.path.contains("transactions/sync") ?? false else {
+                respond(statusCode: 200, body: Data(#"{}"#.utf8))
+                return
+            }
+            Self.syncCallCount += 1
+            let neverReady = ProcessInfo.processInfo.environment["UITEST_PLAID_IMPORT_SCENARIO"] == "neverReady"
+            let json: String
+            if neverReady || Self.syncCallCount <= Self.notReadyResponsesBeforeReady {
+                json = #"{"added": [], "modified": [], "removed": [], "next_cursor": "", "has_more": false, "transactions_update_status": "NOT_READY"}"#
+            } else {
+                json = """
+                {"added": [{"transaction_id": "uitest-plaid-postlink-1", "amount": 12.50, \
+                "date": "\(UITestScenario.todayDateString)", "merchant_name": "Coffee Shop", "name": "Coffee Shop"}], \
+                "modified": [], "removed": [], "next_cursor": "uitest-cursor-postlink", "has_more": false, \
+                "transactions_update_status": "INITIAL_UPDATE_COMPLETE"}
+                """
+            }
+            respond(statusCode: 200, body: Data(json.utf8))
+        }
+    }
+
     /// A stubbed `URLProtocol` answering `/transactions/sync` with a non-2xx response
     /// carrying an `ITEM_LOGIN_REQUIRED` error body — backs `PlaidRelinkUITests`
     /// (reservoir-adq.6.5), letting it drive the real classification/`needsAttention`
@@ -221,7 +277,8 @@ enum UITestScenario: String {
     /// `PlaidImportMergePromptURLProtocol`. Launched with
     /// `UITEST_PLAID_IMPORT_SCENARIO=itemLoginRequired` set, `/transactions/sync` calls
     /// are answered with a scripted `ITEM_LOGIN_REQUIRED` error — see
-    /// `PlaidItemLoginRequiredURLProtocol`.
+    /// `PlaidItemLoginRequiredURLProtocol`. `notReadyThenReady` / `neverReady`: see
+    /// `PlaidNotReadyURLProtocol`.
     static var plaidURLSession: URLSession {
         if ProcessInfo.processInfo.environment["UITEST_FORCE_PLAID_ERROR"] == "1" {
             let configuration = URLSessionConfiguration.ephemeral
@@ -231,6 +288,11 @@ enum UITestScenario: String {
         if ProcessInfo.processInfo.environment["UITEST_PLAID_IMPORT_SCENARIO"] == "mergePrompt" {
             let configuration = URLSessionConfiguration.ephemeral
             configuration.protocolClasses = [PlaidImportMergePromptURLProtocol.self]
+            return URLSession(configuration: configuration)
+        }
+        if ["notReadyThenReady", "neverReady"].contains(ProcessInfo.processInfo.environment["UITEST_PLAID_IMPORT_SCENARIO"]) {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [PlaidNotReadyURLProtocol.self]
             return URLSession(configuration: configuration)
         }
         if ProcessInfo.processInfo.environment["UITEST_PLAID_IMPORT_SCENARIO"] == "itemLoginRequired" {
@@ -566,6 +628,26 @@ enum UITestScenario: String {
 
         case .transactionsZeroGoals:
             break
+
+        case .orphanedImportedTransactions:
+            for index in 1...3 {
+                context.insert(SpendTransaction(
+                    amount: Decimal(index),
+                    date: .now,
+                    merchantName: "Orphan \(index)",
+                    type: .variable,
+                    entryMethod: .imported,
+                    plaidTransactionID: "gone-\(index)",
+                    plaidItemID: "gone-item"
+                ))
+            }
+            context.insert(SpendTransaction(
+                amount: 9,
+                date: .now,
+                merchantName: "Manual Keep",
+                type: .variable,
+                entryMethod: .manual
+            ))
 
         case .merchantRulesManage:
             context.insert(MerchantRule(merchantName: "Starbucks", type: .variable))

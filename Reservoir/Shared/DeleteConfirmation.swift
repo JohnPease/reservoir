@@ -32,6 +32,10 @@ extension View {
     ///     accessibility identifiers for the two buttons, for UI tests that need to
     ///     target them directly. `nil` (the default) attaches no identifier, matching
     ///     every pre-existing caller's un-identified Delete/Cancel buttons.
+    ///   - secondaryActionTitle / secondaryActionAccessibilityIdentifier / onSecondaryConfirm:
+    ///     an optional second destructive-style action, listed after the primary one and
+    ///     before "Cancel" (reservoir-wo1: Unlink's "delete vs keep transactions" choice).
+    ///     `nil` titles (the default) render no second button, matching every other caller.
     ///   - onConfirm: performs the confirmed action for the pending item.
     func deleteConfirmation<T>(
         pendingItem: Binding<T?>,
@@ -40,6 +44,9 @@ extension View {
         actionTitle: (T) -> String = { _ in "Delete" },
         actionAccessibilityIdentifier: String? = nil,
         cancelAccessibilityIdentifier: String? = nil,
+        secondaryActionTitle: ((T) -> String)? = nil,
+        secondaryActionAccessibilityIdentifier: String? = nil,
+        onSecondaryConfirm: ((T) -> Void)? = nil,
         onDelete onConfirm: @escaping (T) -> Void
     ) -> some View {
         confirmationDialog(
@@ -56,6 +63,13 @@ extension View {
                 pendingItem.wrappedValue = nil
             }
             .accessibilityIdentifier(actionAccessibilityIdentifier)
+            if let secondaryActionTitle, let onSecondaryConfirm {
+                Button(secondaryActionTitle(item), role: .destructive) {
+                    onSecondaryConfirm(item)
+                    pendingItem.wrappedValue = nil
+                }
+                .accessibilityIdentifier(secondaryActionAccessibilityIdentifier)
+            }
             Button("Cancel", role: .cancel) { pendingItem.wrappedValue = nil }
                 .accessibilityIdentifier(cancelAccessibilityIdentifier)
         } message: { item in

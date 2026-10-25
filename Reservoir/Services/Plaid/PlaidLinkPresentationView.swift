@@ -1,5 +1,6 @@
 import SwiftUI
 import LinkKit
+import OSLog
 
 /// Presents the active Plaid Link session as a sheet. Unavoidably coupled to
 /// `LinkKit`'s presentation API (`PlaidLinkSession.sheet()`) — this is the
@@ -13,12 +14,23 @@ import LinkKit
 /// `.plaidLinkPresentation(service: plaidService)`.
 struct PlaidLinkPresentationModifier: ViewModifier {
     @Bindable var service: PlaidServiceLive
+    private let logger = Logger(subsystem: "com.reservoir.app", category: "PlaidLinkPresentation")
 
     func body(content: Content) -> some View {
         content
-            .sheet(isPresented: $service.isPresentingLink) {
+            .sheet(isPresented: $service.isPresentingLink, onDismiss: {
+                logger.info("Link sheet dismissed isPresentingLink=\(service.isPresentingLink, privacy: .public)")
+            }) {
                 if let session = service.linkSession {
                     session.sheet()
+                } else {
+                    // A presented sheet with no session would be an empty, stuck modal
+                    // (reservoir-brn hardening; root cause unproven). Log it and drop the
+                    // flag so the Link button isn't left disabled behind a blank sheet.
+                    Color.clear.onAppear {
+                        logger.error("Link sheet presented without a session; resetting isPresentingLink")
+                        service.isPresentingLink = false
+                    }
                 }
             }
     }

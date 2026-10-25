@@ -69,14 +69,34 @@ struct TransactionsView: View {
                     .padding(.horizontal)
                     .padding(.vertical, 8)
                 }
+                // reservoir-crf: the full-screen importing state below only shows for an empty
+                // list; when rows already exist and a new account is linked (a fresh Link,
+                // including re-adding one after an unlink — an update-mode relink does not
+                // import), show a slim banner instead.
+                if importService?.isInitialImport == true, !transactions.isEmpty {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text("Importing your transactions…")
+                            .font(.footnote)
+                            .foregroundStyle(Color("ReservoirTextSecondary"))
+                        Spacer()
+                    }
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("transactions.importingBanner")
+                }
                 Group {
                     if transactions.isEmpty {
-                        ContentUnavailableView(
-                            "No transactions yet",
-                            systemImage: "list.bullet",
-                            description: Text("Add a transaction to get started.")
-                        )
-                        .accessibilityIdentifier("transactions.emptyState")
+                        // In a ScrollView so the empty states are pull-to-refreshable too
+                        // (reservoir-xle) — previously only the populated List was.
+                        ScrollView {
+                            emptyState
+                                .containerRelativeFrame([.horizontal, .vertical])
+                        }
+                        .refreshable {
+                            await triggerRefresh()
+                        }
                     } else {
                         List {
                             ForEach(sections) { section in
@@ -128,6 +148,17 @@ struct TransactionsView: View {
                             Task { await triggerRefresh() }
                         }
                         .accessibilityIdentifier("transactions.debugRefreshTrigger")
+                    }
+                }
+                // reservoir-xle: same idea for the post-link import. Real Plaid Link can't be
+                // automated, so this calls `runImportAfterLink(itemID:)` — the exact call
+                // `PlaidServiceLive.onLinkSuccess` makes — for the seeded `uitest-item`.
+                if UITestScenario.isPostLinkHookEnabled {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Debug Post-Link") {
+                            Task { await importService?.runImportAfterLink(itemID: "uitest-item") }
+                        }
+                        .accessibilityIdentifier("transactions.debugPostLinkTrigger")
                     }
                 }
                 #endif
@@ -189,6 +220,61 @@ struct TransactionsView: View {
                     }
                 }
             }
+        }
+    }
+
+    /// The empty-list content, chosen by `TransactionsScreenCalculator.emptyStateKind`.
+    @ViewBuilder
+    private var emptyState: some View {
+        switch TransactionsScreenCalculator.emptyStateKind(
+            isInitialImport: importService?.isInitialImport == true,
+            isInitialDataPending: importService?.isInitialDataPending == true
+        ) {
+        case .importing:
+            VStack(spacing: 12) {
+                ProgressView()
+                Text("Importing your transactions…")
+                    .font(.headline)
+                    .foregroundStyle(Color("ReservoirTextPrimary"))
+                Text("This can take a minute the first time.")
+                    .font(.subheadline)
+                    .foregroundStyle(Color("ReservoirTextSecondary"))
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("transactions.importingState")
+        case .stillFetching:
+            ContentUnavailableView {
+                Label("Still fetching your transactions", systemImage: "clock")
+            } description: {
+                Text("They'll appear automatically. Pull down or reopen the app to check again.")
+            } actions: {
+                Button {
+                    Task { await triggerRefresh() }
+                } label: {
+                    if importService?.isImporting == true {
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        Text("Refresh")
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                .buttonStyle(ReservoirPrimaryButtonStyle())
+                .padding(.horizontal, 32)
+                .disabled(importService?.isImporting == true)
+                .accessibilityIdentifier("transactions.refreshButton")
+            }
+            // `.contain` keeps the Refresh button its own identifiable element; a bare
+            // identifier here would be applied over its children.
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("transactions.stillFetchingState")
+        case .none:
+            ContentUnavailableView(
+                "No transactions yet",
+                systemImage: "list.bullet",
+                description: Text("Add a transaction to get started.")
+            )
+            .accessibilityIdentifier("transactions.emptyState")
         }
     }
 

@@ -351,6 +351,78 @@ final class PlaidServiceLiveTests: XCTestCase {
         XCTAssertNil(body["products"], "update-mode's request must omit `products` entirely, per Plaid's update-mode API contract.")
     }
 
+    // MARK: - days_requested / onLinkSuccess (reservoir-xle)
+
+    func test_startLink_requestBody_includesDaysRequested730() async throws {
+        CapturingRelinkURLProtocol.reset()
+        let sut = PlaidServiceLive(keychain: StubKeychainWithToken(), urlSession: makeCapturingRelinkURLSession())
+
+        await sut.startLink()
+
+        let body = try XCTUnwrap(CapturingRelinkURLProtocol.capturedBody)
+        let transactions = try XCTUnwrap(body["transactions"] as? [String: Any])
+        XCTAssertEqual(transactions["days_requested"] as? Int, 730)
+        XCTAssertEqual(PlaidLinkOptions.freshLinkDaysRequested, 730)
+        XCTAssertNotNil(body["products"])
+        XCTAssertNil(body["access_token"])
+    }
+
+    func test_startRelink_requestBody_omitsTransactionsDaysRequested() async throws {
+        CapturingRelinkURLProtocol.reset()
+        let sut = PlaidServiceLive(keychain: StubKeychainWithToken(), urlSession: makeCapturingRelinkURLSession())
+
+        await sut.startRelink(for: LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now))
+
+        let body = try XCTUnwrap(CapturingRelinkURLProtocol.capturedBody)
+        XCTAssertNil(body["transactions"], "update mode can't raise days_requested; Plaid ignores it for existing items.")
+    }
+
+    func test_handleLinkSuccess_firesOnLinkSuccessWithItemID_afterSuccessfulSave() async {
+        clearPersistedLinkedItem()
+        addTeardownBlock { self.clearPersistedLinkedItem() }
+        let sut = PlaidServiceLive(keychain: StubKeychain(), urlSession: makeSuccessfulExchangeURLSession())
+        var fired: [String] = []
+        var itemAlreadySaved = false
+        sut.onLinkSuccess = { itemID in
+            fired.append(itemID)
+            itemAlreadySaved = sut.linkedItems.contains { $0.itemID == itemID }
+        }
+
+        await sut.handleLinkSuccess(publicToken: "public-good", institutionName: "Test Bank")
+
+        XCTAssertEqual(fired, ["item-test"])
+        XCTAssertTrue(itemAlreadySaved, "the hook must fire only after the LinkedItem is saved.")
+    }
+
+    func test_handleLinkSuccess_doesNotFireOnLinkSuccess_whenKeychainSaveFails() async {
+        clearPersistedLinkedItem()
+        addTeardownBlock { self.clearPersistedLinkedItem() }
+        let keychain = StubKeychain()
+        keychain.saveError = KeychainError.unhandled(status: -1)
+        let sut = PlaidServiceLive(keychain: keychain, urlSession: makeSuccessfulExchangeURLSession())
+        var fired = false
+        sut.onLinkSuccess = { _ in fired = true }
+
+        await sut.handleLinkSuccess(publicToken: "public-good", institutionName: "Test Bank")
+
+        XCTAssertFalse(fired)
+    }
+
+    func test_handleLinkSuccess_doesNotFireOnLinkSuccess_whenExchangeFails() async {
+        clearPersistedLinkedItem()
+        addTeardownBlock { self.clearPersistedLinkedItem() }
+        CapturingRelinkURLProtocol.reset()
+        CapturingRelinkURLProtocol.shouldFail = true
+        let sut = PlaidServiceLive(keychain: StubKeychain(), urlSession: makeCapturingRelinkURLSession())
+        var fired = false
+        sut.onLinkSuccess = { _ in fired = true }
+
+        await sut.handleLinkSuccess(publicToken: "public-bad", institutionName: "Test Bank")
+
+        XCTAssertFalse(fired)
+        XCTAssertNotNil(sut.presentedError)
+    }
+
     func test_startRelink_onSuccess_setsLinkTokenAndPresentsLink() async {
         CapturingRelinkURLProtocol.reset()
         CapturingRelinkURLProtocol.linkTokenToReturn = "link-sandbox-distinctive-token"
@@ -365,6 +437,73 @@ final class PlaidServiceLiveTests: XCTestCase {
         XCTAssertEqual(sut.linkToken, "link-sandbox-distinctive-token")
         XCTAssertTrue(sut.isPresentingLink)
         XCTAssertNil(sut.presentedError)
+    }
+
+    // MARK: - Stale presentation state (reservoir-brn; root cause unproven, defensive reset)
+
+    func test_startLink_withStaleIsPresentingLink_resetsThenPresentsAgain() async {
+        CapturingRelinkURLProtocol.reset()
+        let sut = PlaidServiceLive(keychain: StubKeychainWithToken(), urlSession: makeCapturingRelinkURLSession())
+        sut.isPresentingLink = true
+        final class Flag: @unchecked Sendable { var value = false }
+        let sawChange = Flag()
+        withObservationTracking({ _ = sut.isPresentingLink }, onChange: { sawChange.value = true })
+
+        await sut.startLink()
+
+        XCTAssertTrue(sawChange.value, "a stale true must be reset to false first so the sheet binding sees a real false -> true transition.")
+        XCTAssertTrue(sut.isPresentingLink)
+        XCTAssertNotNil(sut.linkSession)
+        XCTAssertNil(sut.presentedError)
+    }
+
+    func test_startLink_afterUnlinkOfRelinkedItem_presentsAgain() async {
+        CapturingRelinkURLProtocol.reset()
+        let linkedItemStore = StubLinkedItemStore(initial: LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now))
+        let sut = PlaidServiceLive(keychain: StubKeychainWithToken(), urlSession: makeCapturingRelinkURLSession(), linkedItemStore: linkedItemStore)
+        await sut.startRelink(for: sut.linkedItem!)
+        XCTAssertTrue(sut.isPresentingLink, "sanity: relink sheet is up.")
+
+        await sut.unlink(sut.linkedItem!)
+
+        XCTAssertFalse(sut.isPresentingLink, "unlink must drop stale presentation state.")
+        XCTAssertNil(sut.linkSession)
+        XCTAssertNil(sut.linkToken)
+
+        await sut.startLink()
+        XCTAssertTrue(sut.isPresentingLink)
+        XCTAssertNotNil(sut.linkSession)
+    }
+
+    func test_unlink_clearsRememberedRelinkFlowForThatItem_soRetryStartsFreshLink() async {
+        CapturingRelinkURLProtocol.reset()
+        let linkedItemStore = StubLinkedItemStore(initial: LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now))
+        let sut = PlaidServiceLive(keychain: StubKeychainWithToken(), urlSession: makeCapturingRelinkURLSession(), linkedItemStore: linkedItemStore)
+        let item = sut.linkedItem!
+        await sut.startRelink(for: item)
+        XCTAssertNotNil(CapturingRelinkURLProtocol.capturedBody?["access_token"], "sanity: that was an update-mode token request.")
+
+        await sut.unlink(item)
+        CapturingRelinkURLProtocol.capturedBody = nil
+        await sut.retry()
+
+        XCTAssertNotNil(CapturingRelinkURLProtocol.capturedBody, "retry must have requested a token.")
+        XCTAssertNil(CapturingRelinkURLProtocol.capturedBody?["access_token"], "retry must start a fresh Link, not an update-mode relink of the unlinked item.")
+    }
+
+    func test_unlink_ofOtherItem_keepsRememberedRelinkFlow() async {
+        CapturingRelinkURLProtocol.reset()
+        let linkedItemStore = StubLinkedItemStore(initial: LinkedItem(itemID: "item-1", institutionName: "A", linkedAt: .now))
+        linkedItemStore.save(LinkedItem(itemID: "item-2", institutionName: "B", linkedAt: .now))
+        let sut = PlaidServiceLive(keychain: StubKeychainWithToken(), urlSession: makeCapturingRelinkURLSession(), linkedItemStore: linkedItemStore)
+        let relinked = sut.linkedItems[0]
+        await sut.startRelink(for: relinked)
+
+        await sut.unlink(sut.linkedItems[1])
+        CapturingRelinkURLProtocol.capturedBody = nil
+        await sut.retry()
+
+        XCTAssertNotNil(CapturingRelinkURLProtocol.capturedBody?["access_token"], "unlinking a different item must not forget this item's relink flow.")
     }
 
     func test_startRelink_withNoStoredAccessToken_doesNotMakeNetworkCall_setsError() async {
@@ -626,6 +765,25 @@ final class PlaidServiceLiveTests: XCTestCase {
         await sut.unlink(LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now))
 
         XCTAssertTrue(linkedItemStore.loadAll().isEmpty, "the persisted store must also be cleared, not just the in-memory copy.")
+    }
+
+    func test_unlink_clearsOnlyThatItemsSyncCursor() async {
+        let linkedItemStore = StubLinkedItemStore(
+            initial: LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now)
+        )
+        let cursorStore = StubCursorStore()
+        cursorStore.setCursor("c1", for: .sandbox, itemID: "item-1")
+        cursorStore.setCursor("c2", for: .sandbox, itemID: "item-2")
+        let sut = PlaidServiceLive(
+            keychain: RecordingKeychain(), urlSession: .shared,
+            environmentStore: StubEnvironmentStore(.sandbox),
+            cursorStore: cursorStore, linkedItemStore: linkedItemStore
+        )
+
+        await sut.unlink(LinkedItem(itemID: "item-1", institutionName: "Test Bank", linkedAt: .now))
+
+        XCTAssertNil(cursorStore.cursor(for: .sandbox, itemID: "item-1"))
+        XCTAssertEqual(cursorStore.cursor(for: .sandbox, itemID: "item-2"), "c2")
     }
 
     func test_unlink_deletesKeychainAccessToken() async {

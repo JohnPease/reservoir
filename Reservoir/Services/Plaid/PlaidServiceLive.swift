@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import LinkKit
+import OSLog
 
 /// Reads Plaid credentials embedded into the app's Info.plist at build time
 /// from `Config/Plaid.xcconfig` (gitignored, see README and
@@ -49,6 +50,15 @@ enum PlaidCredentials {
 /// secret, so it's a plain constant rather than xcconfig-injected.
 enum PlaidOAuthRedirect {
     static let url = URL(string: "https://johnpease.github.io/oauth")!
+}
+
+/// Link-token options that apply only to FRESH links (reservoir-xle).
+enum PlaidLinkOptions {
+    /// `transactions.days_requested` for `/link/token/create`: the maximum history Plaid
+    /// allows (730 days). It is fixed when the item is first linked — Plaid ignores it for
+    /// an existing item and update mode cannot raise it — so `createRelinkToken` must NOT
+    /// send it.
+    static let freshLinkDaysRequested = 730
 }
 
 /// Live implementation of `PlaidService`: owns the LinkKit session lifecycle
@@ -115,11 +125,27 @@ final class PlaidServiceLive: PlaidService {
     /// second one to design against yet — revisit if/when adq.7 actually needs it.
     var onRelinkSuccess: (() -> Void)?
 
+    /// Fires at the very end of `handleLinkSuccess` (reservoir-xle) — i.e. only for a
+    /// fresh Link (a new account, including re-adding one after an unlink), never for an
+    /// update-mode relink (`handleRelinkSuccess` fires `onRelinkSuccess` instead, and does
+    /// not import) — with the new item's ID, once the Keychain token AND the `LinkedItem`
+    /// have both been saved. Never fires when the exchange or the Keychain save failed.
+    /// `SettingsView` wires it to `TransactionImportService.runImportAfterLink(itemID:)`
+    /// so a freshly linked account starts importing without waiting for a foreground or
+    /// pull-to-refresh.
+    ///
+    /// Same single-slot, opt-in idiom as `onRelinkSuccess`, with one caveat: it is wired in
+    /// `SettingsView.onAppear`, so it exists once the Settings tab has appeared. That is
+    /// always true in practice because Link is launched from Settings. If it were unwired,
+    /// nothing is lost permanently: the next foreground/pull-to-refresh import syncs the item.
+    var onLinkSuccess: ((String) -> Void)?
+
     private let keychain: KeychainServicing
     private let urlSession: URLSession
     private let environmentStore: PlaidEnvironmentStoring
     private let cursorStore: PlaidSyncCursorStoring
     private let linkedItemStore: LinkedItemStoring
+    private let logger = Logger(subsystem: "com.reservoir.app", category: "PlaidServiceLive")
 
     /// The environment pinned for the Link flow currently in progress (set
     /// by `startLink()`, cleared once that flow settles). `createLinkToken()`
@@ -220,7 +246,15 @@ final class PlaidServiceLive: PlaidService {
     /// token-creation step and whether the resulting session is update-mode — the
     /// reentrancy guard stays in each caller since `startRelink(for:)` needs to check it
     /// before its own Keychain pre-check runs, not just before this shared tail.
-    private func beginLinkFlow(isRelink: Bool, makeToken: () async throws -> String) async {
+    private func beginLinkFlow(isRelink: Bool, relinking: LinkedItem? = nil, makeToken: () async throws -> String) async {
+        // Start from a clean presentation slate (reservoir-brn). If a previous flow's
+        // state was left behind (e.g. after unlink -> relink), `isPresentingLink` could
+        // still be `true`, and assigning `true` over `true` below would be a no-op for
+        // the sheet binding. Reset first; the token request's await then guarantees a
+        // real false -> true transition, plus an explicit extra tick if it was stale.
+        let wasStale = resetStalePresentationState()
+        relinkingItem = relinking
+        logger.info("beginLinkFlow isRelink=\(isRelink, privacy: .public) wasStalePresenting=\(wasStale, privacy: .public)")
         // Pin the environment for the duration of this Link flow — read
         // fresh here (a new flow always picks up the latest toggle value,
         // per reservoir-adq.6.2), then held steady through
@@ -233,15 +267,38 @@ final class PlaidServiceLive: PlaidService {
             let token = try await makeToken()
             linkToken = token
             linkSession = try makeSession(token: token, isRelink: isRelink)
+            // Re-present on the next run-loop tick if the sheet binding was stale-true, so
+            // SwiftUI observes a genuine false -> true change rather than true over true.
+            if wasStale { await Task.yield() }
             isPresentingLink = true
+            logger.info("isPresentingLink set true isRelink=\(isRelink, privacy: .public)")
         } catch {
+            logger.error("beginLinkFlow failed before presenting: \(String(describing: error), privacy: .public)")
             presentedError = PlaidErrorClassifier.classify(.exchangeError(error))
             // Flow ended before Link ever presented — nothing left to pin for.
             pinnedEnvironment = nil
         }
     }
 
+    /// Clears every piece of per-flow presentation state and returns whether
+    /// `isPresentingLink` was `true` beforehand. Used by `unlink(_:)` and at the start of
+    /// every link flow. **Root cause of reservoir-brn (Link button dead after unlink ->
+    /// relink in one session) is NOT proven** — this is defensive hardening against stale
+    /// flow state; the os_log lines in `startLink`/`beginLinkFlow`/`handleLinkExit`/
+    /// `handleLinkSuccess` exist so a future repro shows which path ran.
+    @discardableResult
+    private func resetStalePresentationState() -> Bool {
+        let wasPresenting = isPresentingLink
+        isPresentingLink = false
+        linkSession = nil
+        linkToken = nil
+        pinnedEnvironment = nil
+        relinkingItem = nil
+        return wasPresenting
+    }
+
     func startLink() async {
+        logger.info("startLink entered isStartingLink=\(self.isStartingLink, privacy: .public) isPresentingLink=\(self.isPresentingLink, privacy: .public)")
         guard !isStartingLink else { return }
         isStartingLink = true
         defer { isStartingLink = false }
@@ -289,6 +346,7 @@ final class PlaidServiceLive: PlaidService {
     }
 
     func handleLinkSuccess(publicToken: String, institutionName: String) async {
+        logger.info("handleLinkSuccess institution=\(institutionName, privacy: .private)")
         isPresentingLink = false
         linkSession = nil
         isExchangingToken = true
@@ -336,9 +394,11 @@ final class PlaidServiceLive: PlaidService {
         linkedItem = item
         linkedItemStore.save(item)
         linkedItems = linkedItemStore.loadAll()
+        onLinkSuccess?(exchange.itemID)
     }
 
     func handleLinkExit(errorType: String?, errorCode: String?) {
+        logger.info("handleLinkExit errorType=\(errorType ?? "nil", privacy: .public) errorCode=\(errorCode ?? "nil", privacy: .public)")
         isPresentingLink = false
         linkSession = nil
         // Link exited without ever reaching handleLinkSuccess — this flow is
@@ -381,9 +441,8 @@ final class PlaidServiceLive: PlaidService {
             return
         }
 
-        relinkingItem = item
         lastAttemptedFlow = .relink(item)
-        await beginLinkFlow(isRelink: true) { try await self.createRelinkToken(accessToken: accessToken) }
+        await beginLinkFlow(isRelink: true, relinking: item) { try await self.createRelinkToken(accessToken: accessToken) }
     }
 
     /// Update-mode Link's `onSuccess` completion — clears `needsAttention` and nothing
@@ -422,14 +481,13 @@ final class PlaidServiceLive: PlaidService {
     /// clears only `LinkedItemStore` (linked-item metadata) and the Keychain access
     /// token, the same two things `PlaidEnvironmentStore.onChange`'s existing
     /// invalidation hook clears on an environment switch. It never touches
-    /// `SpendTransaction` rows — previously imported transaction history survives an
-    /// unlink untouched.
+    /// `SpendTransaction` rows — whether those are kept or deleted is the caller's choice.
     ///
-    /// Does **not** clear the Plaid sync cursor (`PlaidSyncCursorStore`), unlike that
-    /// same environment-switch hook: an environment switch permanently invalidates the
-    /// environment's whole data scope, but relinking the *same* institution after an
-    /// unlink should resume `/transactions/sync` from wherever it left off rather than
-    /// re-pulling full history and re-running dedup against everything again.
+    /// Also clears that item's Plaid sync cursor (reservoir-wo1): relinking after an unlink
+    /// is a fresh Link, which mints a NEW Plaid item_id, so the old cursor is orphaned
+    /// either way and the new item's sync restarts from scratch — it does NOT resume. Deleting (or deliberately
+    /// keeping) the item's imported rows is `TransactionImportService.removeLocalData`'s
+    /// job, called by `SettingsView` per the user's choice in the unlink confirmation.
     ///
     /// Takes an explicit `item` (reservoir-loc.3) rather than always targeting the single
     /// `linkedItem` pointer — `SettingsView` now presents a row per linked item, and each
@@ -439,6 +497,13 @@ final class PlaidServiceLive: PlaidService {
     /// version had.
     func unlink(_ item: LinkedItem) async {
         presentedError = nil
+        // Drop any flow state left over from before the unlink (reservoir-brn): stale
+        // presentation flags/session/pin, a relink target that may be this very item, and
+        // a remembered `.relink` flow for it (Retry must not try to relink a dead item).
+        resetStalePresentationState()
+        if case .relink(let attempted) = lastAttemptedFlow, attempted.itemID == item.itemID {
+            lastAttemptedFlow = nil
+        }
         // Removes only this item (reservoir-loc.1) — never every stored item — so
         // unlinking one account leaves any other linked item's metadata/token intact.
         linkedItemStore.remove(itemID: item.itemID)
@@ -447,6 +512,7 @@ final class PlaidServiceLive: PlaidService {
         if linkedItem?.itemID == item.itemID {
             linkedItem = remaining.first
         }
+        cursorStore.clearCursor(for: environment, itemID: item.itemID)
         try? await keychain.delete(for: PlaidKeychainKey.accessToken(itemID: item.itemID))
     }
 
@@ -539,8 +605,10 @@ final class PlaidServiceLive: PlaidService {
             let country_codes: [String]
             let language: String
             let redirect_uri: String
+            let transactions: TransactionsOptions
 
             struct RequestUser: Encodable { let client_user_id: String }
+            struct TransactionsOptions: Encodable { let days_requested: Int }
         }
         struct ResponseBody: Decodable { let link_token: String }
 
@@ -556,7 +624,8 @@ final class PlaidServiceLive: PlaidService {
             products: ["transactions"],
             country_codes: ["US"],
             language: "en",
-            redirect_uri: PlaidOAuthRedirect.url.absoluteString
+            redirect_uri: PlaidOAuthRedirect.url.absoluteString,
+            transactions: .init(days_requested: PlaidLinkOptions.freshLinkDaysRequested)
         )
         let response: ResponseBody = try await post("/link/token/create", body: body)
         return response.link_token

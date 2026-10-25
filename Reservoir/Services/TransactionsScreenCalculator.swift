@@ -14,6 +14,23 @@ enum TransactionsScreenCalculator {
         var id: String { rawValue }
     }
 
+    /// Which empty-list state the Transactions tab shows (reservoir-xle).
+    enum EmptyStateKind: Equatable {
+        /// A post-link import is in flight.
+        case importing
+        /// Plaid hasn't finished the first pull (post-link poll gave up, or a refresh found
+        /// the item still not ready) — not an error; offers a Refresh button.
+        case stillFetching
+        /// Nothing imported, nothing pending: the plain "No transactions yet".
+        case none
+    }
+
+    static func emptyStateKind(isInitialImport: Bool, isInitialDataPending: Bool) -> EmptyStateKind {
+        if isInitialImport { return .importing }
+        if isInitialDataPending { return .stillFetching }
+        return .none
+    }
+
     static func filtered(_ transactions: [SpendTransaction], by filter: Filter) -> [SpendTransaction] {
         switch filter {
         case .all:
