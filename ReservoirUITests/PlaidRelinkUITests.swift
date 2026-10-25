@@ -253,6 +253,30 @@ final class PlaidRelinkUITests: XCTestCase {
         XCTAssertTrue(app.buttons["settings.unlinkButton.uitest-item-2"].exists)
     }
 
+    /// reservoir-brn regression: Relink and Unlink share one Form row, and with default button
+    /// styles a tap on Unlink also fired Relink, whose Link flow collided with the unlink
+    /// dialog and wedged the sheet presenter. Tapping Unlink must start ONLY the unlink
+    /// confirmation — no Link flow (which, with no real Plaid token service in UI tests,
+    /// would surface as a Settings error message).
+    func testTappingUnlink_doesNotAlsoStartRelinkFlow() {
+        let app = launchedApp { app in
+            app.launchEnvironment["UITEST_SEED_PLAID_LINKED_ITEM"] = "1"
+            app.launchEnvironment["UITEST_SEED_PLAID_TOKEN"] = "1"
+        }
+        app.tabBars.buttons["Settings"].tap()
+
+        let unlink = app.buttons["settings.unlinkButton.uitest-item"]
+        XCTAssertTrue(unlink.waitForExistence(timeout: 5))
+        unlink.tap()
+
+        let confirmButton = app.buttons.matching(identifier: "settings.confirmUnlink").firstMatch
+        XCTAssertTrue(confirmButton.waitForExistence(timeout: 10))
+        // Give a (buggy) simultaneous Relink time to fail token creation and surface its error.
+        sleep(3)
+        XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "settings.errorMessage").firstMatch.exists,
+                       "tapping Unlink must not also start a Relink flow.")
+    }
+
     func testConfirmingUnlink_removesOnlyThatItem_leavesTheOtherItemIntact() {
         let app = launchedApp { app in
             app.launchEnvironment["UITEST_SEED_PLAID_LINKED_ITEM"] = "1"

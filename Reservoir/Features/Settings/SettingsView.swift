@@ -383,14 +383,21 @@ private struct LinkedAccountRow: View {
                     .accessibilityIdentifier("settings.needsAttention.\(item.itemID)")
             }
 
+            // `.borderless` is required (reservoir-brn root cause): two default-style Buttons
+            // in one Form/List row make the whole row the tap target, and a tap fires BOTH
+            // actions. Tapping Unlink also started a Relink, whose Link sheet collided with
+            // the unlink confirmation dialog, wedging SwiftUI's sheet presenter so later
+            // "Link another account" taps silently did nothing until relaunch.
             HStack {
                 Button("Relink", action: onRelink)
+                    .buttonStyle(.borderless)
                     .disabled(isBusy)
                     .accessibilityIdentifier("settings.relinkButton.\(item.itemID)")
 
                 Spacer()
 
                 Button("Unlink", role: .destructive, action: onUnlink)
+                    .buttonStyle(.borderless)
                     .disabled(isBusy)
                     .accessibilityIdentifier("settings.unlinkButton.\(item.itemID)")
             }
