@@ -172,12 +172,16 @@ struct SettingsView: View {
                 .deleteConfirmation(
                     pendingItem: $pendingUnlink,
                     title: { item in "Unlink \(item.institutionName)?" },
-                    message: { _ in
-                        "You'll need to go through Plaid's login flow again to reconnect. "
+                    message: { item in
+                        var text = "You'll need to go through Plaid's login flow again to reconnect. "
                             + "Deleting this account's transactions also removes any edits or goal "
                             + "assignments on them. Keeping them may create duplicates if you relink "
                             + "this account. The connection itself still exists on Plaid's side until "
                             + "removed there separately — this only removes it from this app."
+                        if BudgetAccountService.budgetIncludesAccounts(ofItem: item.itemID, budget: BudgetService.current(in: modelContext)) {
+                            text += "\n\n" + BudgetAccountService.unlinkWarning
+                        }
+                        return text
                     },
                     actionTitle: { _ in "Unlink and delete its transactions" },
                     actionAccessibilityIdentifier: "settings.confirmUnlinkDelete",
@@ -287,6 +291,11 @@ struct SettingsView: View {
                 unlinkError = failure
                 return
             }
+            // Prune the budget's selection while `LinkedAccountStore` still holds this
+            // item's accounts — `service.unlink` clears them.
+            if let failure = BudgetAccountService.prune(itemID: item.itemID, modelContext: modelContext) {
+                unlinkError = failure
+            }
             await service.unlink(item)
             importService.refreshNeedsAttention()
         }
@@ -322,6 +331,11 @@ struct SettingsView: View {
     }
 
     private func applyEnvironment(_ newValue: PlaidEnvironment) {
+        // `environmentStore.set` fires the invalidation that clears every item's accounts,
+        // so drop them from the budget's selection first (while they can still be read).
+        if newValue != environment {
+            BudgetAccountService.prune(itemIDs: service.linkedItems.map(\.itemID), modelContext: modelContext)
+        }
         environmentStore.set(newValue)
         environment = newValue
         pendingEnvironment = nil

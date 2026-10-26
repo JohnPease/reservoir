@@ -125,4 +125,29 @@ enum BudgetCalculator {
         if budget.selectedAccountIDs.isEmpty { return .chooseAccounts }
         return .active
     }
+
+    /// Everything a budget card renders, resolved in one place so the Today hero and the
+    /// Plans card can't drift: the gating state, plus the figures only when `.active`
+    /// (the 730-day loop isn't run while syncing or with no accounts selected).
+    struct CardModel: Equatable {
+        let state: CardState
+        let summary: TodayScreenCalculator.Summary?
+    }
+
+    /// `nil` when there is no budget.
+    static func cardModel(
+        budget: Budget?,
+        allTransactions: [SpendTransaction],
+        isAccountBackfillComplete: Bool,
+        referenceDate: Date,
+        calendar: Calendar = .current
+    ) -> CardModel? {
+        guard let budget else { return nil }
+        let state = cardState(for: budget, isAccountBackfillComplete: isAccountBackfillComplete)
+        guard state == .active else { return CardModel(state: state, summary: nil) }
+        return CardModel(
+            state: state,
+            summary: summary(budget: budget, allTransactions: allTransactions, referenceDate: referenceDate, calendar: calendar)
+        )
+    }
 }

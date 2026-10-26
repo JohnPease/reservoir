@@ -11,7 +11,7 @@ final class GoalsScreenUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["UITEST_SCENARIO"] = scenario
         app.launch()
-        app.tabBars.buttons["Goals"].tap()
+        app.tabBars.buttons["Plans"].tap()
         return app
     }
 

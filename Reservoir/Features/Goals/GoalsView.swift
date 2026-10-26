@@ -2,7 +2,8 @@ import SwiftUI
 import SwiftData
 import OSLog
 
-/// The Goals tab (adq.5): active goals, completed-but-undismissed goals, and the shared
+/// The Plans tab (adq.5, renamed from "Goals" by reservoir-j8t): the monthly budget
+/// section, then active goals, completed-but-undismissed goals, and the shared
 /// zero-goals empty state. Dismissed goals never appear here (or anywhere) — dismissal
 /// is terminal, per `TodayScreenCalculator`. All lifecycle filtering/sorting and
 /// goal-specific math live in `TodayScreenCalculator`/`GoalsScreenCalculator`, not here
@@ -16,7 +17,16 @@ struct GoalsView: View {
     @Environment(TodayClock.self) private var todayClock
 
     @Query(sort: \SavingsGoal.targetDate) private var goals: [SavingsGoal]
+    @Query(sort: \Budget.createdAt) private var budgets: [Budget]
+    @Query private var transactions: [SpendTransaction]
 
+    /// Read for `isAccountBackfillComplete` only — the budget card shows "Syncing account
+    /// data..." instead of numbers until account backfill finishes.
+    @Environment(TransactionImportService.self) private var importService: TransactionImportService?
+
+    @State private var isShowingCreateBudget = false
+    @State private var budgetPendingEdit: Budget?
+    @State private var budgetPendingDelete: Budget?
     @State private var isShowingCreateGoal = false
     @State private var goalPendingEdit: SavingsGoal?
     @State private var goalPendingDelete: SavingsGoal?
@@ -54,9 +64,32 @@ struct GoalsView: View {
             completedUndismissedGoals: completedGoals
         )
 
+        let budget = budgets.first
+        let budgetModel = BudgetCalculator.cardModel(
+            budget: budget,
+            allTransactions: transactions,
+            isAccountBackfillComplete: importService?.isAccountBackfillComplete ?? true,
+            referenceDate: todayClock.referenceDate,
+            calendar: calendar
+        )
+
         NavigationStack {
             ScrollView {
                 VStack(spacing: 20) {
+                    sectionHeader("Monthly budget")
+                    if let budget, let budgetModel {
+                        BudgetCardView(
+                            budget: budget,
+                            state: budgetModel.state,
+                            summary: budgetModel.summary,
+                            onEdit: { budgetPendingEdit = budget },
+                            onDelete: { budgetPendingDelete = budget }
+                        )
+                    } else {
+                        BudgetSetRowView { isShowingCreateBudget = true }
+                    }
+
+                    sectionHeader("Savings goals")
                     if hasNoGoalsAtAll {
                         NoActiveGoalPromptView(
                             onCreateGoal: { isShowingCreateGoal = true },
@@ -93,7 +126,7 @@ struct GoalsView: View {
                 .padding()
             }
             .background(Color("ReservoirBackground"))
-            .navigationTitle("Goals")
+            .navigationTitle("Plans")
             .toolbar {
                 if !hasNoGoalsAtAll {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -110,6 +143,17 @@ struct GoalsView: View {
         .sheet(isPresented: $isShowingCreateGoal) {
             GoalFormView(mode: .create, accessibilityIdentifier: "goals.createGoalSheet")
         }
+        .sheet(isPresented: $isShowingCreateBudget) {
+            BudgetFormView(mode: .create, accessibilityIdentifier: "budget.createBudgetSheet")
+        }
+        .editSheet(pendingItem: $budgetPendingEdit) { budget in
+            BudgetFormView(mode: .edit(budget), accessibilityIdentifier: "budget.editBudgetSheet")
+        }
+        .deleteConfirmation(
+            pendingItem: $budgetPendingDelete,
+            title: { _ in "Delete your monthly budget? Your transactions aren't affected." },
+            onDelete: deleteBudget
+        )
         .editSheet(pendingItem: $goalPendingEdit) { goal in
             GoalFormView(mode: .edit(goal), accessibilityIdentifier: "goals.editGoalSheet")
         }
@@ -119,6 +163,10 @@ struct GoalsView: View {
             onDelete: delete
         )
         .saveErrorAlert($actionError)
+    }
+
+    private func deleteBudget(_ budget: Budget) {
+        actionError = BudgetService.delete(budget, modelContext: modelContext)
     }
 
     /// "Delete this goal? Its N attributed transactions will no longer count toward any

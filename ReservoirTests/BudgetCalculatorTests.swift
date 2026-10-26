@@ -202,6 +202,23 @@ final class BudgetCalculatorTests: XCTestCase {
         XCTAssertNil(BudgetCalculator.CardState.active.message)
     }
 
+    func testCardModelOnlyComputesFiguresWhenActive() throws {
+        XCTAssertNil(BudgetCalculator.cardModel(budget: nil, allTransactions: [], isAccountBackfillComplete: true, referenceDate: date(2026, 1, 4), calendar: calendar))
+
+        let budget = makeBudget(start: date(2026, 1, 1))
+        let syncing = BudgetCalculator.cardModel(budget: budget, allTransactions: [], isAccountBackfillComplete: false, referenceDate: date(2026, 1, 4), calendar: calendar)
+        XCTAssertEqual(syncing, .init(state: .syncing, summary: nil))
+
+        budget.selectedAccountIDs = []
+        let empty = BudgetCalculator.cardModel(budget: budget, allTransactions: [], isAccountBackfillComplete: true, referenceDate: date(2026, 1, 4), calendar: calendar)
+        XCTAssertEqual(empty, .init(state: .chooseAccounts, summary: nil))
+
+        budget.selectedAccountIDs = ["acct-1"]
+        let active = BudgetCalculator.cardModel(budget: budget, allTransactions: [], isAccountBackfillComplete: true, referenceDate: date(2026, 1, 4), calendar: calendar)
+        XCTAssertEqual(active?.state, .active)
+        XCTAssertEqual(active?.summary?.carriedForward, 300)
+    }
+
     // MARK: - Performance sanity
 
     func testSummaryOver730DayWindowWithManyTransactionsIsFast() throws {

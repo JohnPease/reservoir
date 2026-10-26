@@ -49,7 +49,7 @@ struct RootTabView: View {
                 .tag(AppTab.today)
 
             GoalsView()
-                .tabItem { Label("Goals", systemImage: "target") }
+                .tabItem { Label("Plans", systemImage: "target") }
                 .tag(AppTab.goals)
 
             TransactionsView()
