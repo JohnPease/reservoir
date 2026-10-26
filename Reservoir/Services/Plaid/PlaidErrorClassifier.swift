@@ -113,6 +113,15 @@ enum PlaidErrorClassifier {
         }
     }
 
+    /// Plaid's `/transactions/sync` error code for "the item's data changed while you
+    /// were paginating". Not a user-facing failure: the caller restarts the pagination
+    /// loop from its starting cursor (bounded) before ever classifying/surfacing it.
+    static let syncMutationDuringPaginationCode = "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION"
+
+    static func isSyncMutationDuringPagination(errorCode: String?) -> Bool {
+        errorCode == syncMutationDuringPaginationCode
+    }
+
     private static func isNetworkURLError(_ error: URLError) -> Bool {
         switch error.code {
         case .notConnectedToInternet,

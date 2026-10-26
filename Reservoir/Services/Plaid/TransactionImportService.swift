@@ -16,12 +16,31 @@ struct PlaidTransaction: Decodable {
     let date: String
     let merchant_name: String?
     let name: String
+    /// Plaid account the transaction belongs to (reservoir-j8t). Always present on real
+    /// responses; decoded optionally so older fixtures keep decoding.
+    var account_id: String? = nil
+}
+
+/// One entry of `/transactions/sync`'s top-level `accounts` array (reservoir-j8t). Each
+/// page lists only the accounts its own transactions reference, and a no-change sync
+/// returns `[]`, so callers must merge across pages (`LinkedAccount.upserting`) and never
+/// treat absence as deletion. Fields beyond `account_id`/`name` are lenient so an odd
+/// payload doesn't fail the whole page.
+struct PlaidAccount: Decodable, Equatable {
+    let account_id: String
+    let name: String
+    var official_name: String? = nil
+    var mask: String? = nil
+    var type: String? = nil
+    var subtype: String? = nil
 }
 
 /// Plaid's `/transactions/sync` `removed` list entries — just the ID of a transaction
 /// that no longer exists on Plaid's side.
 struct PlaidRemovedTransaction: Decodable {
     let transaction_id: String
+    /// Documented on removed entries; unused so far, decoded for completeness.
+    var account_id: String? = nil
 }
 
 struct PlaidSyncRequestBody: Encodable {
@@ -46,6 +65,9 @@ struct PlaidSyncResponseBody: Decodable {
     /// `TRANSACTIONS_UPDATE_STATUS_UNKNOWN`. A plain optional `String` rather than an enum
     /// so an absent key or a value Plaid adds later decodes instead of throwing.
     let transactions_update_status: String?
+    /// Accounts referenced by this page (reservoir-j8t) — see `PlaidAccount`. Optional so
+    /// responses without the key still decode.
+    var accounts: [PlaidAccount]? = nil
 }
 
 /// Pure interpretation of a `/transactions/sync` response's readiness (reservoir-xle).
@@ -205,6 +227,8 @@ final class TransactionImportService {
     private let environmentStore: PlaidEnvironmentStoring
     private let cursorStore: PlaidSyncCursorStoring
     private let linkedItemStore: LinkedItemStoring
+    private let linkedAccountStore: LinkedAccountStoring
+    private let backfillStore: PlaidAccountBackfillStoring
     private let logger: Logger
     private let sleep: @MainActor (Duration) async throws -> Void
     private let postLinkBackoff: [Duration]
@@ -224,6 +248,8 @@ final class TransactionImportService {
         environmentStore: PlaidEnvironmentStoring = PlaidEnvironmentStore(),
         cursorStore: PlaidSyncCursorStoring = PlaidSyncCursorStore(),
         linkedItemStore: LinkedItemStoring = LinkedItemStore(),
+        linkedAccountStore: LinkedAccountStoring = LinkedAccountStore(),
+        backfillStore: PlaidAccountBackfillStoring = PlaidAccountBackfillStore(),
         logger: Logger = Logger(subsystem: "com.reservoir.app", category: "TransactionImportService"),
         postLinkBackoff: [Duration] = TransactionImportService.defaultPostLinkBackoff,
         sleep: @escaping @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
@@ -236,13 +262,35 @@ final class TransactionImportService {
         self.environmentStore = environmentStore
         self.cursorStore = cursorStore
         self.linkedItemStore = linkedItemStore
+        self.linkedAccountStore = linkedAccountStore
+        self.backfillStore = backfillStore
         self.logger = logger
         // OR across every linked item (reservoir-loc.2) — see the property's doc comment
         // for why a single-item `.first?.needsAttention` read would silently mask a
         // non-first item's login-required state once more than one item is linked.
         self.needsAttention = linkedItemStore.loadAll().contains { $0.needsAttention }
         hydrateMergeQueue()
+        refreshAccountBackfillStatus()
     }
+
+    /// True when every linked item has finished its one-time account backfill (the
+    /// cursor-reset replay that stamps `plaidAccountID` onto pre-existing rows;
+    /// reservoir-j8t) in the current environment — vacuously true with no linked items.
+    /// Budget UI uses `!isAccountBackfillComplete` to show "Syncing account data...".
+    /// Refreshed at init, at the end of every import run, and after local-data removal.
+    private(set) var isAccountBackfillComplete = true
+
+    /// Recomputes `isAccountBackfillComplete` from the stores.
+    func refreshAccountBackfillStatus() {
+        let environment = environmentStore.current
+        isAccountBackfillComplete = linkedItemStore.loadAll().allSatisfy {
+            backfillStore.isComplete(for: environment, itemID: $0.itemID)
+        }
+    }
+
+    /// How many times one item's pagination may restart after Plaid's
+    /// `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION` before the error is surfaced.
+    static let maxPaginationMutationRestarts = 3
 
     /// Re-reads `needsAttention` from `linkedItemStore` on demand — see the property's
     /// doc comment for why this exists alongside the automatic sync at the start of every
@@ -391,6 +439,7 @@ final class TransactionImportService {
     /// `onlyItemID` scopes the run to one linked item; `pollsUntilReady` enables the
     /// bounded not-ready re-poll loop.
     private func performImport(onlyItemID: String?, pollsUntilReady: Bool) async {
+        defer { refreshAccountBackfillStatus() }
         presentedError = nil
         presentedErrorDetail = nil
 
@@ -447,7 +496,21 @@ final class TransactionImportService {
             }
             sawAnyAccessToken = true
 
-            var requestCursor = cursorStore.cursor(for: environment, itemID: itemID)
+            // One-time account backfill (reservoir-j8t): an item that already has a stored
+            // cursor but no "backfill done" flag replays from a nil cursor so every existing
+            // row can be stamped with its `plaidAccountID` (safe: `processPage` leaves
+            // already-imported rows alone apart from stamping a nil account). The old
+            // stored cursor is left untouched until the whole replay finishes; the replay's
+            // latest cursor is held in memory (`replayCursor`) and only then swapped in. A
+            // fresh link (no stored cursor) paginates normally and just sets the flag when
+            // its pass completes.
+            let storedCursor = cursorStore.cursor(for: environment, itemID: itemID)
+            let isReplayingForBackfill = storedCursor != nil && !backfillStore.isComplete(for: environment, itemID: itemID)
+            var requestCursor = isReplayingForBackfill ? nil : storedCursor
+            let paginationStartCursor = requestCursor
+            var replayCursor: String?
+            var mutationRestarts = 0
+            var passCompletedCleanly = false
             var hasMore = true
             var pollAttempt = 0
             var lastResponseNotReady = false
@@ -464,6 +527,20 @@ final class TransactionImportService {
                     if Self.isCancellation(error) {
                         lastResponseNotReady = false
                         break
+                    }
+                    // Plaid reports the item's data changed mid-pagination: the documented
+                    // recovery is to restart the pagination loop from the cursor it began
+                    // with, not to surface an error. Replayed pages are safe (`added` for an
+                    // existing row only stamps a nil account; `modified`/`removed` are
+                    // idempotent). Bounded so a perpetually-mutating item still surfaces.
+                    if let apiError = error as? PlaidAPIError,
+                       PlaidErrorClassifier.isSyncMutationDuringPagination(errorCode: apiError.errorCode),
+                       mutationRestarts < Self.maxPaginationMutationRestarts {
+                        mutationRestarts += 1
+                        requestCursor = paginationStartCursor
+                        replayCursor = nil
+                        passCompletedCleanly = false
+                        continue
                     }
                     // A decoded Plaid item-level error body (reservoir-adq.6.5) is
                     // classified distinctly from every other failure here — a genuine
@@ -496,6 +573,9 @@ final class TransactionImportService {
                 // must not be written either.
                 guard isStillLinked(itemID) else { lastResponseNotReady = false; break }
 
+                // Merge this page's account metadata (never deleting on absence).
+                upsertAccounts(response.accounts, item: item)
+
                 let pageResult = processPage(
                     response,
                     manualTransactions: &manualTransactions,
@@ -513,7 +593,11 @@ final class TransactionImportService {
                     // Never a nil/empty cursor, never one from a not-ready empty page
                     // (reservoir-xle) — see `PlaidSyncReadiness.cursorToPersist(from:)`.
                     if let cursor = PlaidSyncReadiness.cursorToPersist(from: response) {
-                        cursorStore.setCursor(cursor, for: environment, itemID: itemID)
+                        if isReplayingForBackfill {
+                            replayCursor = cursor
+                        } else {
+                            cursorStore.setCursor(cursor, for: environment, itemID: itemID)
+                        }
                         requestCursor = cursor
                     }
                     hasMore = response.has_more
@@ -522,6 +606,7 @@ final class TransactionImportService {
                 }
 
                 lastResponseNotReady = pageResult.allHandled && PlaidSyncReadiness.shouldRetry(response)
+                passCompletedCleanly = pageResult.allHandled && !response.has_more && !lastResponseNotReady
                 if lastResponseNotReady, pollsUntilReady, pollAttempt < postLinkBackoff.count,
                    !Task.isCancelled, isStillLinked(itemID) {
                     do {
@@ -535,6 +620,21 @@ final class TransactionImportService {
                 }
             }
             if lastResponseNotReady { anyItemStillNotReady = true }
+
+            // The flag is set only after a pass that finished (`has_more == false`, every
+            // page handled, not a not-ready empty page) for an item that is still linked.
+            if passCompletedCleanly, isStillLinked(itemID) {
+                if isReplayingForBackfill {
+                    // Swap the replay's final cursor in only now; without one the old
+                    // cursor stays and the flag stays unset (retried next run).
+                    if let replayCursor {
+                        cursorStore.setCursor(replayCursor, for: environment, itemID: itemID)
+                        backfillStore.setComplete(for: environment, itemID: itemID)
+                    }
+                } else {
+                    backfillStore.setComplete(for: environment, itemID: itemID)
+                }
+            }
         }
 
         guard sawAnyAccessToken else {
@@ -549,6 +649,13 @@ final class TransactionImportService {
         // not-ready state of the item it is waiting on.
         if !sawError, pollsUntilReady || initialImportItemID == nil { isInitialDataPending = anyItemStillNotReady }
         lastImportSummary = summary
+    }
+
+    private func upsertAccounts(_ accounts: [PlaidAccount]?, item: LinkedItem) {
+        guard let accounts, !accounts.isEmpty else { return }
+        linkedAccountStore.upsert(accounts.map {
+            LinkedAccount($0, itemID: item.itemID, institutionName: item.institutionName)
+        })
     }
 
     private func isStillLinked(_ itemID: String) -> Bool {
@@ -601,8 +708,31 @@ final class TransactionImportService {
             manualTransactions.removeAll { queuedManualIDs.contains($0.persistentModelID) }
         }
 
+        var rowStamps: [(row: SpendTransaction, accountID: String)] = []
+        var queuedStamps: [(plaidTransactionID: String, accountID: String)] = []
+
         for raw in response.added {
             guard let mapped = PlaidTransactionMapper.map(raw) else { continue }
+
+            // SAFE REPLAY (reservoir-j8t): an `added` entry for a transaction we already
+            // hold (the account backfill replays history from a nil cursor, and a
+            // pagination restart re-delivers pages) must change nothing except stamping a
+            // nil `plaidAccountID`. Handled BEFORE dedup matching so a replay can never
+            // queue a merge prompt, and before any `insert` so `@Attribute(.unique)`'s
+            // upsert-on-conflict can never silently replace a row's overrides, goal link
+            // or merge state.
+            if let existing = importedByPlaidID[mapped.plaidTransactionID] {
+                if existing.plaidAccountID == nil, let accountID = mapped.accountID {
+                    rowStamps.append((existing, accountID))
+                }
+                continue
+            }
+            if let queuedIndex = mergeQueue.firstIndex(where: { $0.id == mapped.plaidTransactionID }) {
+                if let accountID = mapped.accountID, mergeQueue[queuedIndex].incoming.accountID == nil {
+                    queuedStamps.append((mapped.plaidTransactionID, accountID))
+                }
+                continue
+            }
 
             if let match = TransactionDedupMatcher.findMatch(for: mapped, existingManualTransactions: manualTransactions) {
                 // Persist the decision (review findings 2+5) so it survives process
@@ -618,7 +748,8 @@ final class TransactionImportService {
                     incomingDate: mapped.date,
                     incomingMerchantName: mapped.merchantName,
                     manualTransaction: match,
-                    plaidItemID: sourceItemID
+                    plaidItemID: sourceItemID,
+                    plaidAccountID: mapped.accountID
                 )
                 let failureMessage = PersistenceSaveHelper.saveOrRollback(
                     modelContext: modelContext,
@@ -654,6 +785,10 @@ final class TransactionImportService {
                 importedByPlaidID[mapped.plaidTransactionID] = newTransaction
                 result.summary.added += 1
             }
+        }
+
+        if !rowStamps.isEmpty || !queuedStamps.isEmpty {
+            if !applyAccountStamps(rowStamps, queuedStamps) { result.allHandled = false }
         }
 
         for raw in response.modified {
@@ -758,6 +893,52 @@ final class TransactionImportService {
         return result
     }
 
+    /// Writes the account stamps gathered by `processPage`'s safe-replay branch in one
+    /// save: only `plaidAccountID` on rows/records where it is still nil, and the
+    /// matching in-memory queued decision's `incoming` so a later "Merge" carries it.
+    /// Returns `false` (and rolls back) on a save failure.
+    private func applyAccountStamps(
+        _ rowStamps: [(row: SpendTransaction, accountID: String)],
+        _ queuedStamps: [(plaidTransactionID: String, accountID: String)]
+    ) -> Bool {
+        let records: [(record: PendingTransactionMerge, accountID: String)] = queuedStamps.compactMap { stamp in
+            fetchPendingMerge(plaidTransactionID: stamp.plaidTransactionID).map { ($0, stamp.accountID) }
+        }
+        let failureMessage = PersistenceSaveHelper.saveOrRollback(
+            modelContext: modelContext,
+            mutate: {
+                for stamp in rowStamps where stamp.row.plaidAccountID == nil { stamp.row.plaidAccountID = stamp.accountID }
+                for stamp in records where stamp.record.plaidAccountID == nil { stamp.record.plaidAccountID = stamp.accountID }
+            },
+            rollback: {
+                for stamp in rowStamps where stamp.row.plaidAccountID == stamp.accountID { stamp.row.plaidAccountID = nil }
+                for stamp in records where stamp.record.plaidAccountID == stamp.accountID { stamp.record.plaidAccountID = nil }
+            },
+            logger: logger
+        )
+        if let failureMessage {
+            logger.error("Failed to stamp plaidAccountID: \(failureMessage, privacy: .public)")
+            return false
+        }
+        for stamp in queuedStamps {
+            guard let index = mergeQueue.firstIndex(where: { $0.id == stamp.plaidTransactionID }) else { continue }
+            let decision = mergeQueue[index]
+            let incoming = decision.incoming
+            mergeQueue[index] = PendingMergeDecision(
+                id: decision.id,
+                manualTransaction: decision.manualTransaction,
+                incoming: MappedPlaidTransaction(
+                    plaidTransactionID: incoming.plaidTransactionID,
+                    amount: incoming.amount,
+                    date: incoming.date,
+                    merchantName: incoming.merchantName,
+                    accountID: stamp.accountID
+                )
+            )
+        }
+        return true
+    }
+
     /// Shared by the `removed` loop and the `modified` loop's non-positive-amount path
     /// (review finding 4) — both need to either hard-delete a pure import or revert a
     /// merge-derived row back to `.manual`, identically (STANDARDS §3, no near-duplicate
@@ -770,6 +951,7 @@ final class TransactionImportService {
                 mutate: {
                     existing.entryMethod = .manual
                     existing.plaidTransactionID = nil
+                    existing.plaidAccountID = nil
                     existing.wasMergedFromManual = false
                 },
                 rollback: { original.restore(to: existing) },
@@ -796,14 +978,17 @@ final class TransactionImportService {
         let originalAmount = record.incomingAmount
         let originalDate = record.incomingDate
         let originalMerchantName = record.incomingMerchantName
+        let originalAccountID = record.plaidAccountID
         let failureMessage = PersistenceSaveHelper.saveOrRollback(
             modelContext: modelContext,
             mutate: {
                 record.incomingAmount = mapped.amount
                 record.incomingDate = mapped.date
                 record.incomingMerchantName = mapped.merchantName
+                if let accountID = mapped.accountID { record.plaidAccountID = accountID }
             },
             rollback: {
+                record.plaidAccountID = originalAccountID
                 record.incomingAmount = originalAmount
                 record.incomingDate = originalDate
                 record.incomingMerchantName = originalMerchantName
@@ -849,6 +1034,7 @@ final class TransactionImportService {
         let type: TransactionType
         let entryMethod: EntryMethod
         let plaidTransactionID: String?
+        let plaidAccountID: String?
         let wasMergedFromManual: Bool
 
         init(_ transaction: SpendTransaction) {
@@ -858,6 +1044,7 @@ final class TransactionImportService {
             type = transaction.type
             entryMethod = transaction.entryMethod
             plaidTransactionID = transaction.plaidTransactionID
+            plaidAccountID = transaction.plaidAccountID
             wasMergedFromManual = transaction.wasMergedFromManual
         }
 
@@ -868,6 +1055,7 @@ final class TransactionImportService {
             transaction.type = type
             transaction.entryMethod = entryMethod
             transaction.plaidTransactionID = plaidTransactionID
+            transaction.plaidAccountID = plaidAccountID
             transaction.wasMergedFromManual = wasMergedFromManual
         }
     }
@@ -880,6 +1068,8 @@ final class TransactionImportService {
         existing.amount = mapped.amount
         existing.date = mapped.date
         existing.merchantName = mapped.merchantName
+        // Stamp (or refresh) the account when Plaid supplies one (reservoir-j8t).
+        if let accountID = mapped.accountID { existing.plaidAccountID = accountID }
         if !existing.isManualOverride {
             existing.type = MerchantMatcher.match(rules: rules, merchantName: mapped.merchantName) ?? .variable
         }
@@ -929,7 +1119,8 @@ final class TransactionImportService {
             from: decision.incoming,
             rules: rules,
             attributableGoals: attributableGoals,
-            sourceItemID: record?.plaidItemID
+            sourceItemID: record?.plaidItemID,
+            sourceAccountID: record?.plaidAccountID ?? decision.incoming.accountID
         )
         let failureMessage = PersistenceSaveHelper.saveOrRollback(
             modelContext: modelContext,
@@ -972,7 +1163,8 @@ final class TransactionImportService {
         from mapped: MappedPlaidTransaction,
         rules: [MerchantRule],
         attributableGoals: [SavingsGoal],
-        sourceItemID: String? = nil
+        sourceItemID: String? = nil,
+        sourceAccountID: String? = nil
     ) -> SpendTransaction {
         let type = MerchantMatcher.match(rules: rules, merchantName: mapped.merchantName) ?? .variable
         let goal = sourceItemID.flatMap { GoalAccountAssociationService.associatedGoal(for: $0, in: attributableGoals) }
@@ -985,6 +1177,7 @@ final class TransactionImportService {
             entryMethod: .imported,
             plaidTransactionID: mapped.plaidTransactionID,
             plaidItemID: sourceItemID,
+            plaidAccountID: sourceAccountID ?? mapped.accountID,
             isManualOverride: false,
             savingsGoal: goal
         )
@@ -1009,7 +1202,8 @@ final class TransactionImportService {
                 plaidTransactionID: record.plaidTransactionID,
                 amount: record.incomingAmount,
                 date: record.incomingDate,
-                merchantName: record.incomingMerchantName
+                merchantName: record.incomingMerchantName,
+                accountID: record.plaidAccountID
             )
             return PendingMergeDecision(id: record.plaidTransactionID, manualTransaction: manual, incoming: incoming)
         }
@@ -1105,6 +1299,8 @@ final class TransactionImportService {
         if failure == nil {
             for entry in targets.cursors {
                 cursorStore.clearCursor(for: entry.environment, itemID: entry.itemID)
+                backfillStore.clear(for: entry.environment, itemID: entry.itemID)
+                linkedAccountStore.removeAll(itemID: entry.itemID)
             }
         }
         return failure

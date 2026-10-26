@@ -8,6 +8,16 @@ struct MappedPlaidTransaction: Equatable {
     let amount: Decimal
     let date: Date
     let merchantName: String
+    /// Plaid account the transaction belongs to; nil when the payload carried none.
+    let accountID: String?
+
+    init(plaidTransactionID: String, amount: Decimal, date: Date, merchantName: String, accountID: String? = nil) {
+        self.plaidTransactionID = plaidTransactionID
+        self.amount = amount
+        self.date = date
+        self.merchantName = merchantName
+        self.accountID = accountID
+    }
 }
 
 /// Maps Plaid's wire-format `PlaidTransaction` (see `TransactionImportService`'s DTOs)
@@ -46,7 +56,8 @@ enum PlaidTransactionMapper {
             plaidTransactionID: transaction.transaction_id,
             amount: transaction.amount,
             date: date,
-            merchantName: resolvedName
+            merchantName: resolvedName,
+            accountID: transaction.account_id
         )
     }
 
