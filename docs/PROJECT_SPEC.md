@@ -22,6 +22,15 @@ Personal iOS app for tracking spending against a daily limit derived from saving
     2/4/8/15/30/30s, about 89s total, then gives up quietly; the next
     foreground or pull-to-refresh sync picks the data up). Still no
     background timer or webhooks.
+  - Account-level capture (reservoir-j8t): `/transactions/sync` `account_id`
+    is stored on each imported transaction (`plaidAccountID`) and account
+    metadata (name, mask, type, subtype) from the response's `accounts` array
+    is merged across pages into `LinkedAccountStore` (pages list only the
+    accounts they reference; absence never deletes). Existing rows are
+    backfilled once per item by resetting the sync cursor and replaying history
+    (up to 730 days); replayed transactions only get a nil account stamped and
+    never change type, overrides, goal links or merge state, and never queue
+    merge prompts. The old cursor is kept until the replay completes.
   - History depth: fresh links request `transactions.days_requested = 730`
     (Plaid's max) in `/link/token/create`. It is fixed at first link; update-mode
     (relink) tokens don't send it because Plaid ignores it for existing items.
@@ -62,7 +71,8 @@ boundary with the device — acceptable for a single-user app.
 | Entity | Key fields |
 |---|---|
 | `SavingsGoal` | `targetAmount`, `targetDate`, `startDate`, `startingBalance`, derived `currentBalance`, derived `dailyBase` (fixed at creation/edit, see Core mechanic) |
-| `Transaction` | `amount`, `date`, `merchantName`, `type` (variable/fixed), `entryMethod` (manual/imported), `plaidTransactionID` (nil for manual entries) |
+| `Transaction` | `amount`, `date`, `merchantName`, `type` (variable/fixed), `entryMethod` (manual/imported), `plaidTransactionID` (nil for manual entries), `plaidItemID` (linked item; nil for manual entries), `plaidAccountID` (Plaid account the row belongs to; nil for manual entries and not-yet-backfilled rows, never overwritten once set; `SchemaV8`), `isManualOverride`, `wasMergedFromManual` |
+| `PendingTransactionMerge` | queued merge-prompt decision: `plaidTransactionID`, `incoming*` snapshot, `manualTransaction`, `plaidItemID`, `plaidAccountID` (`SchemaV8`) |
 | `MerchantRule` | `merchantName` (exact, case-insensitive match), `type` (variable/fixed) |
 
 No `User` entity — this is a single-user, single-device app with no auth;

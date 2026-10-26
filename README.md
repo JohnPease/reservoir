@@ -86,21 +86,24 @@ ReservoirTests/    — XCTest
 ReservoirUITests/  — XCUITest
 ```
 
-**Data model** (current — `Models/Migrations/SchemaV6.swift`; the app-wide
+**Data model** (current — `Models/Migrations/SchemaV8.swift`; the app-wide
 type aliases in `Models/CurrentSchema.swift` always point at the current
 version, so the rest of the app never references a `SchemaVN` directly):
 
 | Entity | Key fields |
 |---|---|
 | `SavingsGoal` | `targetAmount`, `targetDate`, `startDate` (user-editable/backdatable at creation — see "Goals screen" below), `startingBalance`, `dailyBase` (fixed at creation/edit), `dismissedAt` (set when the user dismisses a completion banner; added in `SchemaV2`), `createdAt` (real creation timestamp, never user-editable; added in `SchemaV3` — see "Goals screen" below), `associatedItemIDs: [String]` (linked-item IDs this goal is associated with, at most one goal per item ID at a time, enforced by `GoalAccountAssociationService`; added in `SchemaV6`, defaults to `[]`) |
-| `SpendTransaction` | `amount`, `date`, `merchantName`, `type` (variable/fixed), `entryMethod` (manual/imported), `plaidTransactionID`, `plaidItemID` (which linked item this row was imported from; nil for manual entries, same convention as `plaidTransactionID`; added in `SchemaV6`, backfilled for existing imported rows — see "Migrations" below), `isManualOverride`, `createdAt` (record-creation time, distinct from the user-facing `date`; breaks ties when ordering same-day transactions; added in `SchemaV2`), `wasMergedFromManual` (added in `SchemaV4`) |
+| `SpendTransaction` | `amount`, `date`, `merchantName`, `type` (variable/fixed), `entryMethod` (manual/imported), `plaidTransactionID`, `plaidItemID` (which linked item this row was imported from; nil for manual entries, same convention as `plaidTransactionID`; added in `SchemaV6`, backfilled for existing imported rows — see "Migrations" below), `plaidAccountID` (which Plaid account — checking, credit card, ... — the row belongs to; nil for manual entries and not-yet-backfilled rows, never overwritten once set; added in `SchemaV8`, stamped by the one-time account backfill — see "Account capture and backfill" in the Plaid section), `isManualOverride`, `createdAt` (record-creation time, distinct from the user-facing `date`; breaks ties when ordering same-day transactions; added in `SchemaV2`), `wasMergedFromManual` (added in `SchemaV4`) |
 | `MerchantRule` | `merchantName` (exact, case-insensitive match), `type` |
-| `PendingTransactionMerge` | durable form of a queued merge-prompt decision (added in `SchemaV5`) |
+| `PendingTransactionMerge` | durable form of a queued merge-prompt decision (added in `SchemaV5`); carries `plaidItemID` (`SchemaV7`) and `plaidAccountID` (`SchemaV8`) of the incoming transaction |
 
 **Migrations**: `Models/Migrations/MigrationPlan.swift`'s
 `ReservoirMigrationPlan` lists every `VersionedSchema` in order and the
 `MigrationStage`s between them. `SchemaV1` -> `SchemaV2`, `SchemaV2` ->
-`SchemaV3`, `SchemaV3` -> `SchemaV4`, and `SchemaV4` -> `SchemaV5` are all
+`SchemaV3`, `SchemaV3` -> `SchemaV4`, `SchemaV4` -> `SchemaV5`,
+`SchemaV6` -> `SchemaV7`, and `SchemaV7` -> `SchemaV8` (reservoir-j8t: the
+nil-defaulted `plaidAccountID` fields; existing rows are stamped by the
+importer's account backfill, not by the migration) are all
 lightweight (inferred) stages — every new field is optional, or non-optional
 with a property-level default (see `SchemaV3`'s `createdAt` note below). Any
 change to a `@Model` type's shape (new/removed/retyped field) requires a new
@@ -728,6 +731,37 @@ app-wide setting.
     `PlaidServiceLive.unlink(_ item:)` clears that item's `LinkedItemStore`
     entry, Keychain access token, and sync cursor (reservoir-wo1; both
     choices, since the cursor is orphaned either way).
+  - **Account capture and backfill** (reservoir-j8t PR1; no visible UI yet).
+    `/transactions/sync` transactions carry an `account_id` (decoded
+    optionally, also on `removed` entries) and each response a top-level
+    `accounts` array. `account_id` flows through `PlaidTransactionMapper`
+    (`MappedPlaidTransaction.accountID`) and is stamped onto
+    `SpendTransaction.plaidAccountID` / `PendingTransactionMerge.plaidAccountID`
+    on new imports, "Keep both", "Merge" (`TransactionDedupMatcher.applyMerge`),
+    and `modified` events. Account metadata (`LinkedAccount`: account ID, item
+    ID, name, official name, mask, type, subtype, institution name) is kept in
+    `LinkedAccountStore` (`Services/Plaid/LinkedAccountStore.swift`,
+    `UserDefaults` JSON behind `LinkedAccountStoring`, same pattern as
+    `LinkedItemStore`). Each page lists only the accounts its own transactions
+    reference and a no-change sync returns `accounts: []`, so pages are
+    **upsert-merged by `account_id` and absence never deletes**. A item's
+    accounts are removed on unlink and on environment change.
+    **Safe replay**: in the `added` loop, before dedup matching, a transaction
+    whose `plaidTransactionID` already exists locally only gets a nil
+    `plaidAccountID` stamped (never overwritten); type, overrides, goal link,
+    merge state, amount/date/merchant are untouched and no merge prompt is
+    queued (this also keeps `@Attribute(.unique)` from ever upserting over an
+    existing row). **One-time backfill**: `PlaidAccountBackfillStore` holds a
+    per-`(environment, itemID)` "done" flag beside the sync cursor. An item with
+    a stored cursor and no flag syncs from a nil cursor (full replay, up to 730
+    days); the old cursor is kept until the replay finishes
+    (`has_more == false`, every page handled), then the replay's cursor is
+    stored and the flag set. An interrupted pass leaves both untouched and
+    restarts from nil next time; a fresh link sets the flag after its first
+    complete pass. `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION` restarts the
+    pagination from its starting cursor (up to 3 times) instead of surfacing an
+    error. `TransactionImportService.isAccountBackfillComplete` tells later UI
+    whether every linked item has finished (to show "Syncing account data...").
   - **Remove transactions from unlinked accounts** (reservoir-xxm): a
     destructive button in its own Settings section, shown only when leftovers
     exist (hidden otherwise) and disabled while any import is running. It
