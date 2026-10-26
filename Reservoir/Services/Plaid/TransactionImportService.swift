@@ -273,10 +273,15 @@ final class TransactionImportService {
         refreshAccountBackfillStatus()
     }
 
-    /// True when every linked item has finished its one-time account backfill (the
+    /// True when every HEALTHY linked item has finished its one-time account backfill (the
     /// stamp-only replay that writes `plaidAccountID` onto pre-existing rows;
-    /// reservoir-j8t) in the current environment — vacuously true with no linked items.
-    /// Budget UI uses `!isAccountBackfillComplete` to show "Syncing account data...".
+    /// reservoir-j8t) in the current environment — vacuously true with no linked items, or
+    /// when every item needs relink. Items flagged `needsAttention` are excluded: they
+    /// cannot sync until relinked, so waiting on them would block the budget forever; the
+    /// breakdown's "Needs relink" row already tells the user about them. Once relinked
+    /// their (still unset) flag makes the backfill run to completion and the gate counts
+    /// them again. Budget UI uses `!isAccountBackfillComplete` to show "Syncing account
+    /// data...".
     ///
     /// A cached copy of `UserDefaults`-backed state (views can't observe `UserDefaults`),
     /// so it is only as fresh as the last refresh: init, the start and end of every import
@@ -296,7 +301,7 @@ final class TransactionImportService {
     func refreshAccountBackfillStatus() {
         let environment = environmentStore.current
         isAccountBackfillComplete = linkedItemStore.loadAll().allSatisfy {
-            backfillStore.isComplete(for: environment, itemID: $0.itemID)
+            $0.needsAttention || backfillStore.isComplete(for: environment, itemID: $0.itemID)
         }
     }
 
@@ -577,6 +582,8 @@ final class TransactionImportService {
                             if category == .itemLoginRequired {
                                 needsAttention = true
                                 linkedItemStore.setNeedsAttention(true, itemID: itemID)
+                                // The flipped item no longer gates the budget.
+                                refreshAccountBackfillStatus()
                             }
                         } else {
                             presentedError = PlaidErrorClassifier.classify(.exchangeError(error))

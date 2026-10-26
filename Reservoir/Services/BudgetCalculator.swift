@@ -127,8 +127,8 @@ enum BudgetCalculator {
     /// What a budget card (Today hero or Plans card) should show. Kept here so the copy
     /// and gating order live in pure Swift, not in views.
     enum CardState: Equatable {
-        /// Some linked item's account backfill isn't complete (still running, or the item
-        /// can't sync until it is relinked): transactions can't all be attributed to accounts.
+        /// Some HEALTHY linked item's account backfill isn't complete yet (items needing
+        /// relink are excluded upstream): transactions can't all be attributed to accounts.
         case syncing
         /// Budget exists but no account is selected (e.g. after unlinking the last one).
         case chooseAccounts
