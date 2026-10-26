@@ -9,10 +9,11 @@ import SwiftData
 /// Plain additive/optional fields, no renames or type changes — **lightweight
 /// (inferred) migration is correct**. No migration-time backfill is possible (the
 /// account an existing row came from only exists on Plaid's side); instead
-/// `TransactionImportService` runs a one-time, per-item cursor-reset replay that stamps
-/// `plaidAccountID` onto existing rows without changing anything else (see its
-/// "safe replay" handling of `added`). Rows that predate the field, and manual
-/// entries, stay `nil`.
+/// `TransactionImportService` runs a one-time, per-item stamp-only replay (from a nil
+/// cursor, after an ordinary incremental sync) that writes `plaidAccountID` onto rows it
+/// already holds without changing anything else and without inserting any row (see its
+/// "safe replay" handling of `added`). Rows Plaid no longer reports, and manual entries,
+/// stay `nil`.
 enum SchemaV8: VersionedSchema {
     static let versionIdentifier = Schema.Version(8, 0, 0)
 

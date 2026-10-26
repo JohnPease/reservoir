@@ -27,10 +27,15 @@ Personal iOS app for tracking spending against a daily limit derived from saving
     metadata (name, mask, type, subtype) from the response's `accounts` array
     is merged across pages into `LinkedAccountStore` (pages list only the
     accounts they reference; absence never deletes). Existing rows are
-    backfilled once per item by resetting the sync cursor and replaying history
-    (up to 730 days); replayed transactions only get a nil account stamped and
-    never change type, overrides, goal links or merge state, and never queue
-    merge prompts. The old cursor is kept until the replay completes.
+    backfilled once per item in two passes: the ordinary incremental sync from
+    the stored cursor (new/changed/removed transactions apply normally), then a
+    stamp-only replay of history from a nil cursor (up to 730 days) that writes
+    nothing except a nil `plaidAccountID` on rows already held locally. The
+    replay never inserts, updates or deletes a row (so it cannot resurrect a
+    transaction deleted locally), never changes type, overrides, goal links or
+    merge state, never queues merge prompts, and its cursor is discarded. A
+    transaction with no local row, or that Plaid no longer reports, simply stays
+    without an account and never counts toward a budget.
   - History depth: fresh links request `transactions.days_requested = 730`
     (Plaid's max) in `/link/token/create`. It is fixed at first link; update-mode
     (relink) tokens don't send it because Plaid ignores it for existing items.

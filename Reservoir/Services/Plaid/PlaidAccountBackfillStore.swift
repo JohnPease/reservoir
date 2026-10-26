@@ -3,11 +3,13 @@ import Foundation
 /// Per-environment, per-item "account backfill done" flag (reservoir-j8t PR1), stored
 /// next to `PlaidSyncCursorStore`'s cursors with the same keying. Rows imported before
 /// `SpendTransaction.plaidAccountID` existed have no account; the one-time backfill
-/// replays `/transactions/sync` from a nil cursor so each existing row can be stamped.
-/// While this flag is unset for an item that already has a stored cursor,
-/// `TransactionImportService` starts that item from a nil cursor; the flag is set only
-/// after the whole replay finishes (`has_more == false`, every page handled). Fresh links
-/// start with a nil cursor anyway, so they set it on their first complete pass.
+/// replays `/transactions/sync` from a nil cursor, in a stamp-only pass, so each existing
+/// row can be stamped. While this flag is unset for an item that already has a stored
+/// cursor, `TransactionImportService` first runs the ordinary incremental sync from that
+/// cursor and then the stamp-only replay (which writes nothing but a nil `plaidAccountID`
+/// and persists no cursor); the flag is set only after the replay finishes
+/// (`has_more == false`, every page handled, item still linked). Fresh links have no stored
+/// cursor, so they need no replay and set it on their first complete pass.
 protocol PlaidAccountBackfillStoring: Sendable {
     func isComplete(for environment: PlaidEnvironment, itemID: String) -> Bool
     func setComplete(for environment: PlaidEnvironment, itemID: String)

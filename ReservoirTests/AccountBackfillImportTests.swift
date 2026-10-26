@@ -33,8 +33,13 @@ final class AccountBackfillImportTests: XCTestCase {
     private final class ScriptedProtocol: URLProtocol {
         nonisolated(unsafe) static var script: [(status: Int, body: String)] = []
         nonisolated(unsafe) static var requestCursors: [String?] = []
+        /// Runs (on the loading thread) once the request is recorded and before the response
+        /// is delivered — lets a test mutate app state "while the request is in flight".
+        nonisolated(unsafe) static var onRequest: ((Int) -> Void)?
+        /// A scripted status of this value fails the request with `URLError.cancelled`.
+        static let cancelledStatus = -999
 
-        static func reset() { script = []; requestCursors = [] }
+        static func reset() { script = []; requestCursors = []; onRequest = nil }
 
         override class func canInit(with request: URLRequest) -> Bool { true }
         override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -54,8 +59,13 @@ final class AccountBackfillImportTests: XCTestCase {
             let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             Self.requestCursors.append(json?["cursor"] as? String)
 
+            Self.onRequest?(Self.requestCursors.count)
             let index = min(Self.requestCursors.count - 1, max(Self.script.count - 1, 0))
             let entry = Self.script.isEmpty ? (status: 200, body: "{}") : Self.script[index]
+            if entry.status == Self.cancelledStatus {
+                client?.urlProtocol(self, didFailWithError: URLError(.cancelled))
+                return
+            }
             let response = HTTPURLResponse(url: request.url!, statusCode: entry.status, httpVersion: nil, headerFields: nil)!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: Data(entry.body.utf8))
@@ -76,6 +86,7 @@ final class AccountBackfillImportTests: XCTestCase {
         let cursors: StubCursorStore
         let backfill: StubAccountBackfillStore
         let accounts: StubLinkedAccountStore
+        let items: StubLinkedItemStore
     }
 
     private func makeHarness(
@@ -87,17 +98,18 @@ final class AccountBackfillImportTests: XCTestCase {
         let backfill = StubAccountBackfillStore()
         if backfillDone { backfill.setComplete(for: .sandbox, itemID: Self.itemID) }
         let accounts = StubLinkedAccountStore()
+        let items = StubLinkedItemStore(initial: LinkedItem(itemID: Self.itemID, institutionName: "Test Bank", linkedAt: .now))
         let sut = TransactionImportService(
             modelContext: context,
             keychain: StubKeychainWithToken(),
             urlSession: session(),
             environmentStore: StubEnvironmentStore(.sandbox),
             cursorStore: cursors,
-            linkedItemStore: StubLinkedItemStore(initial: LinkedItem(itemID: Self.itemID, institutionName: "Test Bank", linkedAt: .now)),
+            linkedItemStore: items,
             linkedAccountStore: accounts,
             backfillStore: backfill
         )
-        return Harness(sut: sut, cursors: cursors, backfill: backfill, accounts: accounts)
+        return Harness(sut: sut, cursors: cursors, backfill: backfill, accounts: accounts, items: items)
     }
 
     private let dateString = "2026-07-16"
@@ -245,6 +257,34 @@ final class AccountBackfillImportTests: XCTestCase {
 
     // MARK: - Safe replay
 
+    /// Everything about a row except its account, captured so a replay can be proven to have
+    /// changed nothing else.
+    private struct RowSnapshot: Equatable {
+        let plaidTransactionID: String?
+        let date: Date
+        let merchantName: String
+        let createdAt: Date
+        let amount: Decimal
+        let type: TransactionType
+        let entryMethod: EntryMethod
+        let isManualOverride: Bool
+        let wasMergedFromManual: Bool
+        let goalID: PersistentIdentifier?
+
+        init(_ row: SpendTransaction) {
+            plaidTransactionID = row.plaidTransactionID
+            date = row.date
+            merchantName = row.merchantName
+            createdAt = row.createdAt
+            amount = row.amount
+            type = row.type
+            entryMethod = row.entryMethod
+            isManualOverride = row.isManualOverride
+            wasMergedFromManual = row.wasMergedFromManual
+            goalID = row.savingsGoal?.persistentModelID
+        }
+    }
+
     func test_replay_changesOnlyPlaidAccountID_noNewRowsNoPromptsNoOverrideLoss() async throws {
         let goal = SavingsGoal(
             targetAmount: 1000, targetDate: Calendar.current.date(byAdding: .day, value: 30, to: .now)!,
@@ -264,47 +304,117 @@ final class AccountBackfillImportTests: XCTestCase {
         context.insert(PendingTransactionMerge(plaidTransactionID: "p-pending", incomingAmount: 33, incomingDate: matchingDate, incomingMerchantName: "Pharmacy", manualTransaction: pendingManual, plaidItemID: Self.itemID))
         try context.save()
 
-        ScriptedProtocol.script = [page(added: [
+        // Pre-state of EVERY replayed row (and the lookalike), compared field by field afterwards.
+        let replayedRows = [overridden, merged, plain]
+        let before = replayedRows.map(RowSnapshot.init)
+        let lookalikeBefore = RowSnapshot(lookalikeManual)
+        let pendingManualBefore = RowSnapshot(pendingManual)
+
+        let replayPage = page(added: [
             tx("p-override", amount: 20, name: "Gym", account: "acc-A"),
             tx("p-merged", amount: 12.5, name: "Coffee Shop", account: "acc-B"),
             tx("p-plain", amount: 7, name: "Bakery", account: "acc-C"),
             tx("p-pending", amount: 33, name: "Pharmacy", account: "acc-D"),
-        ], accounts: [acc("acc-A"), acc("acc-B")].joined(separator: ","))]
-        // Existing cursor but no backfill flag: this is the backfill replay.
+        ], accounts: [acc("acc-A"), acc("acc-B")].joined(separator: ","))
+        // Pass 1 (incremental from the old cursor) is empty; pass 2 is the stamp-only replay.
+        ScriptedProtocol.script = [page(next: "inc-1"), replayPage]
+        // Existing cursor but no backfill flag: this is the backfill.
         let h = makeHarness(storedCursor: "old-cursor")
         let queueBefore = h.sut.mergeQueue.map(\.id)
 
         await h.sut.runImport()
 
-        XCTAssertNil(ScriptedProtocol.requestCursors.first!, "backfill replays from a nil cursor.")
+        XCTAssertEqual(ScriptedProtocol.requestCursors, ["old-cursor", nil], "incremental from the stored cursor, then the replay from nil.")
         XCTAssertEqual(try allTransactions().count, 5, "no row inserted, none replaced by unique-upsert.")
         XCTAssertEqual(try allPending().map(\.plaidTransactionID), ["p-pending"], "no new PendingTransactionMerge rows.")
         XCTAssertEqual(h.sut.mergeQueue.map(\.id), queueBefore, "no new merge prompts queued.")
 
+        // Every replayed row: only plaidAccountID changed.
+        XCTAssertEqual(replayedRows.map(RowSnapshot.init), before, "a replay must change nothing but plaidAccountID.")
         XCTAssertEqual(overridden.plaidAccountID, "acc-A")
-        XCTAssertEqual(overridden.type, .fixed)
-        XCTAssertTrue(overridden.isManualOverride)
-        XCTAssertTrue(overridden.savingsGoal === goal)
-        XCTAssertEqual(overridden.createdAt, created)
-        XCTAssertEqual(overridden.amount, 20)
-
         XCTAssertEqual(merged.plaidAccountID, "acc-B")
-        XCTAssertTrue(merged.wasMergedFromManual)
-        XCTAssertTrue(merged.isManualOverride)
-        XCTAssertEqual(merged.type, .fixed)
-        XCTAssertEqual(merged.entryMethod, .imported)
-
         XCTAssertEqual(plain.plaidAccountID, "acc-C")
+        XCTAssertTrue(overridden.savingsGoal === goal)
         XCTAssertTrue(plain.savingsGoal === goal)
-        XCTAssertEqual(plain.type, .variable)
 
-        XCTAssertEqual(lookalikeManual.entryMethod, .manual, "replay must never merge a lookalike manual row.")
+        XCTAssertEqual(RowSnapshot(lookalikeManual), lookalikeBefore, "replay must never merge a lookalike manual row.")
         XCTAssertNil(lookalikeManual.plaidAccountID)
-        XCTAssertEqual(pendingManual.entryMethod, .manual)
+        XCTAssertEqual(RowSnapshot(pendingManual), pendingManualBefore)
         XCTAssertEqual(try allPending().first?.plaidAccountID, "acc-D", "queued record is stamped, not duplicated.")
         XCTAssertEqual(h.sut.pendingMergeDecision?.incoming.accountID, "acc-D")
         XCTAssertEqual(h.sut.lastImportSummary?.added, 0)
         XCTAssertEqual(h.sut.lastImportSummary?.queuedForMerge, 0)
+        XCTAssertEqual(h.cursors.cursor(for: .sandbox, itemID: Self.itemID), "inc-1", "the replay's cursor is never persisted.")
+    }
+
+    /// reservoir-j8t review (B): the replay used to run from a nil cursor through the normal
+    /// insert path, re-adding every Plaid transaction with no local row - including ones the
+    /// user deleted. The replay is now stamp-only.
+    func test_replay_neverReinsertsLocallyDeletedOrNeverImportedTransactions() async throws {
+        let kept = SpendTransaction(amount: 7, date: matchingDate, merchantName: "Bakery", type: .variable, entryMethod: .imported, plaidTransactionID: "p-kept", plaidItemID: Self.itemID)
+        context.insert(kept)
+        try context.save()
+        // "p-deleted" was imported once and deleted by the user; "p-never" was never imported.
+        // Both are in Plaid's full history, so both come back in the replay.
+        ScriptedProtocol.script = [
+            page(next: "inc-1"),
+            page(added: [tx("p-deleted", account: "acc-1"), tx("p-kept", account: "acc-1"), tx("p-never", account: "acc-1")], next: "r1"),
+        ]
+        let h = makeHarness(storedCursor: "old-cursor")
+        await h.sut.runImport()
+
+        XCTAssertEqual(try allTransactions().compactMap(\.plaidTransactionID), ["p-kept"], "only the existing row is touched.")
+        XCTAssertEqual(kept.plaidAccountID, "acc-1")
+        XCTAssertTrue(h.backfill.isComplete(for: .sandbox, itemID: Self.itemID))
+    }
+
+    func test_replay_ignoresModifiedAndRemovedEntries() async throws {
+        let row = SpendTransaction(amount: 10, date: matchingDate, merchantName: "Coffee Shop", type: .variable, entryMethod: .imported, plaidTransactionID: "p1", plaidItemID: Self.itemID)
+        context.insert(row)
+        try context.save()
+        ScriptedProtocol.script = [
+            page(next: "inc-1"),
+            page(modified: [tx("p1", amount: 99, account: "acc-1")], removed: [#"{"transaction_id":"p1"}"#], next: "r1"),
+        ]
+        await makeHarness(storedCursor: "old-cursor").sut.runImport()
+        XCTAssertEqual(try allTransactions().count, 1, "replay never deletes.")
+        XCTAssertEqual(row.amount, 10, "replay never applies a modified entry.")
+    }
+
+    /// The incremental pass (from the stored cursor) applies new/modified/removed normally,
+    /// so a transaction that changed since the old cursor is correct, and genuinely new
+    /// transactions are kept - the replay can never lose them.
+    func test_backfill_incrementalPassAppliesAddedModifiedRemoved_andReplayDoesNotRevertThem() async throws {
+        let modifiedRow = SpendTransaction(amount: 10, date: matchingDate, merchantName: "Coffee Shop", type: .variable, entryMethod: .imported, plaidTransactionID: "p-mod", plaidItemID: Self.itemID)
+        let removedRow = SpendTransaction(amount: 5, date: matchingDate, merchantName: "Gone", type: .variable, entryMethod: .imported, plaidTransactionID: "p-rem", plaidItemID: Self.itemID)
+        context.insert(modifiedRow)
+        context.insert(removedRow)
+        try context.save()
+        ScriptedProtocol.script = [
+            page(added: [tx("p-new", amount: 3, name: "Newcomer", account: "acc-1")], modified: [tx("p-mod", amount: 11, account: "acc-1")], removed: [#"{"transaction_id":"p-rem"}"#], next: "inc-1"),
+            // The replay snapshot reflects current Plaid state (no p-rem; p-mod at 11; p-new).
+            page(added: [tx("p-mod", amount: 11, account: "acc-1"), tx("p-new", amount: 3, name: "Newcomer", account: "acc-1")], next: "r1"),
+        ]
+        let h = makeHarness(storedCursor: "old-cursor")
+        await h.sut.runImport()
+
+        XCTAssertEqual(Set(try allTransactions().compactMap(\.plaidTransactionID)), ["p-mod", "p-new"])
+        XCTAssertEqual(modifiedRow.amount, 11)
+        XCTAssertEqual(modifiedRow.plaidAccountID, "acc-1")
+        XCTAssertEqual(try allTransactions().first { $0.plaidTransactionID == "p-new" }?.plaidAccountID, "acc-1")
+        XCTAssertEqual(h.cursors.cursor(for: .sandbox, itemID: Self.itemID), "inc-1")
+        XCTAssertEqual(h.sut.lastImportSummary?.added, 1)
+        XCTAssertEqual(h.sut.lastImportSummary?.modified, 1)
+        XCTAssertEqual(h.sut.lastImportSummary?.removed, 1)
+    }
+
+    func test_backfill_incrementalPassFailure_skipsReplayAndLeavesFlagUnset() async {
+        ScriptedProtocol.script = [(500, "{}")]
+        let h = makeHarness(storedCursor: "old-cursor")
+        await h.sut.runImport()
+        XCTAssertEqual(ScriptedProtocol.requestCursors, ["old-cursor"], "no replay after a failed incremental pass.")
+        XCTAssertFalse(h.backfill.isComplete(for: .sandbox, itemID: Self.itemID))
+        XCTAssertEqual(h.cursors.cursor(for: .sandbox, itemID: Self.itemID), "old-cursor")
     }
 
     func test_replay_neverOverwritesNonNilAccountID() async throws {
@@ -328,8 +438,9 @@ final class AccountBackfillImportTests: XCTestCase {
 
     // MARK: - Backfill lifecycle
 
-    func test_backfill_unsetFlagWithStoredCursor_replaysFromNil_thenSwapsCursorAndSetsFlag() async {
+    func test_backfill_unsetFlagWithStoredCursor_runsIncrementalThenReplaysFromNil_thenSetsFlag() async throws {
         ScriptedProtocol.script = [
+            page(added: [tx("p1")], next: "i1"),
             page(added: [tx("p1")], next: "r1", hasMore: true),
             page(added: [tx("p2")], next: "r2", hasMore: false),
         ]
@@ -338,37 +449,37 @@ final class AccountBackfillImportTests: XCTestCase {
 
         await h.sut.runImport()
 
-        XCTAssertEqual(ScriptedProtocol.requestCursors.count, 2)
-        XCTAssertNil(ScriptedProtocol.requestCursors[0])
-        XCTAssertEqual(ScriptedProtocol.requestCursors[1], "r1")
-        XCTAssertEqual(h.cursors.cursor(for: .sandbox, itemID: Self.itemID), "r2")
+        XCTAssertEqual(ScriptedProtocol.requestCursors, ["old-cursor", nil, "r1"])
+        XCTAssertEqual(h.cursors.cursor(for: .sandbox, itemID: Self.itemID), "i1", "only the incremental pass persists a cursor.")
+        XCTAssertEqual(try allTransactions().compactMap(\.plaidTransactionID), ["p1"], "the replay's p2 has no row and is not inserted.")
         XCTAssertTrue(h.backfill.isComplete(for: .sandbox, itemID: Self.itemID))
         XCTAssertTrue(h.sut.isAccountBackfillComplete)
 
-        // Next run is a normal incremental sync from the new cursor.
+        // Next run is a normal incremental sync from the persisted cursor.
         ScriptedProtocol.reset()
-        ScriptedProtocol.script = [page(next: "r3")]
+        ScriptedProtocol.script = [page(next: "i2")]
         await h.sut.runImport()
-        XCTAssertEqual(ScriptedProtocol.requestCursors, ["r2"])
+        XCTAssertEqual(ScriptedProtocol.requestCursors, ["i1"])
     }
 
-    func test_backfill_interruptedPass_keepsOldCursorAndLeavesFlagUnset_thenRetriesFromNil() async {
+    func test_backfill_interruptedReplay_leavesFlagUnset_thenRetriesIncrementalAndReplay() async {
         ScriptedProtocol.script = [
+            page(next: "i1"),
             page(added: [tx("p1")], next: "r1", hasMore: true),
             (500, "{}"),
         ]
         let h = makeHarness(storedCursor: "old-cursor")
         await h.sut.runImport()
 
-        XCTAssertEqual(h.cursors.cursor(for: .sandbox, itemID: Self.itemID), "old-cursor", "old cursor survives an interrupted replay.")
+        XCTAssertEqual(h.cursors.cursor(for: .sandbox, itemID: Self.itemID), "i1", "the completed incremental pass advanced the cursor.")
         XCTAssertFalse(h.backfill.isComplete(for: .sandbox, itemID: Self.itemID))
         XCTAssertFalse(h.sut.isAccountBackfillComplete)
 
         ScriptedProtocol.reset()
-        ScriptedProtocol.script = [page(added: [tx("p1")], next: "r9")]
+        ScriptedProtocol.script = [page(next: "i2"), page(next: "r9")]
         await h.sut.runImport()
-        XCTAssertNil(ScriptedProtocol.requestCursors[0], "the retry restarts from nil.")
-        XCTAssertEqual(h.cursors.cursor(for: .sandbox, itemID: Self.itemID), "r9")
+        XCTAssertEqual(ScriptedProtocol.requestCursors, ["i1", nil], "the retry runs incremental again, then a fresh replay from nil.")
+        XCTAssertEqual(h.cursors.cursor(for: .sandbox, itemID: Self.itemID), "i2")
         XCTAssertTrue(h.backfill.isComplete(for: .sandbox, itemID: Self.itemID))
     }
 
@@ -382,12 +493,84 @@ final class AccountBackfillImportTests: XCTestCase {
         XCTAssertFalse(h.backfill.isComplete(for: .sandbox, itemID: Self.itemID))
         XCTAssertEqual(h.cursors.cursor(for: .sandbox, itemID: Self.itemID), "f1", "a fresh pass persists cursors per page as before.")
 
-        // The interrupted fresh pass left a cursor but no flag, so it is replayed from nil.
+        // The interrupted fresh pass left a cursor but no flag: the next run continues from
+        // that cursor, then stamp-replays from nil.
         ScriptedProtocol.reset()
-        ScriptedProtocol.script = [page(next: "f2")]
+        ScriptedProtocol.script = [page(next: "f2"), page(next: "f3")]
         await h.sut.runImport()
-        XCTAssertNil(ScriptedProtocol.requestCursors[0])
+        XCTAssertEqual(ScriptedProtocol.requestCursors, ["f1", nil])
+        XCTAssertEqual(h.cursors.cursor(for: .sandbox, itemID: Self.itemID), "f2")
         XCTAssertTrue(h.backfill.isComplete(for: .sandbox, itemID: Self.itemID))
+    }
+
+    // MARK: - Cancellation / unlink / not-ready never set the flag or write stale state
+
+    func test_backfill_cancelledIncrementalPass_setsNoFlag_noErrorAndKeepsCursor() async {
+        ScriptedProtocol.script = [(ScriptedProtocol.cancelledStatus, "")]
+        let h = makeHarness(storedCursor: "old-cursor")
+        await h.sut.runImport()
+        XCTAssertNil(h.sut.presentedError, "a cancelled sync is not an error.")
+        XCTAssertFalse(h.backfill.isComplete(for: .sandbox, itemID: Self.itemID))
+        XCTAssertEqual(h.cursors.cursor(for: .sandbox, itemID: Self.itemID), "old-cursor")
+        XCTAssertEqual(ScriptedProtocol.requestCursors.count, 1, "no replay after a cancelled pass.")
+        XCTAssertFalse(h.sut.isAccountBackfillComplete)
+    }
+
+    func test_backfill_cancelledMidReplay_setsNoFlag_noError() async throws {
+        ScriptedProtocol.script = [page(next: "i1"), page(added: [tx("p1")], next: "r1", hasMore: true), (ScriptedProtocol.cancelledStatus, "")]
+        let h = makeHarness(storedCursor: "old-cursor")
+        await h.sut.runImport()
+        XCTAssertNil(h.sut.presentedError)
+        XCTAssertFalse(h.backfill.isComplete(for: .sandbox, itemID: Self.itemID))
+        XCTAssertEqual(h.cursors.cursor(for: .sandbox, itemID: Self.itemID), "i1")
+        XCTAssertTrue(try allTransactions().isEmpty, "a replay never inserts.")
+    }
+
+    func test_unlinkWhileRequestInFlight_dropsResponse_noRowsAccountsCursorOrFlag() async throws {
+        ScriptedProtocol.script = [page(added: [tx("p1", account: "acc-1")], accounts: acc("acc-1"), next: "c1")]
+        let h = makeHarness()
+        ScriptedProtocol.onRequest = { [items = h.items] _ in items.remove(itemID: Self.itemID) }
+        await h.sut.runImport()
+
+        XCTAssertEqual(ScriptedProtocol.requestCursors.count, 1)
+        XCTAssertTrue(try allTransactions().isEmpty, "the unlinked item's response must not be written.")
+        XCTAssertTrue(h.accounts.loadAll().isEmpty)
+        XCTAssertNil(h.cursors.cursor(for: .sandbox, itemID: Self.itemID))
+        XCTAssertFalse(h.backfill.isComplete(for: .sandbox, itemID: Self.itemID))
+    }
+
+    func test_unlinkDuringReplay_setsNoFlagAndStampsNothing() async throws {
+        let row = SpendTransaction(amount: 7, date: matchingDate, merchantName: "Bakery", type: .variable, entryMethod: .imported, plaidTransactionID: "p1", plaidItemID: Self.itemID)
+        context.insert(row)
+        try context.save()
+        ScriptedProtocol.script = [page(next: "i1"), page(added: [tx("p1", account: "acc-1")], next: "r1")]
+        let h = makeHarness(storedCursor: "old-cursor")
+        ScriptedProtocol.onRequest = { [items = h.items] count in
+            if count == 2 { items.remove(itemID: Self.itemID) }
+        }
+        await h.sut.runImport()
+        XCTAssertNil(row.plaidAccountID, "an unlinked item's replay response must not stamp rows.")
+        XCTAssertFalse(h.backfill.isComplete(for: .sandbox, itemID: Self.itemID))
+    }
+
+    func test_refreshLinkedItemState_rereadsBackfillAndNeedsAttention() {
+        let backfill = StubAccountBackfillStore()
+        let items = StubLinkedItemStore()
+        let sut = TransactionImportService(
+            modelContext: context, keychain: StubKeychain(), urlSession: session(),
+            environmentStore: StubEnvironmentStore(.sandbox), cursorStore: StubCursorStore(),
+            linkedItemStore: items, linkedAccountStore: StubLinkedAccountStore(), backfillStore: backfill
+        )
+        XCTAssertTrue(sut.isAccountBackfillComplete)
+        XCTAssertFalse(sut.needsAttention)
+        items.save(LinkedItem(itemID: "x", institutionName: "X", linkedAt: .now, needsAttention: true))
+        sut.refreshLinkedItemState()
+        XCTAssertFalse(sut.isAccountBackfillComplete, "a freshly linked item has no backfill flag yet.")
+        XCTAssertTrue(sut.needsAttention)
+        items.remove(itemID: "x")
+        sut.refreshLinkedItemState()
+        XCTAssertTrue(sut.isAccountBackfillComplete, "unlinking the only item clears the stale flag.")
+        XCTAssertFalse(sut.needsAttention)
     }
 
     func test_backfill_notReadyEmptyPage_doesNotSetFlag() async {
@@ -434,19 +617,22 @@ final class AccountBackfillImportTests: XCTestCase {
         XCTAssertEqual(try allTransactions().count, 3, "restarted pages replay safely - no duplicate rows.")
     }
 
-    func test_mutationDuringPagination_duringBackfill_restartsFromNilAndLeavesFlagUnsetUntilComplete() async {
+    func test_mutationDuringPagination_duringBackfill_restartsEachPassFromItsOwnStart() async {
         ScriptedProtocol.script = [
             page(added: [tx("p1")], next: "m1", hasMore: true),
             mutationError(),
             page(added: [tx("p1")], next: "m1b", hasMore: false),
+            // Replay pass: also hit by a mutation, which restarts it from nil.
+            page(added: [tx("p1")], next: "r1", hasMore: true),
+            mutationError(),
+            page(added: [tx("p1")], next: "r1b", hasMore: false),
         ]
         let h = makeHarness(storedCursor: "old")
         await h.sut.runImport()
-        XCTAssertEqual(ScriptedProtocol.requestCursors.count, 3)
-        XCTAssertNil(ScriptedProtocol.requestCursors[0])
-        XCTAssertNil(ScriptedProtocol.requestCursors[2], "restart goes back to the replay's nil start.")
+        XCTAssertEqual(ScriptedProtocol.requestCursors, ["old", "m1", "old", nil, "r1", nil])
         XCTAssertEqual(h.cursors.cursor(for: .sandbox, itemID: Self.itemID), "m1b")
         XCTAssertTrue(h.backfill.isComplete(for: .sandbox, itemID: Self.itemID))
+        XCTAssertNil(h.sut.presentedError)
     }
 
     func test_mutationDuringPagination_exhaustedRestarts_surfacesErrorAndKeepsFlagUnset() async {

@@ -807,7 +807,7 @@ app-wide setting.
     `PlaidServiceLive.unlink(_ item:)` clears that item's `LinkedItemStore`
     entry, Keychain access token, and sync cursor (reservoir-wo1; both
     choices, since the cursor is orphaned either way).
-  - **Account capture and backfill** (reservoir-j8t PR1; no visible UI yet).
+  - **Account capture and backfill** (reservoir-j8t; feeds the monthly budget).
     `/transactions/sync` transactions carry an `account_id` (decoded
     optionally, also on `removed` entries) and each response a top-level
     `accounts` array. `account_id` flows through `PlaidTransactionMapper`
@@ -829,12 +829,21 @@ app-wide setting.
     queued (this also keeps `@Attribute(.unique)` from ever upserting over an
     existing row). **One-time backfill**: `PlaidAccountBackfillStore` holds a
     per-`(environment, itemID)` "done" flag beside the sync cursor. An item with
-    a stored cursor and no flag syncs from a nil cursor (full replay, up to 730
-    days); the old cursor is kept until the replay finishes
-    (`has_more == false`, every page handled), then the replay's cursor is
-    stored and the flag set. An interrupted pass leaves both untouched and
-    restarts from nil next time; a fresh link sets the flag after its first
-    complete pass. `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION` restarts the
+    a stored cursor and no flag gets two passes in one run: (1) the ordinary
+    incremental sync from the stored cursor, so anything added, modified or
+    removed since that cursor is applied normally and the cursor advances as
+    usual; then (2) a **stamp-only replay** of full history from a nil cursor
+    (up to 730 days) that only writes `plaidAccountID` onto rows (and queued
+    merge decisions) that already exist locally. The replay inserts, updates and
+    deletes nothing, ignores `modified`/`removed`, and its cursors are never
+    persisted. Consequences worth knowing: a Plaid transaction with no local row
+    (one you deleted, a credit that was never imported) is **not** re-added by
+    the backfill, and a local row Plaid no longer reports stays without an
+    account (so it never counts toward a budget). The flag is set only when the
+    replay pass completes (`has_more == false`, every page handled, item still
+    linked); an error, cancellation or unlink mid-pass leaves it unset and the
+    next sync repeats both passes. A fresh link has no stored cursor, so it needs
+    no replay and sets the flag after its first complete pass. `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION` restarts the
     pagination from its starting cursor (up to 3 times) instead of surfacing an
     error. `TransactionImportService.isAccountBackfillComplete` tells later UI
     whether every linked item has finished (to show "Syncing account data...").
