@@ -65,11 +65,20 @@ public enum DailyLimitCalculator {
 
         let spentByDay = variableSpendByDay(goal.spendEntries, calendar: calendar)
         let dayCount = calendar.dateComponents([.day], from: startDay, to: today).day ?? 0
+        let resetsOnFirst = goal.monthBoundary == .reset
 
         var carry: Decimal = 0
         for offset in 0..<dayCount {
             let day = calendar.date(byAdding: .day, value: offset, to: startDay)!
-            carry += goal.dailyBase - (spentByDay[day] ?? 0)
+            if resetsOnFirst && calendar.component(.day, from: day) == 1 {
+                carry = 0
+            }
+            carry += goal.schedule.base(on: day, calendar: calendar) - (spentByDay[day] ?? 0)
+        }
+        // The loop only visits days *before* `referenceDate`'s day, so a reset that falls
+        // exactly on `referenceDate`'s own day (the 1st) must be applied here.
+        if resetsOnFirst && calendar.component(.day, from: today) == 1 {
+            carry = 0
         }
         return carry
     }
@@ -81,7 +90,8 @@ public enum DailyLimitCalculator {
         calendar: Calendar = .current
     ) -> GoalDailyLimit {
         let carry = carryForward(for: goal, asOf: referenceDate, calendar: calendar)
-        return GoalDailyLimit(id: goal.id, dailyBase: goal.dailyBase, carryForward: carry, limit: goal.dailyBase + carry)
+        let base = goal.schedule.base(on: calendar.startOfDay(for: referenceDate), calendar: calendar)
+        return GoalDailyLimit(id: goal.id, dailyBase: base, carryForward: carry, limit: base + carry)
     }
 
     /// Total daily limit across every active goal: the **sum** of each goal's
@@ -166,9 +176,21 @@ public struct GoalCarryForwardInput: Equatable {
     /// wrapped in `AnyHashable`); the calculator itself only uses it to key results.
     public var id: AnyHashable
 
-    /// Fixed at goal creation, or reset at the goal's most recent edit — see
-    /// `DailyLimitCalculator.dailyBase`. Owned by the caller, not recomputed here.
-    public var dailyBase: Decimal
+    /// How much each day contributes before spend is subtracted. Goals use
+    /// `.constant` (fixed at creation/edit, see `DailyLimitCalculator.dailyBase`); the
+    /// monthly budget uses `.monthly`. Owned by the caller, not recomputed here.
+    public var schedule: BaseSchedule
+
+    /// Whether carry rolls across month boundaries (goals, and a budget in "Carry over"
+    /// mode) or is zeroed on every 1st (a budget in "Start fresh" mode).
+    public var monthBoundary: MonthBoundary
+
+    /// The base on `effectiveStartDate` — for goals (a `.constant` schedule) simply the
+    /// goal's fixed daily base. Kept so existing call sites that read a scalar base
+    /// compile unchanged.
+    public var dailyBase: Decimal {
+        schedule.base(on: effectiveStartDate, calendar: .current)
+    }
 
     /// The date carry-forward starts accumulating from: the goal's creation date, or —
     /// if the goal has since been edited — the date of the most recent edit. An edit is
@@ -182,12 +204,70 @@ public struct GoalCarryForwardInput: Equatable {
     /// tested on the fixed/variable exclusion rule.
     public var spendEntries: [SpendEntry]
 
-    public init(id: AnyHashable, dailyBase: Decimal, effectiveStartDate: Date, spendEntries: [SpendEntry]) {
+    public init(
+        id: AnyHashable,
+        schedule: BaseSchedule,
+        monthBoundary: MonthBoundary = .carry,
+        effectiveStartDate: Date,
+        spendEntries: [SpendEntry]
+    ) {
         self.id = id
-        self.dailyBase = dailyBase
+        self.schedule = schedule
+        self.monthBoundary = monthBoundary
         self.effectiveStartDate = effectiveStartDate
         self.spendEntries = spendEntries
     }
+
+    /// Convenience for the constant-base, carry-across-months shape every goal uses.
+    public init(id: AnyHashable, dailyBase: Decimal, effectiveStartDate: Date, spendEntries: [SpendEntry]) {
+        self.init(
+            id: id,
+            schedule: .constant(dailyBase),
+            effectiveStartDate: effectiveStartDate,
+            spendEntries: spendEntries
+        )
+    }
+}
+
+/// The per-day base amount a calculator window accrues.
+public enum BaseSchedule: Equatable {
+    /// The same base every day (savings goals).
+    case constant(Decimal)
+    /// A monthly amount spread evenly over the days of whichever month a day falls in:
+    /// `monthlyAmount / daysInMonth(day)`, never `*12/365`.
+    case monthly(Decimal)
+
+    /// Decimal places the per-day share is rounded to so a month's days always sum to
+    /// *exactly* the monthly amount (`Decimal` division is otherwise inexact for e.g.
+    /// 1000/30): every day but the month's last gets the rounded share, and the last day
+    /// absorbs the sub-1e-9 remainder. 10 places is far below a cent.
+    static let monthlyShareScale = 10
+
+    public func base(on day: Date, calendar: Calendar) -> Decimal {
+        switch self {
+        case .constant(let amount):
+            return amount
+        case .monthly(let monthlyAmount):
+            guard let daysInMonth = calendar.range(of: .day, in: .month, for: day)?.count, daysInMonth > 0 else {
+                return 0
+            }
+            var share = monthlyAmount / Decimal(daysInMonth)
+            var rounded = Decimal()
+            NSDecimalRound(&rounded, &share, Self.monthlyShareScale, .plain)
+            if calendar.component(.day, from: day) == daysInMonth {
+                return monthlyAmount - rounded * Decimal(daysInMonth - 1)
+            }
+            return rounded
+        }
+    }
+}
+
+/// What happens to accumulated carry when a new month begins.
+public enum MonthBoundary: Equatable {
+    /// Surplus and debt roll across months (goals; budget "Carry over").
+    case carry
+    /// Carry is zeroed on each 1st — a clean slate (budget "Start fresh").
+    case reset
 }
 
 /// The computed daily limit for a single goal, decomposed so callers (the Today screen)
