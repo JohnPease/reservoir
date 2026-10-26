@@ -8,6 +8,9 @@ enum BudgetValidator {
     /// Plaid's history cap; the budget window can't start earlier.
     static let maxHistoryDays = 730
 
+    /// Largest accepted monthly amount (inclusive); keeps absurd typos out of the math.
+    static let maxMonthlyAmount: Decimal = 1_000_000
+
     struct ValidationResult: Equatable {
         var amountError: String?
         var accountsError: String?
@@ -57,7 +60,7 @@ enum BudgetValidator {
         calendar: Calendar = .current
     ) -> ValidationResult {
         ValidationResult(
-            amountError: monthlyAmount > 0 ? nil : "Enter a monthly amount greater than $0.",
+            amountError: amountError(for: monthlyAmount),
             accountsError: selectedAccountIDs.isEmpty ? "Choose at least one account." : nil,
             startDateError: validateStartDate(
                 startDate,
@@ -66,6 +69,12 @@ enum BudgetValidator {
                 calendar: calendar
             )
         )
+    }
+
+    private static func amountError(for amount: Decimal) -> String? {
+        if amount <= 0 { return "Enter a monthly amount greater than $0." }
+        if amount > maxMonthlyAmount { return "Enter an amount of $1,000,000 or less." }
+        return nil
     }
 
     private static func validateStartDate(_ startDate: Date, floor: Date, referenceDate: Date, calendar: Calendar) -> String? {
