@@ -172,70 +172,8 @@ struct TodayView: View {
 
 }
 
-// MARK: - Hero
-
-private struct HeroSection: View {
-    let summary: TodayScreenCalculator.Summary
-
-    /// The fill-gauge and the hero number's own color switch both key off
-    /// `summary.limit` (today's daily limit — base + carry-forward), not
-    /// `summary.remaining`. Per §3.1, the gauge exists to "visually tie the hero number
-    /// to the reservoir/tank metaphor" — it's the hero number's own tank, not a
-    /// separate reading of the still-remaining balance (which the "Remaining" stat
-    /// card already covers on its own terms, §3.3). `summary.dailyBase` is the "full
-    /// tank" reference rate §4's formula scales to a week.
-    private var gaugeResult: FillGaugeCalculator.Result {
-        FillGaugeCalculator.result(currentBalance: summary.limit, baseDailyAmount: summary.dailyBase)
-    }
-
-    private var heroColor: Color {
-        summary.limit >= 0 ? Color("ReservoirTextPrimary") : Color("ReservoirDeficit")
-    }
-
-    var body: some View {
-        VStack(spacing: 4) {
-            HStack(spacing: 8) {
-                FillGaugeView(result: gaugeResult)
-
-                // 44px per PROJECT_SPEC's "UX design — Today screen" — a manual/code-review
-                // check (STANDARDS.md §5), not something asserted in XCUITest.
-                Text(summary.limit, format: .currency(code: "USD"))
-                    .font(.system(size: 44, weight: .bold))
-                    .foregroundStyle(heroColor)
-                    .accessibilityIdentifier("today.heroAmount")
-            }
-
-            Text("\(currency(summary.dailyBase)) base + \(currency(summary.carriedForward)) carried forward")
-                .font(.subheadline)
-                .foregroundStyle(Color("ReservoirTextSecondary"))
-        }
-        .frame(maxWidth: .infinity)
-        // .contain, not the default .automatic, so this stays queryable as its own
-        // "Other" element in XCUITest instead of being auto-flattened into a StaticText
-        // that swallows the identifier.
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("today.hero")
-    }
-
-    private func currency(_ amount: Decimal) -> String {
-        amount.formatted(.currency(code: "USD"))
-    }
-}
-
-// MARK: - Two-stat row
-
-private struct TwoStatRow: View {
-    let summary: TodayScreenCalculator.Summary
-
-    var body: some View {
-        HStack(spacing: 16) {
-            StatCard(title: "Spent today", amount: summary.spentToday, isOverLimit: false)
-            StatCard(title: "Remaining", amount: summary.remaining, isOverLimit: summary.remaining < 0)
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("today.stats")
-    }
-}
+// `HeroSection`/`TwoStatRow`/`StatCard` moved to `Reservoir/Shared/HeroSection.swift`
+// (reservoir-j8t) so the monthly-budget card reuses them (STANDARDS.md §3).
 
 /// Shown in place of `HeroSection`/`TwoStatRow` when there's no active goal (so no
 /// daily limit is defined) but there's still today's spend worth surfacing — e.g. every
@@ -249,32 +187,6 @@ private struct SpentTodayOnlyCard: View {
             // own "Other" element in XCUITest instead of being auto-flattened.
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("today.spentTodayOnly")
-    }
-}
-
-private struct StatCard: View {
-    let title: String
-    let amount: Decimal
-    let isOverLimit: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.caption)
-                // §3.3: deficit state reuses ReservoirDeficit for the label too — no
-                // separate dimmed asset; the caption's smaller size/weight already
-                // reads as "dimmed" relative to the value line below it.
-                .foregroundStyle(isOverLimit ? Color("ReservoirDeficit") : Color("ReservoirTextSecondary"))
-            Text(amount, format: .currency(code: "USD"))
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(isOverLimit ? Color("ReservoirDeficit") : Color("ReservoirTextPrimary"))
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .background(
-            isOverLimit ? Color("ReservoirSurfaceDeficit") : Color("ReservoirSurface"),
-            in: RoundedRectangle(cornerRadius: 12)
-        )
     }
 }
 
