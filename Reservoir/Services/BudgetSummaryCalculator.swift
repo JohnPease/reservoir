@@ -135,28 +135,32 @@ enum BudgetSummaryCalculator {
             budget: budget, allTransactions: transactions, referenceDate: referenceDate, calendar: calendar
         )
 
+        // The budget for the window (the monthly amount for a full month; the sum of daily
+        // bases from a mid-month start). The over-budget sentence and the projection both
+        // compare against this, so they can never disagree.
+        let windowBudget = baseSum(
+            schedule, from: windowStart, days: daysInMonth - calendar.component(.day, from: windowStart) + 1, calendar: calendar
+        )
+
         let sentence = progressSentence(
             dayOfMonth: dayOfMonth,
             daysInMonth: daysInMonth,
             trackingSince: trackingSince,
             elapsedDays: elapsedDays,
             spent: spent,
-            monthlyAmount: budget.monthlyAmount,
+            windowBudget: windowBudget,
             paceDelta: paceDelta,
             firstOfMonthCarry: dayOfMonth == 1 ? firstOfMonthClause(budget: budget, carry: resolvedSummary?.carriedForward ?? 0) : nil,
             calendar: calendar
         )
 
         let projection = projection(
-            schedule: schedule,
-            windowStart: windowStart,
-            today: today,
             elapsedDays: elapsedDays,
             dayOfMonth: dayOfMonth,
             daysInMonth: daysInMonth,
             spent: spent,
             spentToday: spentToday,
-            calendar: calendar
+            windowBudget: windowBudget
         )
 
         let breakdown = breakdown(
@@ -224,7 +228,7 @@ enum BudgetSummaryCalculator {
         trackingSince: Date?,
         elapsedDays: Int,
         spent: Decimal,
-        monthlyAmount: Decimal,
+        windowBudget: Decimal,
         paceDelta: Decimal,
         firstOfMonthCarry: String?,
         calendar: Calendar
@@ -236,12 +240,14 @@ enum BudgetSummaryCalculator {
         prefix += ". "
         let clause = firstOfMonthCarry ?? ""
 
-        // "Over for the month" only when the overage would round to at least $1; a few
-        // cents over reads as the ordinary pace sentence instead of "$0 over".
-        if spent - monthlyAmount >= rightOnTolerance {
+        // "Over" only when the overage would round to at least $1; a few cents over reads
+        // as the ordinary pace sentence instead of "$0 over". `windowBudget` is the whole
+        // monthly amount for a full month, or the prorated window budget for a mid-month
+        // start, whose copy says "period" because the budget isn't the full month's.
+        if spent - windowBudget >= rightOnTolerance {
             return ProgressSentence(
-                lead: prefix + "You've spent \(whole(spent)) of your \(whole(monthlyAmount)) budget, ",
-                deficitPhrase: "\(whole(spent - monthlyAmount)) over for the month",
+                lead: prefix + "You've spent \(whole(spent)) of your \(whole(windowBudget)) budget" + (trackingSince == nil ? ", " : " for this period, "),
+                deficitPhrase: "\(whole(spent - windowBudget)) over" + (trackingSince == nil ? " for the month" : ""),
                 tail: "." + clause
             )
         }
@@ -261,24 +267,18 @@ enum BudgetSummaryCalculator {
     // MARK: - Projection
 
     private static func projection(
-        schedule: BaseSchedule,
-        windowStart: Date,
-        today: Date,
         elapsedDays: Int,
         dayOfMonth: Int,
         daysInMonth: Int,
         spent: Decimal,
         spentToday: Decimal,
-        calendar: Calendar
+        windowBudget: Decimal
     ) -> Projection? {
         let completedDays = elapsedDays - 1
         guard completedDays >= projectionMinimumCompletedDays, dayOfMonth < daysInMonth else { return nil }
 
         let rate = (spent - spentToday) / Decimal(completedDays)
         let projected = spent + rate * Decimal(daysInMonth - dayOfMonth)
-        let windowBudget = baseSum(
-            schedule, from: windowStart, days: daysInMonth - calendar.component(.day, from: windowStart) + 1, calendar: calendar
-        )
         let delta = windowBudget - projected
         let text: String
         if abs(delta) < rightOnTolerance {
