@@ -238,12 +238,16 @@ final class PlaidServiceLive: PlaidService {
                     backfillStoreForInvalidation.clear(for: candidate, itemID: item.itemID)
                 }
                 linkedAccountStoreForInvalidation.removeAll(itemID: item.itemID)
+                // Removed synchronously with the cursors/flags/accounts above so every
+                // reader (e.g. `TransactionImportService.refreshLinkedItemState()`, called
+                // right after the switch) sees one consistent "nothing linked" state; only
+                // the Keychain deletes need the async hop.
+                linkedItemStoreForInvalidation.remove(itemID: item.itemID)
             }
             Task { @MainActor in
                 self?.linkedItem = nil
                 self?.linkedItems = []
                 for item in items {
-                    linkedItemStoreForInvalidation.remove(itemID: item.itemID)
                     try? await keychainForInvalidation.delete(for: PlaidKeychainKey.accessToken(itemID: item.itemID))
                 }
             }

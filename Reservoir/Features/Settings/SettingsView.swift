@@ -267,9 +267,12 @@ struct SettingsView: View {
     /// time a link can complete; see `PlaidServiceLive.onLinkSuccess`.
     private func wireServiceHooks() {
         service.onRelinkSuccess = { [importService] in
-            importService?.refreshNeedsAttention()
+            importService?.refreshLinkedItemState()
         }
         service.onLinkSuccess = { [importService] itemID in
+            // Refresh first: the new item has no backfill flag, so budget cards show
+            // "Syncing account data..." from the moment the link succeeds.
+            importService?.refreshLinkedItemState()
             Task { await importService?.runImportAfterLink(itemID: itemID) }
         }
     }
@@ -297,7 +300,7 @@ struct SettingsView: View {
                 unlinkError = failure
             }
             await service.unlink(item)
-            importService.refreshNeedsAttention()
+            importService.refreshLinkedItemState()
         }
     }
 
@@ -339,6 +342,9 @@ struct SettingsView: View {
         environmentStore.set(newValue)
         environment = newValue
         pendingEnvironment = nil
+        // The store's invalidation hook clears items/cursors/flags/accounts synchronously;
+        // re-read the import service's cached copies so nothing stale lingers.
+        importService?.refreshLinkedItemState()
     }
 }
 
