@@ -11,7 +11,7 @@ final class AccountBackfillImportTests: XCTestCase {
     private static let itemID = "item-1"
 
     override func setUpWithError() throws {
-        let schema = Schema(versionedSchema: SchemaV8.self)
+        let schema = Schema(versionedSchema: SchemaV9.self)
         container = try ModelContainer(
             for: schema, migrationPlan: ReservoirMigrationPlan.self,
             configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)]

@@ -2,11 +2,11 @@ import SwiftData
 
 enum ReservoirMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self, SchemaV5.self, SchemaV6.self, SchemaV7.self, SchemaV8.self]
+        [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self, SchemaV5.self, SchemaV6.self, SchemaV7.self, SchemaV8.self, SchemaV9.self]
     }
 
     static var stages: [MigrationStage] {
-        [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5, migrateV5toV6, migrateV6toV7, migrateV7toV8]
+        [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5, migrateV5toV6, migrateV6toV7, migrateV7toV8, migrateV8toV9]
     }
 
     /// Lightweight (inferred) migration: `SavingsGoal.dismissedAt` and
@@ -104,5 +104,12 @@ enum ReservoirMigrationPlan: SchemaMigrationPlan {
     static let migrateV7toV8 = MigrationStage.lightweight(
         fromVersion: SchemaV7.self,
         toVersion: SchemaV8.self
+    )
+
+    /// Lightweight (inferred) migration: `Budget` is a wholly new `@Model` type with no
+    /// renames or type changes to any existing model — see `SchemaV9`'s doc comment.
+    static let migrateV8toV9 = MigrationStage.lightweight(
+        fromVersion: SchemaV8.self,
+        toVersion: SchemaV9.self
     )
 }
