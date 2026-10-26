@@ -26,6 +26,9 @@ struct BudgetFormView: View {
     @State private var linkedAccounts: [LinkedAccount] = []
     @State private var earliestImportedDate: Date?
     @State private var saveError: String?
+    /// Set for the duration of `save()` (and until the sheet dismisses on success) so a
+    /// second tap on Save/Create can't run a second write while the first is finishing.
+    @State private var isSaving = false
 
     private let referenceDate: Date = .now
     private let calendar: Calendar = .current
@@ -166,7 +169,7 @@ struct BudgetFormView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(mode.isEdit ? "Save" : "Create") { save() }
-                        .disabled(!validation.isValid)
+                        .disabled(!validation.isValid || isSaving)
                         .accessibilityIdentifier("budget.form.submit")
                 }
             }
@@ -198,6 +201,8 @@ struct BudgetFormView: View {
     }
 
     private func save() {
+        guard !isSaving else { return }
+        isSaving = true
         let ordered = pickerGroups.flatMap(\.rows).map(\.id).filter(selectedAccountIDs.contains)
         let error: String?
         switch mode {
@@ -221,6 +226,7 @@ struct BudgetFormView: View {
         }
         if let error {
             saveError = error
+            isSaving = false
         } else {
             dismiss()
         }

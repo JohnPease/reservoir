@@ -111,7 +111,7 @@ struct ActiveGoalCardView: View {
             .accessibilityIdentifier("goals.card.paceContent")
         }
         .padding()
-        .background(Color("ReservoirSurface"), in: RoundedRectangle(cornerRadius: 12))
+        .reservoirCardBackground()
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("goals.card")
     }

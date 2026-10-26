@@ -25,7 +25,7 @@ struct BudgetHeroCardView: View {
             BudgetStatusView(state: state, onChooseAccounts: onChooseAccounts)
                 .padding()
                 .frame(maxWidth: .infinity)
-                .background(Color("ReservoirSurface"), in: RoundedRectangle(cornerRadius: 12))
+                .reservoirCardBackground()
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier(HeroIdentifiers.budget.container)
         }
@@ -91,10 +91,12 @@ struct BudgetCardView: View {
                     Image(systemName: "pencil")
                         .foregroundStyle(Color("ReservoirTextSecondary"))
                 }
+                .accessibilityLabel("Edit monthly budget")
                 .accessibilityIdentifier("budget.card.edit")
                 Button(role: .destructive, action: onDelete) {
                     Image(systemName: "trash")
                 }
+                .accessibilityLabel("Delete monthly budget")
                 .accessibilityIdentifier("budget.card.delete")
             }
 
@@ -125,7 +127,7 @@ struct BudgetCardView: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color("ReservoirSurface"), in: RoundedRectangle(cornerRadius: 12))
+        .reservoirCardBackground()
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("budget.card")
     }
@@ -153,7 +155,7 @@ struct BudgetSetRowView: View {
             }
             .padding()
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color("ReservoirSurface"), in: RoundedRectangle(cornerRadius: 12))
+            .reservoirCardBackground()
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("budget.setRow")

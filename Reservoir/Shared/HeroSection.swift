@@ -109,9 +109,6 @@ struct StatCard: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
-        .background(
-            isOverLimit ? Color("ReservoirSurfaceDeficit") : Color("ReservoirSurface"),
-            in: RoundedRectangle(cornerRadius: 12)
-        )
+        .reservoirCardBackground(isOverLimit ? Color("ReservoirSurfaceDeficit") : Color("ReservoirSurface"))
     }
 }

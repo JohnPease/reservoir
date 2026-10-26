@@ -496,8 +496,7 @@ enum UITestScenario: String {
             break
 
         case .budgetSeeded:
-            let calendar = Calendar.current
-            let firstOfMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: .now))!
+            let firstOfMonth = BudgetValidator.defaultStartDate(referenceDate: .now)
             context.insert(Budget(
                 monthlyAmount: 3000,
                 startDate: firstOfMonth,
@@ -515,8 +514,7 @@ enum UITestScenario: String {
             ))
 
         case .budgetTwoAccounts:
-            let calendar = Calendar.current
-            let firstOfMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: .now))!
+            let firstOfMonth = BudgetValidator.defaultStartDate(referenceDate: .now)
             context.insert(Budget(
                 monthlyAmount: 3000,
                 startDate: firstOfMonth,
