@@ -64,7 +64,7 @@ enum BudgetAccountService {
     }
 
     static let unlinkWarning =
-        "This account is part of your monthly budget. Kept transactions will stop counting toward it once the account is removed."
+        "This connection includes accounts in your monthly budget. They'll be removed from it, and any transactions you keep stop counting toward it."
 
     // MARK: - Picker data
 

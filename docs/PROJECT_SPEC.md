@@ -82,7 +82,8 @@ selection never changes goal account associations. Start date range:
 `[max(today - 730 days, earliest imported transaction of the selected accounts),
 today]`. Unlinking an item removes its accounts from the selection; an empty
 selection shows "Choose accounts", and while account backfill runs the budget
-shows "Syncing account data...".
+shows "Syncing account data..." (this includes an item that can't sync until it
+is relinked, since its backfill can't complete).
 
 *Budget insights* (PR3), all month-local and identical in carry and reset mode:
 `windowStart = max(1st of month, startDate)`; `spent` = counted spend from

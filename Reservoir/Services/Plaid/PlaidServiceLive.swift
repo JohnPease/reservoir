@@ -492,10 +492,12 @@ final class PlaidServiceLive: PlaidService {
 
     /// Severs the local Plaid connection for `item` — Settings' "Unlink" action.
     /// Deliberately narrow, matching this story's explicit acceptance criterion:
-    /// clears only `LinkedItemStore` (linked-item metadata) and the Keychain access
-    /// token, the same two things `PlaidEnvironmentStore.onChange`'s existing
-    /// invalidation hook clears on an environment switch. It never touches
-    /// `SpendTransaction` rows — whether those are kept or deleted is the caller's choice.
+    /// clears only the item's own connection state — its `LinkedItemStore` entry, the
+    /// Keychain access token, its `LinkedAccountStore` accounts and account-backfill flag
+    /// (reservoir-j8t), the same things `PlaidEnvironmentStore.onChange`'s invalidation
+    /// hook clears on an environment switch. It never touches `SpendTransaction` rows or
+    /// a budget's selection — whether rows are kept or deleted, and pruning the budget
+    /// (which must read the accounts before this clears them), are the caller's job.
     ///
     /// Also clears that item's Plaid sync cursor (reservoir-wo1): relinking after an unlink
     /// is a fresh Link, which mints a NEW Plaid item_id, so the old cursor is orphaned

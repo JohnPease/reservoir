@@ -222,8 +222,8 @@ started opening the real `GoalFormView`. Covered by
 tracked independently of savings goals. A transaction counts toward it only
 if its `plaidAccountID` is in the budget's `selectedAccountIDs`, it isn't
 tagged fixed, and it falls on/after `startDate` — manual and not-yet-backfilled
-rows (no account) never count. That rule lives in exactly one function,
-`BudgetCalculator.countsTowardBudget`. The same transaction may also count
+rows (no account) never count. That rule lives in one predicate,
+`BudgetCalculator.countsTowardBudget` (an overload only pre-normalizes the start day). The same transaction may also count
 toward a goal; selecting budget accounts never touches
 `GoalAccountAssociationService` or any goal's `associatedItemIDs`.
 
@@ -246,7 +246,13 @@ item is unlinked or the Plaid environment changes (read from
 `LinkedAccountStore` before it is cleared). While
 `TransactionImportService.isAccountBackfillComplete` is false the budget cards
 show "Syncing account data..." instead of numbers; an empty selection shows
-"Choose accounts" (`BudgetCalculator.cardState`).
+"Choose accounts" (`BudgetCalculator.cardState`). The flag is false until every
+linked item has completed its backfill, so an item that cannot sync (for
+example one waiting on a relink after `ITEM_LOGIN_REQUIRED`) keeps the budget
+on "Syncing account data..." until it is relinked or unlinked. The flag is a
+cached copy of `UserDefaults`-backed state, refreshed at the start and end of
+every import run and by `refreshLinkedItemState()` after link, relink, unlink
+and environment changes.
 
 **Budget insights** (reservoir-j8t PR3): `BudgetSummaryCalculator` (pure; SwiftData
 for model types only) resolves a single Codable `BudgetInsights` value that the
@@ -805,8 +811,12 @@ app-wide setting.
     `SavingsGoal.transactions`, so they stay consistent. A failure is shown in
     a "Couldn't save" alert and the item stays linked. Finally
     `PlaidServiceLive.unlink(_ item:)` clears that item's `LinkedItemStore`
-    entry, Keychain access token, and sync cursor (reservoir-wo1; both
-    choices, since the cursor is orphaned either way).
+    entry, Keychain access token, sync cursor, account-backfill flag and
+    `LinkedAccountStore` accounts (reservoir-wo1; both choices, since the
+    cursor is orphaned either way). If the monthly budget includes any of the
+    item's accounts the confirmation adds a line saying so, and the accounts are
+    pruned from the budget's selection (`BudgetAccountService.prune`, before the
+    store is cleared); kept transactions then stop counting toward the budget.
   - **Account capture and backfill** (reservoir-j8t; feeds the monthly budget).
     `/transactions/sync` transactions carry an `account_id` (decoded
     optionally, also on `removed` entries) and each response a top-level
@@ -820,7 +830,7 @@ app-wide setting.
     `UserDefaults` JSON behind `LinkedAccountStoring`, same pattern as
     `LinkedItemStore`). Each page lists only the accounts its own transactions
     reference and a no-change sync returns `accounts: []`, so pages are
-    **upsert-merged by `account_id` and absence never deletes**. A item's
+    **upsert-merged by `account_id` and absence never deletes**. An item's
     accounts are removed on unlink and on environment change.
     **Safe replay**: in the `added` loop, before dedup matching, a transaction
     whose `plaidTransactionID` already exists locally only gets a nil

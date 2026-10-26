@@ -1312,8 +1312,9 @@ final class TransactionImportService {
     }
 
     /// Deletes imported transactions (same scoping as `removeLocalData`), discards queued
-    /// merges, and clears sync cursors for every item that is not currently linked. One
-    /// `saveOrRollback`; cursors (not transactional) are cleared only after it succeeds.
+    /// merges, and clears sync cursors, account-backfill flags and cached accounts for
+    /// every item that is not currently linked. One `saveOrRollback`; the cursor, flag and
+    /// account cleanup (not transactional) happens only after it succeeds.
     /// No-ops with a message while a sync is running. Returns `nil` on success.
     func removeOrphanedLocalData() -> String? {
         guard !isSyncActive else {
