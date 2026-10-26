@@ -145,6 +145,44 @@ final class BudgetSummaryCalculatorTests: XCTestCase {
         XCTAssertEqual(result.sentence.deficitPhrase, "$1 over for the month")
     }
 
+    func testMidMonthStartOverBudgetComparesAgainstProratedWindowBudget() throws {
+        // Start Oct 12: window Oct 12..31 = 20 days = $2,000 of the $3,100 monthly amount.
+        // $2,500 is under the full amount but over the prorated one.
+        let b = budget(monthly: 3100, start: date(2026, 10, 12))
+        let t = [txn(2500, date(2026, 10, 13))]
+        let result = try XCTUnwrap(insights(b, t, on: date(2026, 10, 14)))
+        XCTAssertEqual(
+            result.sentence.text,
+            "Day 14 of 31 (tracking since Oct 12). You've spent $2,500 of your $2,000 budget for this period, $500 over."
+        )
+        XCTAssertEqual(result.sentence.deficitPhrase, "$500 over")
+    }
+
+    func testMidMonthStartUnderProratedBudgetKeepsPaceSentence() throws {
+        let b = budget(monthly: 3100, start: date(2026, 10, 12))
+        let t = [txn(1999, date(2026, 10, 13))]
+        let result = try XCTUnwrap(insights(b, t, on: date(2026, 10, 14)))
+        XCTAssertFalse(result.sentence.text.contains("budget for this period"))
+    }
+
+    func testMidMonthStartOverSentenceAndProjectionAgree() throws {
+        // Window budget $2,200 (start Oct 10). Spending $2,300 by Oct 17 is over the window
+        // budget: the sentence and the projection must both say over.
+        let b = budget(monthly: 3100, start: date(2026, 10, 10))
+        let t = [txn(2300, date(2026, 10, 11))]
+        let result = try XCTUnwrap(insights(b, t, on: date(2026, 10, 17)))
+        XCTAssertEqual(result.sentence.deficitPhrase, "$100 over")
+        XCTAssertEqual(result.projection?.windowBudget, 2200)
+        XCTAssertTrue(try XCTUnwrap(result.projection).projectedDelta < 0)
+    }
+
+    func testMidMonthStartOverByLessThanADollarIsNotOver() throws {
+        let b = budget(monthly: 3100, start: date(2026, 10, 12))
+        let t = [txn(Decimal(string: "2000.50")!, date(2026, 10, 13))]
+        let result = try XCTUnwrap(insights(b, t, on: date(2026, 10, 14)))
+        XCTAssertFalse(result.sentence.text.contains("budget for this period"))
+    }
+
     func testFirstOfMonthCarryClauses() throws {
         // September: base 100/day (3000/30), spend nothing => carry in = +3000.
         let b = budget(monthly: 3000, start: date(2026, 9, 1))

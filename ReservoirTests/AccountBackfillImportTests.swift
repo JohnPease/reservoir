@@ -566,12 +566,67 @@ final class AccountBackfillImportTests: XCTestCase {
         XCTAssertFalse(sut.needsAttention)
         items.save(LinkedItem(itemID: "x", institutionName: "X", linkedAt: .now, needsAttention: true))
         sut.refreshLinkedItemState()
-        XCTAssertFalse(sut.isAccountBackfillComplete, "a freshly linked item has no backfill flag yet.")
+        XCTAssertTrue(sut.isAccountBackfillComplete, "an item awaiting relink doesn't gate the budget.")
         XCTAssertTrue(sut.needsAttention)
         items.remove(itemID: "x")
         sut.refreshLinkedItemState()
-        XCTAssertTrue(sut.isAccountBackfillComplete, "unlinking the only item clears the stale flag.")
+        XCTAssertTrue(sut.isAccountBackfillComplete)
         XCTAssertFalse(sut.needsAttention)
+    }
+
+    // MARK: - Gate excludes needs-attention items
+
+    private func gateService(_ items: StubLinkedItemStore, _ backfill: StubAccountBackfillStore) -> TransactionImportService {
+        TransactionImportService(
+            modelContext: context, keychain: StubKeychain(), urlSession: session(),
+            environmentStore: StubEnvironmentStore(.sandbox), cursorStore: StubCursorStore(),
+            linkedItemStore: items, linkedAccountStore: StubLinkedAccountStore(), backfillStore: backfill
+        )
+    }
+
+    func test_gate_healthyStillBackfilling_isNotComplete() {
+        let items = StubLinkedItemStore()
+        items.save(LinkedItem(itemID: "ok", institutionName: "OK", linkedAt: .now))
+        items.save(LinkedItem(itemID: "bad", institutionName: "Bad", linkedAt: .now, needsAttention: true))
+        let sut = gateService(items, StubAccountBackfillStore())
+        XCTAssertFalse(sut.isAccountBackfillComplete, "a healthy item still backfilling keeps Syncing, even beside a needs-attention one.")
+    }
+
+    func test_gate_allItemsNeedAttention_isComplete() {
+        let items = StubLinkedItemStore()
+        items.save(LinkedItem(itemID: "a", institutionName: "A", linkedAt: .now, needsAttention: true))
+        items.save(LinkedItem(itemID: "b", institutionName: "B", linkedAt: .now, needsAttention: true))
+        XCTAssertTrue(gateService(items, StubAccountBackfillStore()).isAccountBackfillComplete)
+    }
+
+    func test_gate_recomputesWhenItemFlipsToNeedsAttentionAndBack() {
+        let items = StubLinkedItemStore()
+        let backfill = StubAccountBackfillStore()
+        items.save(LinkedItem(itemID: "x", institutionName: "X", linkedAt: .now))
+        let sut = gateService(items, backfill)
+        XCTAssertFalse(sut.isAccountBackfillComplete)
+
+        items.setNeedsAttention(true, itemID: "x")
+        sut.refreshLinkedItemState()
+        XCTAssertTrue(sut.isAccountBackfillComplete, "flipping to needs-attention stops gating.")
+
+        items.setNeedsAttention(false, itemID: "x")
+        sut.refreshLinkedItemState()
+        XCTAssertFalse(sut.isAccountBackfillComplete, "after relink the unfinished backfill gates again.")
+
+        backfill.setComplete(for: .sandbox, itemID: "x")
+        sut.refreshAccountBackfillStatus()
+        XCTAssertTrue(sut.isAccountBackfillComplete)
+    }
+
+    func test_gate_itemFlippedByFailedSync_recomputesImmediately() async {
+        ScriptedProtocol.script = [(400, #"{"error_type":"ITEM_ERROR","error_code":"ITEM_LOGIN_REQUIRED","error_message":"x"}"#)]
+        let h = makeHarness(storedCursor: "old-cursor")
+        XCTAssertFalse(h.sut.isAccountBackfillComplete)
+        await h.sut.runImport()
+        XCTAssertTrue(h.sut.needsAttention)
+        XCTAssertTrue(h.sut.isAccountBackfillComplete, "an item needing relink must not leave the budget stuck on Syncing.")
+        XCTAssertFalse(h.backfill.isComplete(for: .sandbox, itemID: Self.itemID), "its backfill flag stays unset so it runs after relink.")
     }
 
     func test_backfill_notReadyEmptyPage_doesNotSetFlag() async {

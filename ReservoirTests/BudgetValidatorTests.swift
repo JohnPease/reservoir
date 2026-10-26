@@ -36,6 +36,16 @@ final class BudgetValidatorTests: XCTestCase {
         XCTAssertEqual(validate(amount: -5, start: date(2026, 10, 1)).amountError, "Enter a monthly amount greater than $0.")
     }
 
+    func testAmountIsCappedAtOneMillion() {
+        let message = "Enter an amount of $1,000,000 or less."
+        XCTAssertNil(validate(amount: 1_000_000, start: date(2026, 10, 1)).amountError)
+        XCTAssertTrue(validate(amount: 1_000_000, start: date(2026, 10, 1)).isValid)
+        XCTAssertEqual(validate(amount: Decimal(string: "1000000.01")!, start: date(2026, 10, 1)).amountError, message)
+        XCTAssertFalse(validate(amount: Decimal(string: "1000000.01")!, start: date(2026, 10, 1)).isValid)
+        XCTAssertEqual(validate(amount: 5_000_000, start: date(2026, 10, 1)).amountError, message)
+        XCTAssertNil(validate(amount: Decimal(string: "999999.99")!, start: date(2026, 10, 1)).amountError)
+    }
+
     func testNeedsAtLeastOneAccount() {
         let result = validate(accounts: [], start: date(2026, 10, 1))
         XCTAssertEqual(result.accountsError, "Choose at least one account.")
