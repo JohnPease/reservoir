@@ -1,0 +1,128 @@
+import Foundation
+import SwiftData
+
+/// Business logic for the monthly budget (reservoir-j8t): decides which transactions
+/// count, maps `Budget` + `SpendTransaction`s into the plain value type
+/// `DailyLimitCalculator` operates on, and produces the same `Summary` the Today hero
+/// consumes. Imports SwiftData for the model types only (STANDARDS.md §4's `*Calculator`
+/// exception); never SwiftUI.
+///
+/// The budget has no revision history. Everything here is a pure function of (the
+/// budget's *current* fields, the transactions, the reference date): editing the budget
+/// recomputes the whole window from `startDate` as if the new settings had always applied.
+enum BudgetCalculator {
+
+    // MARK: - Which transactions count
+
+    /// The single predicate for "does this transaction count toward the budget". A
+    /// transaction counts only if it belongs to a selected Plaid account (manual rows and
+    /// not-yet-backfilled rows have no account and so never count), isn't a fixed
+    /// expense, and falls on or after `startDate`. Independent of savings goals — the same
+    /// transaction may also count toward a goal.
+    static func countsTowardBudget(
+        _ transaction: SpendTransaction,
+        selectedAccountIDs: Set<String>,
+        startDate: Date,
+        calendar: Calendar = .current
+    ) -> Bool {
+        guard let accountID = transaction.plaidAccountID,
+              selectedAccountIDs.contains(accountID),
+              transaction.type != .fixed
+        else { return false }
+        return calendar.startOfDay(for: transaction.date) >= calendar.startOfDay(for: startDate)
+    }
+
+    /// Convenience over `countsTowardBudget(_:selectedAccountIDs:startDate:)` for a whole
+    /// budget; builds the selection set once per call site that filters a list.
+    static func countingTransactions(
+        _ transactions: [SpendTransaction],
+        for budget: Budget,
+        calendar: Calendar = .current
+    ) -> [SpendTransaction] {
+        let selected = Set(budget.selectedAccountIDs)
+        guard !selected.isEmpty else { return [] }
+        return transactions.filter {
+            countsTowardBudget($0, selectedAccountIDs: selected, startDate: budget.startDate, calendar: calendar)
+        }
+    }
+
+    // MARK: - DailyLimitCalculator mapping
+
+    /// `effectiveStartDate` is exactly `budget.startDate` — no `createdAt` floor (unlike
+    /// goals): a budget's spend comes from imported history, so a back-dated start has
+    /// real transactions to count.
+    static func carryForwardInput(
+        for budget: Budget,
+        transactions: [SpendTransaction],
+        calendar: Calendar = .current
+    ) -> GoalCarryForwardInput {
+        carryForwardInput(for: budget, counting: countingTransactions(transactions, for: budget, calendar: calendar))
+    }
+
+    private static func carryForwardInput(for budget: Budget, counting: [SpendTransaction]) -> GoalCarryForwardInput {
+        GoalCarryForwardInput(
+            id: budget.persistentModelID,
+            schedule: .monthly(budget.monthlyAmount),
+            monthBoundary: budget.carriesAcrossMonths ? .carry : .reset,
+            effectiveStartDate: budget.startDate,
+            spendEntries: counting.map {
+                GoalCarryForwardInput.SpendEntry(date: $0.date, amount: $0.amount, kind: .variable)
+            }
+        )
+    }
+
+    // MARK: - Summary
+
+    /// The budget hero's figures, in the same shape as the savings summary. `nil` when
+    /// there is no budget. With an empty account selection the figures are all
+    /// spend-free; callers gate on `cardState` first so that is never shown as "$0".
+    static func summary(
+        budget: Budget?,
+        allTransactions: [SpendTransaction],
+        referenceDate: Date,
+        calendar: Calendar = .current
+    ) -> TodayScreenCalculator.Summary? {
+        guard let budget else { return nil }
+        let counting = countingTransactions(allTransactions, for: budget, calendar: calendar)
+        let input = carryForwardInput(for: budget, counting: counting)
+        let limit = DailyLimitCalculator.dailyLimit(for: input, asOf: referenceDate, calendar: calendar)
+
+        let today = calendar.startOfDay(for: referenceDate)
+        let spentToday = counting.reduce(Decimal(0)) { total, transaction in
+            calendar.startOfDay(for: transaction.date) == today ? total + transaction.amount : total
+        }
+        return TodayScreenCalculator.Summary(
+            dailyBase: limit.dailyBase,
+            carriedForward: limit.carryForward,
+            limit: limit.limit,
+            spentToday: spentToday,
+            remaining: limit.limit - spentToday
+        )
+    }
+
+    // MARK: - Card state
+
+    /// What a budget card (Today hero or Plans card) should show. Kept here so the copy
+    /// and gating order live in pure Swift, not in views.
+    enum CardState: Equatable {
+        /// Account backfill still running: transactions can't be attributed to accounts.
+        case syncing
+        /// Budget exists but no account is selected (e.g. after unlinking the last one).
+        case chooseAccounts
+        case active
+
+        var message: String? {
+            switch self {
+            case .syncing: return "Syncing account data..."
+            case .chooseAccounts: return "Choose accounts"
+            case .active: return nil
+            }
+        }
+    }
+
+    static func cardState(for budget: Budget, isAccountBackfillComplete: Bool) -> CardState {
+        if !isAccountBackfillComplete { return .syncing }
+        if budget.selectedAccountIDs.isEmpty { return .chooseAccounts }
+        return .active
+    }
+}
