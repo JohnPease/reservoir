@@ -5,11 +5,12 @@ import XCTest
 /// above/without a savings goal, and delete. Math is covered by unit tests.
 final class BudgetUITests: XCTestCase {
 
-    private func launchedApp(scenario: String, seedAccount: Bool = false) -> XCUIApplication {
+    private func launchedApp(scenario: String, seedAccount: Bool = false, seedSecondAccount: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["UITEST_SCENARIO"] = scenario
         app.launchEnvironment["UITEST_RESET_PLAID_LINKED_ITEMS"] = "1"
         if seedAccount { app.launchEnvironment["UITEST_SEED_LINKED_ACCOUNT"] = "1" }
+        if seedSecondAccount { app.launchEnvironment["UITEST_SEED_SECOND_LINKED_ACCOUNT"] = "1" }
         app.launch()
         return app
     }
@@ -91,5 +92,42 @@ final class BudgetUITests: XCTestCase {
         confirm.tap()
         XCTAssertTrue(app.buttons["budget.setRow"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.otherElements["budget.card"].exists)
+    }
+
+    // MARK: - Insights (PR3)
+
+    private func assertSentence(_ app: XCUIApplication, spent: String, file: StaticString = #filePath, line: UInt = #line) {
+        let sentence = app.descendants(matching: .any)["budget.progressSentence"]
+        XCTAssertTrue(sentence.waitForExistence(timeout: 5), file: file, line: line)
+        XCTAssertTrue(sentence.label.hasPrefix("Day "), sentence.label, file: file, line: line)
+        XCTAssertTrue(sentence.label.contains("You've spent \(spent)"), sentence.label, file: file, line: line)
+    }
+
+    func testTodayBudgetHeroShowsProgressSentenceOnly() {
+        let app = launchedApp(scenario: "budgetSeeded", seedAccount: true)
+        XCTAssertTrue(app.otherElements["today.budgetHero"].waitForExistence(timeout: 5))
+        assertSentence(app, spent: "$20")
+        XCTAssertFalse(app.staticTexts["budget.projection"].exists)
+        XCTAssertFalse(app.otherElements["budget.breakdown"].exists)
+    }
+
+    func testPlansCardShowsSentenceAndHidesBreakdownForSingleAccount() {
+        let app = launchedApp(scenario: "budgetSeeded", seedAccount: true)
+        app.tabBars.buttons["Plans"].tap()
+        XCTAssertTrue(app.otherElements["budget.card"].waitForExistence(timeout: 5))
+        assertSentence(app, spent: "$20")
+        XCTAssertFalse(app.otherElements["budget.breakdown"].exists)
+    }
+
+    func testPlansCardShowsSentenceAndBreakdownForTwoAccounts() {
+        let app = launchedApp(scenario: "budgetTwoAccounts", seedAccount: true, seedSecondAccount: true)
+        app.tabBars.buttons["Plans"].tap()
+        XCTAssertTrue(app.otherElements["budget.card"].waitForExistence(timeout: 5))
+        assertSentence(app, spent: "$65")
+        XCTAssertTrue(app.otherElements["budget.breakdown"].exists)
+        let card = app.descendants(matching: .any)["budget.breakdown.row.uitest-account-2"]
+        XCTAssertTrue(card.exists)
+        XCTAssertTrue(card.label.contains("Card ••1111"), card.label)
+        XCTAssertTrue(app.descendants(matching: .any)["budget.breakdown.row.uitest-account"].exists)
     }
 }

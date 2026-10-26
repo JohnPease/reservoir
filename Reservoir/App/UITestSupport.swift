@@ -76,6 +76,11 @@ enum UITestScenario: String {
     /// card with no goal prompt; Plans shows the budget card (reservoir-j8t).
     case budgetSeeded
 
+    /// Like `budgetSeeded` but selecting two accounts ("uitest-account", $20 today, and
+    /// "uitest-account-2", $45 today) so the Plans breakdown shows. Pair with
+    /// `UITEST_SEED_LINKED_ACCOUNT=1` and `UITEST_SEED_SECOND_LINKED_ACCOUNT=1`.
+    case budgetTwoAccounts
+
     static var current: UITestScenario? {
         ProcessInfo.processInfo.environment["UITEST_SCENARIO"].flatMap(UITestScenario.init(rawValue:))
     }
@@ -459,6 +464,18 @@ enum UITestScenario: String {
             UserDefaults.standard.removeObject(forKey: "plaid.linkedAccounts")
         }
         guard environment["UITEST_SEED_LINKED_ACCOUNT"] == "1" else { return }
+        if environment["UITEST_SEED_SECOND_LINKED_ACCOUNT"] == "1" {
+            LinkedAccountStore().upsert([
+                LinkedAccount(
+                    accountID: "uitest-account-2",
+                    itemID: "uitest-item",
+                    name: "Card",
+                    mask: "1111",
+                    type: "credit",
+                    institutionName: "UITest Bank"
+                )
+            ])
+        }
         LinkedAccountStore().upsert([
             LinkedAccount(
                 accountID: "uitest-account",
@@ -496,6 +513,27 @@ enum UITestScenario: String {
                 plaidItemID: "uitest-item",
                 plaidAccountID: "uitest-account"
             ))
+
+        case .budgetTwoAccounts:
+            let calendar = Calendar.current
+            let firstOfMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: .now))!
+            context.insert(Budget(
+                monthlyAmount: 3000,
+                startDate: firstOfMonth,
+                selectedAccountIDs: ["uitest-account", "uitest-account-2"]
+            ))
+            for (index, entry) in [("uitest-account", Decimal(20)), ("uitest-account-2", Decimal(45))].enumerated() {
+                context.insert(SpendTransaction(
+                    amount: entry.1,
+                    date: .now,
+                    merchantName: "Budget Merchant \(index)",
+                    type: .variable,
+                    entryMethod: .imported,
+                    plaidTransactionID: "uitest-budget-txn-\(index)",
+                    plaidItemID: "uitest-item",
+                    plaidAccountID: entry.0
+                ))
+            }
 
         case .normal:
             let startDate = Calendar.current.date(byAdding: .day, value: -5, to: .now)!
