@@ -398,4 +398,68 @@ final class MigrationPlanTests: XCTestCase {
         XCTAssertEqual(fetchedTransactions.count, 1)
         XCTAssertEqual(fetchedTransactions.first?.merchantName, "Coffee Shop", "existing data must survive the migration intact.")
     }
+
+    /// Regression coverage for reservoir-j8t PR1: a store created under `SchemaV7` must
+    /// open cleanly under `SchemaV8` via `ReservoirMigrationPlan` (lightweight stage), with
+    /// existing data intact and the new `plaidAccountID` fields defaulted to `nil` on both
+    /// `SpendTransaction` and `PendingTransactionMerge`.
+    func testV7StoreMigratesToV8WithDataIntactAndPlaidAccountIDDefaultedNil() throws {
+        let v7Schema = Schema(versionedSchema: SchemaV7.self)
+        let v7Configuration = ModelConfiguration(schema: v7Schema, url: storeURL)
+        do {
+            let v7Container = try ModelContainer(for: v7Schema, configurations: [v7Configuration])
+            let context = ModelContext(v7Container)
+            let manual = SchemaV7.SpendTransaction(
+                amount: 12.50,
+                date: .now,
+                merchantName: "Coffee Shop",
+                type: .variable,
+                entryMethod: .manual
+            )
+            context.insert(manual)
+            let imported = SchemaV7.SpendTransaction(
+                amount: 30,
+                date: .now,
+                merchantName: "Grocer",
+                type: .fixed,
+                entryMethod: .imported,
+                plaidTransactionID: "plaid-existing",
+                plaidItemID: "item-1",
+                isManualOverride: true,
+                wasMergedFromManual: true
+            )
+            context.insert(imported)
+            context.insert(SchemaV7.PendingTransactionMerge(
+                plaidTransactionID: "plaid-pending-existing",
+                incomingAmount: 12.50,
+                incomingDate: .now,
+                incomingMerchantName: "Coffee Shop",
+                manualTransaction: manual,
+                plaidItemID: "item-1"
+            ))
+            try context.save()
+        }
+
+        let v8Schema = Schema(versionedSchema: SchemaV8.self)
+        let v8Configuration = ModelConfiguration(schema: v8Schema, url: storeURL)
+        let v8Container = try ModelContainer(
+            for: v8Schema,
+            migrationPlan: ReservoirMigrationPlan.self,
+            configurations: [v8Configuration]
+        )
+        let context = ModelContext(v8Container)
+        let pending = try context.fetch(FetchDescriptor<SchemaV8.PendingTransactionMerge>())
+        XCTAssertEqual(pending.count, 1)
+        XCTAssertEqual(pending.first?.plaidItemID, "item-1")
+        XCTAssertNil(pending.first?.plaidAccountID)
+
+        let transactions = try context.fetch(FetchDescriptor<SchemaV8.SpendTransaction>())
+        XCTAssertEqual(transactions.count, 2)
+        XCTAssertTrue(transactions.allSatisfy { $0.plaidAccountID == nil })
+        let migratedImport = transactions.first { $0.plaidTransactionID == "plaid-existing" }
+        XCTAssertEqual(migratedImport?.plaidItemID, "item-1")
+        XCTAssertEqual(migratedImport?.isManualOverride, true)
+        XCTAssertEqual(migratedImport?.wasMergedFromManual, true)
+        XCTAssertEqual(migratedImport?.type, .fixed)
+    }
 }
