@@ -248,6 +248,37 @@ item is unlinked or the Plaid environment changes (read from
 show "Syncing account data..." instead of numbers; an empty selection shows
 "Choose accounts" (`BudgetCalculator.cardState`).
 
+**Budget insights** (reservoir-j8t PR3): `BudgetSummaryCalculator` (pure; SwiftData
+for model types only) resolves a single Codable `BudgetInsights` value that the
+views just render. Everything is month-local (calendar month, `Calendar.current`)
+and identical in carry and reset mode. `windowStart` is the later of the 1st of
+the month and `budget.startDate`; `spent` is counted spend
+(`BudgetCalculator.countsTowardBudget`) from `windowStart` through today;
+`budgetedToDate` is the sum of the `BaseSchedule` daily bases over those days;
+`paceDelta = budgetedToDate - spent` (positive = under pace).
+- *Progress sentence* (Today budget hero and Plans card): "Day 14 of 31. You've
+  spent $1,240, about $60 under pace." (or "over pace" in `ReservoirDeficit`, or
+  "right on pace" within $1). Variants: "No spending yet this month." on day 1
+  with no spend; "(tracking since Oct 12)" for a mid-month start; "You've spent
+  $3,150 of your $3,000 budget, $150 over for the month." once month spend
+  exceeds the budget; on the 1st only, a carry clause ("$X carried over from
+  last month.", "Starting $X in the hole from last month.", or in reset mode
+  "Fresh month, nothing carried over.").
+- *Projection* (Plans card only): `rate = spend through yesterday / completed
+  days`; `projected = spent + rate * (days left in month)`, compared with the
+  budget for the window (the monthly amount, or the sum of daily bases from a
+  mid-month start). Hidden until `projectionMinimumCompletedDays` (7) days have
+  completed, and on the month's last day.
+- *Per-account breakdown* (Plans card only): this month's counted spend per
+  selected account, highest first, zero-spend accounts included; names/masks come
+  from `LinkedAccountStore` ("Unknown account" if the account's item is still
+  linked but its metadata isn't cached; "Removed account", plus an "N accounts no
+  longer linked." caption, when it isn't); a muted "Needs relink" shows for items
+  flagged `needsAttention`. Hidden for a single selected account.
+- Insights are withheld while the card is "Syncing account data..." or "Choose
+  accounts". `BudgetInsights.monthResult` (budgeted, spent, delta, endingCarry) is
+  exposed for the widget and month-end review but nothing is persisted.
+
 **Plans tab** (formerly "Goals"): the tab is labeled Plans (SF symbol and
 `AppTab.goals`/`GoalsView`/`goals.*` accessibility ids unchanged). It shows a
 "Monthly budget" section (budget card with Edit/Delete via `BudgetFormView`, or
@@ -256,7 +287,10 @@ content). On Today, the budget hero renders above the savings hero (titled
 "Savings limit" only when both show) using the shared
 `Shared/HeroSection.swift`; a budget with no goal shows no goal prompt, and
 the no-goal-no-budget empty state adds an "Or set a monthly budget instead."
-link.
+link. The Today budget hero ends with the progress sentence; the Plans budget card
+shows the sentence, projection, and breakdown (accessibility ids
+`budget.progressSentence`, `budget.projection`, `budget.breakdown`,
+`budget.breakdown.row.<accountID>`).
 
 **Goals screen**: `Features/Goals/GoalsView.swift` lists every goal in three
 sections — active (sorted by `targetDate` ascending), completed-but-
@@ -991,7 +1025,9 @@ to confirm rather than decided unilaterally.
   amount, choose which linked accounts it tracks (account-level selection),
   pick Carry over or Start fresh for month ends, and choose a start date
   (default the 1st of this month, up to 730 days back). Today shows a budget
-  hero (daily limit, spent today, remaining) above the savings one. See
+  hero (daily limit, spent today, remaining, plus a pace sentence) above the
+  savings one; the Plans card adds an end-of-month projection and a per-account
+  spend breakdown. See
   "Monthly budget" under Architecture above.
 - **Goals screen** (implemented): active-goal cards with a progress bar,
   target/start dates, and a per-card Pace/Simulation toggle for "at current

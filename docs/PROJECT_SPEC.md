@@ -79,6 +79,22 @@ today]`. Unlinking an item removes its accounts from the selection; an empty
 selection shows "Choose accounts", and while account backfill runs the budget
 shows "Syncing account data...".
 
+*Budget insights* (PR3), all month-local and identical in carry and reset mode:
+`windowStart = max(1st of month, startDate)`; `spent` = counted spend from
+`windowStart` through today; `budgetedToDate` = sum of daily bases over the same
+days; `paceDelta = budgetedToDate - spent` (positive = under pace). Today's budget
+hero shows only a progress sentence ("Day 14 of 31. You've spent $1,240, about $60
+under pace."; variants for day 1 / no spend, mid-month start, over budget for the
+month, and a carry/fresh clause on the 1st). The Plans card adds a projection
+(`rate = spend through yesterday / completed days`; `projected = spent + rate *
+days left`; "At this pace you'll finish about $180 under budget."; hidden before 7
+completed days and on the last day of the month) and a per-account breakdown
+(selected accounts, spend descending, zero rows kept, hidden for a single
+account; "Unknown account"/"Removed account"/"Needs relink" states). Insights
+follow the same syncing/"Choose accounts" gate as the cards. A `MonthResult`
+(budgeted, spent, delta, endingCarry) is computed for the future widget and
+month-end review but nothing is persisted.
+
 **Day boundary**: a day starts/ends at the device's local midnight
 (`Calendar.current`, not a fixed timezone). Time-zone travel shifts the
 boundary with the device — acceptable for a single-user app.
@@ -132,7 +148,7 @@ Single `TabView`, four tabs:
 | Goal progress + pace projection | Core "why" behind the daily number | Low — derived math from existing `SavingsGoal` fields | **MVP** |
 | Push notifications | Motivational hook | Local `UNUserNotificationCenter` scheduling, no backend needed | **Phase 2** |
 | Multi-account / multi-goal support | Useful once >1 goal exists | Landed. reservoir-loc.1: schema/storage foundation (SchemaV6's `SpendTransaction.plaidItemID`/`SavingsGoal.associatedItemIDs`, unbounded per-item Plaid storage, `GoalAccountAssociationService`). reservoir-loc.2: per-item dedup/import attribution. reservoir-loc.3: `SettingsView`'s unbounded linked-accounts list (independent relink/unlink/needsAttention per item) and `GoalFormView`'s multi-select account-association UI, both create and edit mode | **Phase 2 — done** |
-| Monthly budget (account-level) | Spend tracking without a savings goal; reuses the carry-forward loop | Moderate — `SchemaV9` `Budget`, monthly base schedule, account picker, Plans tab (reservoir-j8t) | **Phase 2 — PR2 landed (core); insights in PR3** |
+| Monthly budget (account-level) | Spend tracking without a savings goal; reuses the carry-forward loop | Moderate — `SchemaV9` `Budget`, monthly base schedule, account picker, Plans tab (reservoir-j8t) | **Phase 2 — PR2 landed (core); PR3 insights landed** |
 | Charts/trends | Satisfying, doesn't change daily behavior | Swift Charts, easy to add later | **Phase 2, low priority** |
 | Widgets / Lock Screen | High usefulness — glanceable number is the point | Needs App Group + shared SwiftData container | **Phase 2** |
 | Siri/Shortcuts | Low — single-user app | Nontrivial App Intents work for the value | **Cut** |
