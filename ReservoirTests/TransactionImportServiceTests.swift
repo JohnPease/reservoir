@@ -13,7 +13,7 @@ final class TransactionImportServiceTests: XCTestCase {
     private var context: ModelContext!
 
     override func setUpWithError() throws {
-        let schema = Schema(versionedSchema: SchemaV7.self)
+        let schema = Schema(versionedSchema: SchemaV8.self)
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         container = try ModelContainer(for: schema, migrationPlan: ReservoirMigrationPlan.self, configurations: [configuration])
         context = ModelContext(container)
@@ -217,6 +217,8 @@ final class TransactionImportServiceTests: XCTestCase {
         linkedItemStore: LinkedItemStoring = StubLinkedItemStore(
             initial: LinkedItem(itemID: TransactionImportServiceTests.defaultItemID, institutionName: "Test Bank", linkedAt: .now)
         ),
+        linkedAccountStore: LinkedAccountStoring = StubLinkedAccountStore(),
+        backfillStore: PlaidAccountBackfillStoring = StubAccountBackfillStore(defaultComplete: true),
         urlSession: URLSession? = nil,
         postLinkBackoff: [Duration] = [.seconds(1), .seconds(2), .seconds(3)],
         sleep: @escaping @MainActor (Duration) async throws -> Void = { _ in }
@@ -228,6 +230,8 @@ final class TransactionImportServiceTests: XCTestCase {
             environmentStore: StubEnvironmentStore(.sandbox),
             cursorStore: cursorStore,
             linkedItemStore: linkedItemStore,
+            linkedAccountStore: linkedAccountStore,
+            backfillStore: backfillStore,
             postLinkBackoff: postLinkBackoff,
             sleep: sleep
         )
@@ -309,7 +313,9 @@ final class TransactionImportServiceTests: XCTestCase {
             urlSession: makeScriptedURLSession(),
             environmentStore: StubEnvironmentStore(.sandbox),
             cursorStore: StubCursorStore(),
-            linkedItemStore: StubLinkedItemStore(initial: LinkedItem(itemID: "item-1", institutionName: "B", linkedAt: .now))
+            linkedItemStore: StubLinkedItemStore(initial: LinkedItem(itemID: "item-1", institutionName: "B", linkedAt: .now)),
+            linkedAccountStore: StubLinkedAccountStore(),
+            backfillStore: StubAccountBackfillStore(defaultComplete: true)
         )
 
         let failure = sut.removeLocalData(forItemID: "item-1", deleteTransactions: true)
@@ -413,7 +419,9 @@ final class TransactionImportServiceTests: XCTestCase {
             urlSession: makeScriptedURLSession(),
             environmentStore: StubEnvironmentStore(.sandbox),
             cursorStore: cursors,
-            linkedItemStore: StubLinkedItemStore()
+            linkedItemStore: StubLinkedItemStore(),
+            linkedAccountStore: StubLinkedAccountStore(),
+            backfillStore: StubAccountBackfillStore(defaultComplete: true)
         )
 
         XCTAssertNotNil(sut.removeOrphanedLocalData())
@@ -1134,7 +1142,7 @@ final class TransactionImportServiceTests: XCTestCase {
     /// constraint) was tried first but turned out not to throw: SwiftData resolves that
     /// collision as an upsert rather than a `save()` failure.
     private func makeReadOnlyContext() throws -> (context: ModelContext, storeURL: URL) {
-        let schema = Schema(versionedSchema: SchemaV7.self)
+        let schema = Schema(versionedSchema: SchemaV8.self)
         let storeURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("TransactionImportServiceTests-\(UUID().uuidString)")
             .appendingPathExtension("store")
@@ -1183,7 +1191,9 @@ final class TransactionImportServiceTests: XCTestCase {
             cursorStore: cursorStore,
             linkedItemStore: StubLinkedItemStore(
                 initial: LinkedItem(itemID: Self.defaultItemID, institutionName: "Test Bank", linkedAt: .now)
-            )
+            ),
+            linkedAccountStore: StubLinkedAccountStore(),
+            backfillStore: StubAccountBackfillStore(defaultComplete: true)
         )
 
         await sut.runImport()
@@ -1197,7 +1207,7 @@ final class TransactionImportServiceTests: XCTestCase {
         // directly (SwiftData's in-memory change tracking around a read-only store has
         // sharp edges independent of what this test cares about), but what actually
         // landed on disk is the real question this test needs answered.
-        let verificationSchema = Schema(versionedSchema: SchemaV7.self)
+        let verificationSchema = Schema(versionedSchema: SchemaV8.self)
         let verificationContainer = try ModelContainer(
             for: verificationSchema,
             migrationPlan: ReservoirMigrationPlan.self,
@@ -1308,7 +1318,9 @@ final class TransactionImportServiceTests: XCTestCase {
             cursorStore: StubCursorStore(),
             linkedItemStore: StubLinkedItemStore(
                 initial: LinkedItem(itemID: Self.defaultItemID, institutionName: "Test Bank", linkedAt: .now)
-            )
+            ),
+            linkedAccountStore: StubLinkedAccountStore(),
+            backfillStore: StubAccountBackfillStore(defaultComplete: true)
         )
 
         // Simulate an already-in-flight import (e.g. pull-to-refresh) blocked on the network.
