@@ -20,6 +20,12 @@ struct TodayView: View {
     @Environment(TodayClock.self) private var todayClock
 
     @Query(sort: \SavingsGoal.targetDate) private var goals: [SavingsGoal]
+    @Query(sort: \Budget.createdAt) private var budgets: [Budget]
+
+    /// Read for `isAccountBackfillComplete` only (budget card gating) and the tab switch
+    /// to Plans from the "Choose accounts" state.
+    @Environment(TransactionImportService.self) private var importService: TransactionImportService?
+    @Environment(TabSelection.self) private var tabSelection
     /// Sorted so `spentToday`'s filtering doesn't have to fault/sort the whole table on
     /// every body re-evaluation to find today's entries; still unlimited because
     /// `spentToday` needs every transaction dated today, not just the most recent ones.
@@ -46,6 +52,7 @@ struct TodayView: View {
 
     @State private var isShowingAddTransaction = false
     @State private var isShowingCreateGoal = false
+    @State private var isShowingCreateBudget = false
     @State private var dismissError: String?
 
     private let calendar: Calendar = .current
@@ -101,9 +108,26 @@ struct TodayView: View {
     }
 
     var body: some View {
+        // Resolved once per render (the budget figures are a full-window recompute).
+        let budgetModel = BudgetCalculator.cardModel(
+            budget: budgets.first,
+            allTransactions: transactions,
+            isAccountBackfillComplete: importService?.isAccountBackfillComplete ?? true,
+            referenceDate: todayClock.referenceDate,
+            calendar: calendar
+        )
+
         NavigationStack {
             ScrollView {
                 VStack(spacing: 24) {
+                    if let budgetModel {
+                        BudgetHeroCardView(
+                            state: budgetModel.state,
+                            summary: budgetModel.summary,
+                            onChooseAccounts: { tabSelection.selected = .goals }
+                        )
+                    }
+
                     ForEach(completedGoals, id: \.persistentModelID) { goal in
                         CompletionBannerView(goal: goal) {
                             dismiss(goal)
@@ -111,11 +135,23 @@ struct TodayView: View {
                     }
 
                     if let summary {
-                        HeroSection(summary: summary)
+                        // Titled only when the budget card is also showing, so a
+                        // savings-only Today is unchanged.
+                        HeroSection(summary: summary, title: budgetModel == nil ? nil : "Savings limit")
                         TwoStatRow(summary: summary)
                     } else if hasNoGoalsAtAll {
-                        NoActiveGoalPromptView {
-                            isShowingCreateGoal = true
+                        // A budget with no goal needs no goal prompt: the budget card is
+                        // the whole story.
+                        if budgetModel == nil {
+                            NoActiveGoalPromptView {
+                                isShowingCreateGoal = true
+                            }
+                            Button("Or set a monthly budget instead.") {
+                                isShowingCreateBudget = true
+                            }
+                            .font(.subheadline)
+                            .foregroundStyle(Color("ReservoirTextSecondary"))
+                            .accessibilityIdentifier("today.setBudgetLink")
                         }
                     } else {
                         // A completed-but-undismissed goal exists (its banner is already
@@ -146,6 +182,9 @@ struct TodayView: View {
         }
         .sheet(isPresented: $isShowingCreateGoal) {
             GoalFormView(mode: .create, accessibilityIdentifier: "today.createGoalSheet")
+        }
+        .sheet(isPresented: $isShowingCreateBudget) {
+            BudgetFormView(mode: .create, accessibilityIdentifier: "today.createBudgetSheet")
         }
         .saveErrorAlert($dismissError)
     }

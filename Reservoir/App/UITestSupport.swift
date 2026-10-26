@@ -70,6 +70,12 @@ enum UITestScenario: String {
     /// (reservoir-xxm). Pair with `UITEST_SEED_PLAID_LINKED_ITEM=1`.
     case orphanedImportedTransactions
 
+    /// One monthly budget on the seeded linked account ("uitest-account", see
+    /// `seedLinkedAccountIfRequested()`) starting the 1st of this month, one imported
+    /// $20 transaction on it dated today, and no savings goal — Today shows the budget
+    /// card with no goal prompt; Plans shows the budget card (reservoir-j8t).
+    case budgetSeeded
+
     static var current: UITestScenario? {
         ProcessInfo.processInfo.environment["UITEST_SCENARIO"].flatMap(UITestScenario.init(rawValue:))
     }
@@ -442,11 +448,54 @@ enum UITestScenario: String {
         UserDefaults.standard.removeObject(forKey: "plaid.linkedItems")
     }
 
+    /// Seeds one `LinkedAccount` ("uitest-account", "Checking ••0000" at "UITest Bank")
+    /// into the real `UserDefaults`-backed `LinkedAccountStore` when
+    /// `UITEST_SEED_LINKED_ACCOUNT=1`, clearing any previous value first (the store, unlike
+    /// the in-memory SwiftData container, survives across launches). Backs the budget
+    /// account picker (reservoir-j8t).
+    static func seedLinkedAccountIfRequested() {
+        let environment = ProcessInfo.processInfo.environment
+        if environment["UITEST_SEED_LINKED_ACCOUNT"] == "1" || environment["UITEST_RESET_PLAID_LINKED_ITEMS"] == "1" {
+            UserDefaults.standard.removeObject(forKey: "plaid.linkedAccounts")
+        }
+        guard environment["UITEST_SEED_LINKED_ACCOUNT"] == "1" else { return }
+        LinkedAccountStore().upsert([
+            LinkedAccount(
+                accountID: "uitest-account",
+                itemID: "uitest-item",
+                name: "Checking",
+                mask: "0000",
+                type: "depository",
+                subtype: "checking",
+                institutionName: "UITest Bank"
+            )
+        ])
+    }
+
     /// Seeds `context` with this scenario's fixtures and saves.
     func seed(into context: ModelContext) {
         switch self {
         case .emptyGoal:
             break
+
+        case .budgetSeeded:
+            let calendar = Calendar.current
+            let firstOfMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: .now))!
+            context.insert(Budget(
+                monthlyAmount: 3000,
+                startDate: firstOfMonth,
+                selectedAccountIDs: ["uitest-account"]
+            ))
+            context.insert(SpendTransaction(
+                amount: 20,
+                date: .now,
+                merchantName: "Budget Coffee",
+                type: .variable,
+                entryMethod: .imported,
+                plaidTransactionID: "uitest-budget-txn",
+                plaidItemID: "uitest-item",
+                plaidAccountID: "uitest-account"
+            ))
 
         case .normal:
             let startDate = Calendar.current.date(byAdding: .day, value: -5, to: .now)!

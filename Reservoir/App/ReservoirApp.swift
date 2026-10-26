@@ -11,6 +11,7 @@ struct ReservoirApp: App {
         UITestScenario.resetPlaidEnvironmentIfRequested()
         UITestScenario.resetPlaidLinkedItemsIfRequested()
         UITestScenario.seedPlaidLinkedItemIfRequested()
+        UITestScenario.seedLinkedAccountIfRequested()
         UITestScenario.seedPlaidTokenIfRequested()
         #endif
     }
