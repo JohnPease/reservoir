@@ -267,7 +267,8 @@ the month and `budget.startDate`; `spent` is counted spend
   "right on pace" within $1). Variants: "No spending yet this month." on day 1
   with no spend; "(tracking since Oct 12)" for a mid-month start; "You've spent
   $3,150 of your $3,000 budget, $150 over for the month." once month spend
-  exceeds the budget; on the 1st only, a carry clause ("$X carried over from
+  exceeds the budget by at least $1 (a few cents over reads as "right on pace");
+  on the 1st only, a carry clause ("$X carried over from
   last month.", "Starting $X in the hole from last month.", or in reset mode
   "Fresh month, nothing carried over.").
 - *Projection* (Plans card only): `rate = spend through yesterday / completed
