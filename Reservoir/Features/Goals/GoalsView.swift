@@ -68,7 +68,7 @@ struct GoalsView: View {
         // The breakdown's "Needs relink" comes from `LinkedItemStore` (UserDefaults, not
         // observable); reading the import service's mirrored flag here makes this body
         // re-evaluate when an import flags an item or a relink clears it.
-        _ = importService?.needsAttention
+        let _ = importService?.needsAttention
         let budgetModel = BudgetCalculator.cardModel(
             budget: budget,
             allTransactions: transactions,

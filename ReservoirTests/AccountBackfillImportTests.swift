@@ -91,7 +91,8 @@ final class AccountBackfillImportTests: XCTestCase {
 
     private func makeHarness(
         storedCursor: String? = nil,
-        backfillDone: Bool = false
+        backfillDone: Bool = false,
+        modelContext: ModelContext? = nil
     ) -> Harness {
         let cursors = StubCursorStore()
         if let storedCursor { cursors.setCursor(storedCursor, for: .sandbox, itemID: Self.itemID) }
@@ -100,7 +101,7 @@ final class AccountBackfillImportTests: XCTestCase {
         let accounts = StubLinkedAccountStore()
         let items = StubLinkedItemStore(initial: LinkedItem(itemID: Self.itemID, institutionName: "Test Bank", linkedAt: .now))
         let sut = TransactionImportService(
-            modelContext: context,
+            modelContext: modelContext ?? context,
             keychain: StubKeychainWithToken(),
             urlSession: session(),
             environmentStore: StubEnvironmentStore(.sandbox),
@@ -662,5 +663,137 @@ final class AccountBackfillImportTests: XCTestCase {
         XCTAssertNil(sut.removeOrphanedLocalData())
         XCTAssertFalse(backfill.isComplete(for: .sandbox, itemID: "gone"))
         XCTAssertTrue(accounts.loadAll().isEmpty)
+    }
+
+    // MARK: - Save failures roll back (read-only store)
+
+    private var retainedContainers: [ModelContainer] = []
+
+    /// Seeds a temp store through a writable context, then reopens it read-only so every
+    /// `save()` the importer attempts throws. Returns the read-only context and the file URL
+    /// (to read back what is really on disk).
+    private func makeReadOnlyContext(seed: (ModelContext) throws -> Void) throws -> (context: ModelContext, url: URL) {
+        let schema = Schema(versionedSchema: SchemaV9.self)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AccountBackfillImportTests-\(UUID().uuidString)")
+            .appendingPathExtension("store")
+        let seedContainer = try ModelContainer(
+            for: schema, migrationPlan: ReservoirMigrationPlan.self,
+            configurations: [ModelConfiguration(schema: schema, url: url)]
+        )
+        let seedContext = ModelContext(seedContainer)
+        try seed(seedContext)
+        try seedContext.save()
+        retainedContainers.append(seedContainer)
+        let readOnlyContainer = try ModelContainer(
+            for: schema, migrationPlan: ReservoirMigrationPlan.self,
+            configurations: [ModelConfiguration(schema: schema, url: url, allowsSave: false)]
+        )
+        retainedContainers.append(readOnlyContainer)
+        return (ModelContext(readOnlyContainer), url)
+    }
+
+    private func onDisk<T: PersistentModel>(_ type: T.Type, at url: URL) throws -> [T] {
+        let schema = Schema(versionedSchema: SchemaV9.self)
+        let container = try ModelContainer(
+            for: schema, migrationPlan: ReservoirMigrationPlan.self,
+            configurations: [ModelConfiguration(schema: schema, url: url)]
+        )
+        retainedContainers.append(container)
+        return try ModelContext(container).fetch(FetchDescriptor<T>())
+    }
+
+    private func seedManualWithPendingMerge(_ context: ModelContext) {
+        let manual = SpendTransaction(amount: 12.5, date: matchingDate, merchantName: "Coffee Shop", type: .variable, entryMethod: .manual)
+        context.insert(manual)
+        context.insert(PendingTransactionMerge(plaidTransactionID: "p-pend", incomingAmount: 12.5, incomingDate: matchingDate, incomingMerchantName: "Coffee Shop", manualTransaction: manual, plaidItemID: Self.itemID, plaidAccountID: "acc-1"))
+    }
+
+    func test_stampSaveFailure_rollsBackAccountID_andLeavesFlagUnset() async throws {
+        let (readOnly, _) = try makeReadOnlyContext { ctx in
+            ctx.insert(SpendTransaction(amount: 7, date: self.matchingDate, merchantName: "Bakery", type: .variable, entryMethod: .imported, plaidTransactionID: "p1", plaidItemID: Self.itemID))
+        }
+        ScriptedProtocol.script = [page(next: "inc-1"), page(added: [tx("p1", account: "acc-1")], next: "r1")]
+        let h = makeHarness(storedCursor: "old", modelContext: readOnly)
+        await h.sut.runImport()
+
+        let row = try XCTUnwrap(try readOnly.fetch(FetchDescriptor<SpendTransaction>()).first)
+        XCTAssertNil(row.plaidAccountID, "a failed stamp save is rolled back.")
+        XCTAssertFalse(h.backfill.isComplete(for: .sandbox, itemID: Self.itemID), "an unhandled replay page must not set the flag.")
+    }
+
+    func test_queueMergeSaveFailure_isUnhandled_doesNotAdvanceCursorOrQueue() async throws {
+        let (readOnly, url) = try makeReadOnlyContext { ctx in
+            ctx.insert(SpendTransaction(amount: 12.5, date: self.matchingDate, merchantName: "Coffee Shop", type: .variable, entryMethod: .manual))
+        }
+        ScriptedProtocol.script = [page(added: [tx("p1", account: "acc-1")], next: "c1")]
+        let h = makeHarness(storedCursor: "old", backfillDone: true, modelContext: readOnly)
+        await h.sut.runImport()
+
+        XCTAssertTrue(h.sut.mergeQueue.isEmpty)
+        XCTAssertEqual(h.cursors.cursor(for: .sandbox, itemID: Self.itemID), "old")
+        XCTAssertTrue(try onDisk(PendingTransactionMerge.self, at: url).isEmpty)
+    }
+
+    func test_mergeResolutionSaveFailure_restoresManualRow() throws {
+        let (readOnly, _) = try makeReadOnlyContext(seed: seedManualWithPendingMerge)
+        let h = makeHarness(backfillDone: true, modelContext: readOnly)
+        XCTAssertEqual(h.sut.mergeQueue.count, 1)
+        let manual = try XCTUnwrap(try readOnly.fetch(FetchDescriptor<SpendTransaction>()).first)
+
+        h.sut.resolveMergeDecision(.merge)
+
+        XCTAssertEqual(manual.entryMethod, .manual)
+        XCTAssertNil(manual.plaidTransactionID)
+        XCTAssertFalse(manual.wasMergedFromManual)
+        XCTAssertEqual(manual.plaidAccountID, nil)
+    }
+
+    func test_keepBothSaveFailure_persistsNothingAndKeepsTheRecord() throws {
+        let (readOnly, url) = try makeReadOnlyContext(seed: seedManualWithPendingMerge)
+        let h = makeHarness(backfillDone: true, modelContext: readOnly)
+        h.sut.resolveMergeDecision(.keepBoth)
+
+        XCTAssertEqual(try onDisk(SpendTransaction.self, at: url).count, 1, "no imported row reached disk.")
+        XCTAssertEqual(try onDisk(PendingTransactionMerge.self, at: url).count, 1, "the decision record survives for a retry.")
+    }
+
+    func test_modifiedOnQueuedDecision_saveFailure_restoresRecordAndBlocksCursor() async throws {
+        let (readOnly, _) = try makeReadOnlyContext(seed: seedManualWithPendingMerge)
+        ScriptedProtocol.script = [page(modified: [tx("p-pend", amount: 99, account: "acc-9")], next: "c1")]
+        let h = makeHarness(storedCursor: "old", backfillDone: true, modelContext: readOnly)
+        await h.sut.runImport()
+
+        let record = try XCTUnwrap(try readOnly.fetch(FetchDescriptor<PendingTransactionMerge>()).first)
+        XCTAssertEqual(record.incomingAmount, 12.5)
+        XCTAssertEqual(record.plaidAccountID, "acc-1")
+        XCTAssertEqual(h.sut.mergeQueue.first?.incoming.amount, 12.5)
+        XCTAssertEqual(h.cursors.cursor(for: .sandbox, itemID: Self.itemID), "old")
+    }
+
+    func test_removedOnQueuedDecision_saveFailure_keepsDecisionQueuedAndBlocksCursor() async throws {
+        let (readOnly, _) = try makeReadOnlyContext(seed: seedManualWithPendingMerge)
+        ScriptedProtocol.script = [page(removed: [#"{"transaction_id":"p-pend"}"#], next: "c1")]
+        let h = makeHarness(storedCursor: "old", backfillDone: true, modelContext: readOnly)
+        await h.sut.runImport()
+
+        XCTAssertEqual(h.sut.mergeQueue.map(\.id), ["p-pend"])
+        XCTAssertEqual(h.cursors.cursor(for: .sandbox, itemID: Self.itemID), "old")
+    }
+
+    func test_removedMergedRow_saveFailure_restoresImportedState() async throws {
+        let (readOnly, _) = try makeReadOnlyContext { ctx in
+            ctx.insert(SpendTransaction(amount: 12.5, date: self.matchingDate, merchantName: "Coffee Shop", type: .variable, entryMethod: .imported, plaidTransactionID: "p-m", plaidItemID: Self.itemID, plaidAccountID: "acc-1", wasMergedFromManual: true))
+        }
+        ScriptedProtocol.script = [page(removed: [#"{"transaction_id":"p-m"}"#], next: "c1")]
+        let h = makeHarness(storedCursor: "old", backfillDone: true, modelContext: readOnly)
+        await h.sut.runImport()
+
+        let row = try XCTUnwrap(try readOnly.fetch(FetchDescriptor<SpendTransaction>()).first)
+        XCTAssertEqual(row.entryMethod, .imported)
+        XCTAssertEqual(row.plaidTransactionID, "p-m")
+        XCTAssertEqual(row.plaidAccountID, "acc-1")
+        XCTAssertTrue(row.wasMergedFromManual)
+        XCTAssertEqual(h.cursors.cursor(for: .sandbox, itemID: Self.itemID), "old")
     }
 }
