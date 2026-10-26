@@ -52,6 +52,26 @@ final class DailyLimitBudgetModeTests: XCTestCase {
         }
     }
 
+    /// Extremes: a one-cent budget, a zero budget, and amounts far beyond any real budget must
+    /// still sum exactly (the last-day remainder absorbs the 10-decimal rounding) with no
+    /// day going negative.
+    func testMonthlyBaseSumsExactlyAtExtremesAndNeverGoesNegative() {
+        for monthly in [Decimal(0), Decimal(string: "0.01")!, Decimal(string: "0.07")!, Decimal(string: "99999999999.99")!, Decimal(string: "1000000000000000")!] {
+            for month in [1, 2, 4] {
+                XCTAssertEqual(monthSum(year: 2026, month: month, monthly: monthly), monthly, "monthly \(monthly), month \(month)")
+            }
+            XCTAssertGreaterThanOrEqual(base(monthly, date(2026, 1, 31)), 0, "the remainder day is never negative for \(monthly)")
+        }
+    }
+
+    func testMonthlyBaseRoundsSharePlainToTenPlaces() {
+        // 1000 / 30 = 33.3333333333... -> 33.3333333333 (10 places, plain), last day takes the rest.
+        XCTAssertEqual(base(1000, date(2026, 4, 1)), Decimal(string: "33.3333333333")!)
+        XCTAssertEqual(base(1000, date(2026, 4, 30)), Decimal(1000) - Decimal(string: "33.3333333333")! * 29)
+        // 200 / 30 = 6.666...67 rounds UP at the 10th place (plain, not banker's/truncating).
+        XCTAssertEqual(base(200, date(2026, 4, 1)), Decimal(string: "6.6666666667")!)
+    }
+
     func testMonthlyBaseUsesThatDaysMonthLength() {
         XCTAssertEqual(base(3100, date(2026, 1, 10)), 100)          // 31 days
         XCTAssertEqual(base(2800, date(2026, 2, 10)), 100)          // 28 days

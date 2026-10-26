@@ -219,6 +219,48 @@ final class BudgetCalculatorTests: XCTestCase {
         XCTAssertEqual(active?.summary?.carriedForward, 300)
     }
 
+    // MARK: - Day bucketing around midnight and DST (device-local calendar)
+
+    private var newYork: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York")!
+        return calendar
+    }()
+
+    private func local(_ year: Int, _ month: Int, _ day: Int, _ hour: Int = 0, _ minute: Int = 0, _ second: Int = 0) -> Date {
+        newYork.date(from: DateComponents(year: year, month: month, day: day, hour: hour, minute: minute, second: second))!
+    }
+
+    /// Spring forward (23-hour day) and fall back (25-hour day): a transaction at 23:59:59 the
+    /// day before belongs to the previous day, one at 00:00:00 or 23:59:59 belongs to the day.
+    func testSpentTodayBucketsByLocalDayAcrossDSTTransitions() throws {
+        // Start well before either transition so the whole window includes them.
+        let budget = makeBudget(monthly: 3000, start: local(2026, 2, 1))
+        for (month, day) in [(3, 8), (11, 1)] {
+            let dayStart = local(2026, month, day)
+            let nextDayStart = newYork.date(byAdding: .day, value: 1, to: dayStart)!
+            let transactions = [
+                txn(1, on: dayStart.addingTimeInterval(-1)),
+                txn(10, on: dayStart),
+                txn(100, on: nextDayStart.addingTimeInterval(-1)),
+                txn(1000, on: nextDayStart),
+            ]
+            let summary = BudgetCalculator.summary(
+                budget: budget, allTransactions: transactions, referenceDate: local(2026, month, day, 12), calendar: newYork
+            )
+            XCTAssertEqual(summary?.spentToday, 110, "day \(month)/\(day)")
+            transactions.forEach(context.delete)
+        }
+    }
+
+    func testStartDateMidDayStillIncludesWholeStartDay() throws {
+        let budget = makeBudget(monthly: 3000, start: local(2026, 10, 10, 15, 30))
+        let early = txn(5, on: local(2026, 10, 10, 0, 0, 1))
+        let dayBefore = txn(7, on: local(2026, 10, 9, 23, 59, 59))
+        XCTAssertTrue(BudgetCalculator.countsTowardBudget(early, selectedAccountIDs: ["acct-1"], startDate: budget.startDate, calendar: newYork))
+        XCTAssertFalse(BudgetCalculator.countsTowardBudget(dayBefore, selectedAccountIDs: ["acct-1"], startDate: budget.startDate, calendar: newYork))
+    }
+
     // MARK: - Performance sanity
 
     func testSummaryOver730DayWindowWithManyTransactionsIsFast() throws {

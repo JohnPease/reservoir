@@ -129,6 +129,22 @@ final class BudgetSummaryCalculatorTests: XCTestCase {
         XCTAssertEqual(result.sentence.deficitPhrase, "$150 over for the month")
     }
 
+    func testFewCentsOverBudgetReadsAsPaceNotZeroDollarsOver() throws {
+        let b = budget(monthly: 3100, start: date(2026, 10, 1))
+        let spend = txn(Decimal(string: "3100.40")!, date(2026, 10, 20))
+        let result = try XCTUnwrap(insights(b, [spend], on: date(2026, 10, 31)))
+        XCTAssertFalse(result.sentence.text.contains("over for the month"))
+        XCTAssertFalse(result.sentence.text.contains("$0 over"))
+        XCTAssertTrue(result.sentence.text.contains("right on pace"), result.sentence.text)
+    }
+
+    func testOverBudgetByAtLeastOneDollarShowsOverForTheMonth() throws {
+        let b = budget(monthly: 3100, start: date(2026, 10, 1))
+        let spend = txn(3101, date(2026, 10, 20))
+        let result = try XCTUnwrap(insights(b, [spend], on: date(2026, 10, 31)))
+        XCTAssertEqual(result.sentence.deficitPhrase, "$1 over for the month")
+    }
+
     func testFirstOfMonthCarryClauses() throws {
         // September: base 100/day (3000/30), spend nothing => carry in = +3000.
         let b = budget(monthly: 3000, start: date(2026, 9, 1))

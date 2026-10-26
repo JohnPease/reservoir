@@ -25,11 +25,24 @@ enum BudgetCalculator {
         startDate: Date,
         calendar: Calendar = .current
     ) -> Bool {
+        countsTowardBudget(
+            transaction, selectedAccountIDs: selectedAccountIDs, startDay: calendar.startOfDay(for: startDate)
+        )
+    }
+
+    /// Same predicate with the start day already normalized, so a list filter pays for
+    /// `startOfDay` once rather than twice per transaction. `date >= startDay` is exactly
+    /// `startOfDay(date) >= startDay` for a day-start `startDay`.
+    static func countsTowardBudget(
+        _ transaction: SpendTransaction,
+        selectedAccountIDs: Set<String>,
+        startDay: Date
+    ) -> Bool {
         guard let accountID = transaction.plaidAccountID,
               selectedAccountIDs.contains(accountID),
               transaction.type != .fixed
         else { return false }
-        return calendar.startOfDay(for: transaction.date) >= calendar.startOfDay(for: startDate)
+        return transaction.date >= startDay
     }
 
     /// Convenience over `countsTowardBudget(_:selectedAccountIDs:startDate:)` for a whole
@@ -41,8 +54,9 @@ enum BudgetCalculator {
     ) -> [SpendTransaction] {
         let selected = Set(budget.selectedAccountIDs)
         guard !selected.isEmpty else { return [] }
+        let startDay = calendar.startOfDay(for: budget.startDate)
         return transactions.filter {
-            countsTowardBudget($0, selectedAccountIDs: selected, startDate: budget.startDate, calendar: calendar)
+            countsTowardBudget($0, selectedAccountIDs: selected, startDay: startDay)
         }
     }
 
@@ -88,8 +102,9 @@ enum BudgetCalculator {
         let limit = DailyLimitCalculator.dailyLimit(for: input, asOf: referenceDate, calendar: calendar)
 
         let today = calendar.startOfDay(for: referenceDate)
+        let tomorrow = nextDayStart(after: today, calendar: calendar)
         let spentToday = counting.reduce(Decimal(0)) { total, transaction in
-            calendar.startOfDay(for: transaction.date) == today ? total + transaction.amount : total
+            transaction.date >= today && transaction.date < tomorrow ? total + transaction.amount : total
         }
         return TodayScreenCalculator.Summary(
             dailyBase: limit.dailyBase,
@@ -98,6 +113,13 @@ enum BudgetCalculator {
             spentToday: spentToday,
             remaining: limit.limit - spentToday
         )
+    }
+
+    /// Start of the day after `dayStart` (a day-start). `startOfDay(date) == dayStart` is
+    /// exactly `dayStart <= date < nextDayStart(after: dayStart)`, which avoids a calendar
+    /// call per transaction when bucketing a long list.
+    static func nextDayStart(after dayStart: Date, calendar: Calendar) -> Date {
+        calendar.date(byAdding: .day, value: 1, to: dayStart).map(calendar.startOfDay(for:)) ?? dayStart.addingTimeInterval(86_400)
     }
 
     // MARK: - Card state

@@ -117,13 +117,14 @@ enum BudgetSummaryCalculator {
         let schedule = BaseSchedule.monthly(budget.monthlyAmount)
 
         let selected = Set(budget.selectedAccountIDs)
+        let tomorrow = BudgetCalculator.nextDayStart(after: today, calendar: calendar)
         let counted = transactions.filter {
-            BudgetCalculator.countsTowardBudget($0, selectedAccountIDs: selected, startDate: windowStart, calendar: calendar)
-                && calendar.startOfDay(for: $0.date) <= today
+            BudgetCalculator.countsTowardBudget($0, selectedAccountIDs: selected, startDay: windowStart)
+                && $0.date < tomorrow
         }
         let spent = counted.reduce(Decimal(0)) { $0 + $1.amount }
         let spentToday = counted.reduce(Decimal(0)) {
-            calendar.startOfDay(for: $1.date) == today ? $0 + $1.amount : $0
+            $1.date >= today ? $0 + $1.amount : $0
         }
 
         let budgetedToDate = baseSum(schedule, from: windowStart, days: elapsedDays, calendar: calendar)
@@ -235,7 +236,9 @@ enum BudgetSummaryCalculator {
         prefix += ". "
         let clause = firstOfMonthCarry ?? ""
 
-        if spent > monthlyAmount {
+        // "Over for the month" only when the overage would round to at least $1; a few
+        // cents over reads as the ordinary pace sentence instead of "$0 over".
+        if spent - monthlyAmount >= rightOnTolerance {
             return ProgressSentence(
                 lead: prefix + "You've spent \(whole(spent)) of your \(whole(monthlyAmount)) budget, ",
                 deficitPhrase: "\(whole(spent - monthlyAmount)) over for the month",
