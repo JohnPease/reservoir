@@ -247,9 +247,18 @@ item is unlinked or the Plaid environment changes (read from
 `TransactionImportService.isAccountBackfillComplete` is false the budget cards
 show "Syncing account data..." instead of numbers; an empty selection shows
 "Choose accounts" (`BudgetCalculator.cardState`). The flag is false until every
-linked item has completed its backfill, so an item that cannot sync (for
-example one waiting on a relink after `ITEM_LOGIN_REQUIRED`) keeps the budget
-on "Syncing account data..." until it is relinked or unlinked. The flag is a
+HEALTHY linked item has completed its backfill. Items flagged `needsAttention`
+(for example after `ITEM_LOGIN_REQUIRED`) are excluded so a broken connection
+never blocks the budget; the breakdown's "Needs relink" row covers them. The gate
+recomputes when an item flips to needs-attention (in the failed-sync path) and on
+relink (`refreshLinkedItemState()`); the relinked item's backfill flag is still
+unset, so its backfill runs to completion on the next sync and it then counts
+toward the gate again. Accepted limitations: if Plaid issues new account IDs
+after a relink, the budget's accounts may need to be re-picked (old ones show as
+Closed/Removed); and local transactions that Plaid no longer reports can't be
+stamped by the account backfill, so they never get an account and never count
+toward the budget. `BudgetValidator` also caps the monthly amount at $1,000,000
+inclusive ("Enter an amount of $1,000,000 or less.", Save disabled). The flag is a
 cached copy of `UserDefaults`-backed state, refreshed at the start and end of
 every import run and by `refreshLinkedItemState()` after link, relink, unlink
 and environment changes.
@@ -267,7 +276,10 @@ the month and `budget.startDate`; `spent` is counted spend
   "right on pace" within $1). Variants: "No spending yet this month." on day 1
   with no spend; "(tracking since Oct 12)" for a mid-month start; "You've spent
   $3,150 of your $3,000 budget, $150 over for the month." once month spend
-  exceeds the budget by at least $1 (a few cents over reads as "right on pace");
+  exceeds the window budget by at least $1 (for a mid-month start the window budget
+  is the prorated sum of daily bases from the start date through month end, the same
+  reference the projection uses, and the copy reads "of your $2,000 budget for this
+  period, $500 over.") (a few cents over reads as "right on pace");
   on the 1st only, a carry clause ("$X carried over from
   last month.", "Starting $X in the hole from last month.", or in reset mode
   "Fresh month, nothing carried over.").
@@ -857,7 +869,8 @@ app-wide setting.
     no replay and sets the flag after its first complete pass. `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION` restarts the
     pagination from its starting cursor (up to 3 times) instead of surfacing an
     error. `TransactionImportService.isAccountBackfillComplete` tells later UI
-    whether every linked item has finished (to show "Syncing account data...").
+    whether every healthy linked item has finished (to show "Syncing account
+    data..."); items needing relink are excluded.
   - **Remove transactions from unlinked accounts** (reservoir-xxm): a
     destructive button in its own Settings section, shown only when leftovers
     exist (hidden otherwise) and disabled while any import is running. It

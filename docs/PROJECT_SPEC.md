@@ -82,8 +82,16 @@ selection never changes goal account associations. Start date range:
 `[max(today - 730 days, earliest imported transaction of the selected accounts),
 today]`. Unlinking an item removes its accounts from the selection; an empty
 selection shows "Choose accounts", and while account backfill runs the budget
-shows "Syncing account data..." (this includes an item that can't sync until it
-is relinked, since its backfill can't complete).
+shows "Syncing account data..." only while HEALTHY linked items are still
+backfilling: an item flagged as needing relink does not block the budget (its
+"Needs relink" row in the breakdown says so), and once relinked its backfill runs
+to completion and counts toward the gate again. Known limitations, accepted
+as-is: (a) if Plaid issues new account IDs after a relink, the budget's accounts
+may need to be re-picked (the old ones show as Closed/Removed); (b) local
+transactions that Plaid no longer reports can't be stamped by the account
+backfill, so they never get an account and never count toward the budget.
+Monthly amount must be greater than $0 and at most $1,000,000 ("Enter an amount
+of $1,000,000 or less.").
 
 *Budget insights* (PR3), all month-local and identical in carry and reset mode:
 `windowStart = max(1st of month, startDate)`; `spent` = counted spend from
@@ -91,7 +99,11 @@ is relinked, since its backfill can't complete).
 days; `paceDelta = budgetedToDate - spent` (positive = under pace). Today's budget
 hero shows only a progress sentence ("Day 14 of 31. You've spent $1,240, about $60
 under pace."; variants for day 1 / no spend, mid-month start, over budget for the
-month, and a carry/fresh clause on the 1st). The Plans card adds a projection
+month, and a carry/fresh clause on the 1st). "Over budget" compares spend with the
+window budget: the monthly amount for a full month, or the prorated sum of daily
+bases from `windowStart` through month end for a mid-month start (worded "of your
+$2,000 budget for this period, $500 over"), the same reference the projection uses.
+The Plans card adds a projection
 (`rate = spend through yesterday / completed days`; `projected = spent + rate *
 days left`; "At this pace you'll finish about $180 under budget."; hidden before 7
 completed days and on the last day of the month) and a per-account breakdown
