@@ -62,7 +62,7 @@ Technical details below).
 
 - **Platform**: iOS 17+, Swift + SwiftUI
 - **Persistence**: SwiftData, wrapped in a `VersionedSchema` (currently
-  `SchemaV4`) from day one so migrations don't require retrofitting. Bumping
+  `SchemaV9`) from day one so migrations don't require retrofitting. Bumping
   the schema version (rather than editing the current `VersionedSchema` in
   place) is required any time a `@Model` type's shape changes — see "Data
   model" below
@@ -76,7 +76,7 @@ Project layout:
 ```
 Reservoir/
   App/            — entry point, RootTabView, ModelContainer setup
-  Features/       — one folder per tab (Today, Goals, Transactions, Settings)
+  Features/       — one folder per tab (Today, Plans, Transactions, Settings; Plans = the Goals/ and Budget/ folders)
   Models/         — SwiftData @Model types
     Migrations/   — VersionedSchema (SchemaV1, SchemaV2, …) + SchemaMigrationPlan
   Services/       — I/O boundaries (Plaid, persistence) and business logic
@@ -86,7 +86,7 @@ ReservoirTests/    — XCTest
 ReservoirUITests/  — XCUITest
 ```
 
-**Data model** (current — `Models/Migrations/SchemaV8.swift`; the app-wide
+**Data model** (current — `Models/Migrations/SchemaV9.swift`; the app-wide
 type aliases in `Models/CurrentSchema.swift` always point at the current
 version, so the rest of the app never references a `SchemaVN` directly):
 
@@ -94,6 +94,7 @@ version, so the rest of the app never references a `SchemaVN` directly):
 |---|---|
 | `SavingsGoal` | `targetAmount`, `targetDate`, `startDate` (user-editable/backdatable at creation — see "Goals screen" below), `startingBalance`, `dailyBase` (fixed at creation/edit), `dismissedAt` (set when the user dismisses a completion banner; added in `SchemaV2`), `createdAt` (real creation timestamp, never user-editable; added in `SchemaV3` — see "Goals screen" below), `associatedItemIDs: [String]` (linked-item IDs this goal is associated with, at most one goal per item ID at a time, enforced by `GoalAccountAssociationService`; added in `SchemaV6`, defaults to `[]`) |
 | `SpendTransaction` | `amount`, `date`, `merchantName`, `type` (variable/fixed), `entryMethod` (manual/imported), `plaidTransactionID`, `plaidItemID` (which linked item this row was imported from; nil for manual entries, same convention as `plaidTransactionID`; added in `SchemaV6`, backfilled for existing imported rows — see "Migrations" below), `plaidAccountID` (which Plaid account — checking, credit card, ... — the row belongs to; nil for manual entries and not-yet-backfilled rows, never overwritten once set; added in `SchemaV8`, stamped by the one-time account backfill — see "Account capture and backfill" in the Plaid section), `isManualOverride`, `createdAt` (record-creation time, distinct from the user-facing `date`; breaks ties when ordering same-day transactions; added in `SchemaV2`), `wasMergedFromManual` (added in `SchemaV4`) |
+| `Budget` | the one app-wide monthly budget (added in `SchemaV9`): `monthlyAmount`, `startDate`, `carriesAcrossMonths` (true = "Carry over", the default; false = "Start fresh"), `selectedAccountIDs: [String]` (Plaid account IDs whose transactions count), `createdAt`. No relationship to `SpendTransaction` and no revision history — see "Monthly budget" below |
 | `MerchantRule` | `merchantName` (exact, case-insensitive match), `type` |
 | `PendingTransactionMerge` | durable form of a queued merge-prompt decision (added in `SchemaV5`); carries `plaidItemID` (`SchemaV7`) and `plaidAccountID` (`SchemaV8`) of the incoming transaction |
 
@@ -101,9 +102,10 @@ version, so the rest of the app never references a `SchemaVN` directly):
 `ReservoirMigrationPlan` lists every `VersionedSchema` in order and the
 `MigrationStage`s between them. `SchemaV1` -> `SchemaV2`, `SchemaV2` ->
 `SchemaV3`, `SchemaV3` -> `SchemaV4`, `SchemaV4` -> `SchemaV5`,
-`SchemaV6` -> `SchemaV7`, and `SchemaV7` -> `SchemaV8` (reservoir-j8t: the
+`SchemaV6` -> `SchemaV7`, `SchemaV7` -> `SchemaV8` (reservoir-j8t: the
 nil-defaulted `plaidAccountID` fields; existing rows are stamped by the
-importer's account backfill, not by the migration) are all
+importer's account backfill, not by the migration), and `SchemaV8` ->
+`SchemaV9` (reservoir-j8t: the new `Budget` model) are all
 lightweight (inferred) stages — every new field is optional, or non-optional
 with a property-level default (see `SchemaV3`'s `createdAt` note below). Any
 change to a `@Model` type's shape (new/removed/retyped field) requires a new
@@ -215,6 +217,46 @@ adq.3, same as `CreateGoalStubSheet` was retired in adq.5 when goal creation
 started opening the real `GoalFormView`. Covered by
 `ReservoirTests/TodayScreenCalculatorTests.swift` and
 `ReservoirUITests/TodayScreenUITests.swift`.
+
+**Monthly budget** (reservoir-j8t): one optional, app-wide monthly budget,
+tracked independently of savings goals. A transaction counts toward it only
+if its `plaidAccountID` is in the budget's `selectedAccountIDs`, it isn't
+tagged fixed, and it falls on/after `startDate` — manual and not-yet-backfilled
+rows (no account) never count. That rule lives in exactly one function,
+`BudgetCalculator.countsTowardBudget`. The same transaction may also count
+toward a goal; selecting budget accounts never touches
+`GoalAccountAssociationService` or any goal's `associatedItemIDs`.
+
+The daily base on a day is `monthlyAmount / daysInMonth(that day)` (so a month
+always sums to exactly the monthly amount; shares are rounded to 10 decimal
+places and the month's last day absorbs the remainder). The math reuses
+`DailyLimitCalculator`'s single carry-forward loop: `GoalCarryForwardInput`
+carries a `BaseSchedule` (`.constant` for goals, `.monthly` for the budget) and
+a `MonthBoundary` (`.carry`, or `.reset` for "Start fresh", which zeroes carry
+on every 1st). The budget has no revision history — `BudgetCalculator`
+recomputes the whole window from `startDate` with the budget's *current* fields,
+so editing a setting recalculates everything as if it had always applied.
+`BudgetValidator` (pure) owns form validation and the start-date floor
+(`max(today - 730 days, earliest imported transaction among the selected
+accounts)`); `BudgetService` enforces "only one budget" and wraps saves in
+`PersistenceSaveHelper`; `BudgetAccountService` shapes the account picker
+(grouped by institution, "Name ••mask", "Closed account" rows for selected
+accounts that are no longer linked) and prunes a budget's selection when an
+item is unlinked or the Plaid environment changes (read from
+`LinkedAccountStore` before it is cleared). While
+`TransactionImportService.isAccountBackfillComplete` is false the budget cards
+show "Syncing account data..." instead of numbers; an empty selection shows
+"Choose accounts" (`BudgetCalculator.cardState`).
+
+**Plans tab** (formerly "Goals"): the tab is labeled Plans (SF symbol and
+`AppTab.goals`/`GoalsView`/`goals.*` accessibility ids unchanged). It shows a
+"Monthly budget" section (budget card with Edit/Delete via `BudgetFormView`, or
+a quiet "Set a monthly budget" row) above "Savings goals" (the existing goals
+content). On Today, the budget hero renders above the savings hero (titled
+"Savings limit" only when both show) using the shared
+`Shared/HeroSection.swift`; a budget with no goal shows no goal prompt, and
+the no-goal-no-budget empty state adds an "Or set a monthly budget instead."
+link.
 
 **Goals screen**: `Features/Goals/GoalsView.swift` lists every goal in three
 sections — active (sorted by `targetDate` ascending), completed-but-
@@ -944,6 +986,13 @@ to confirm rather than decided unilaterally.
   when there's no active goal; a completion banner appears once a goal's
   `targetDate` passes, and dismissing it resets to the empty state. See
   "Today screen" under Architecture above.
+- **Plans tab and monthly budget** (reservoir-j8t, implemented): the Goals
+  tab is renamed Plans and gains a "Monthly budget" section — set one monthly
+  amount, choose which linked accounts it tracks (account-level selection),
+  pick Carry over or Start fresh for month ends, and choose a start date
+  (default the 1st of this month, up to 730 days back). Today shows a budget
+  hero (daily limit, spent today, remaining) above the savings one. See
+  "Monthly budget" under Architecture above.
 - **Goals screen** (implemented): active-goal cards with a progress bar,
   target/start dates, and a per-card Pace/Simulation toggle for "at current
   pace" projections; completed-but-undismissed goals with the same banner as

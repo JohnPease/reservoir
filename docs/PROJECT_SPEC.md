@@ -62,6 +62,23 @@ account balance backing a goal (it's real money leaving), but is excluded
 from the daily variable-spend number and carry-forward math. This is why
 fixed transactions render muted with "excluded from limit" in the Today UI.
 
+**Monthly budget** (reservoir-j8t): one optional app-wide budget, independent
+of savings goals. `monthlyAmount`, `startDate`, `carriesAcrossMonths`
+(default true = "Carry over"; false = "Start fresh") and `selectedAccountIDs`.
+The daily base on a day is `monthlyAmount / daysInMonth(that day)` (never
+`*12/365`; a month sums to exactly the monthly amount). Carry mode rolls surplus
+and debt across months; reset mode zeroes carry on each 1st. There is no
+revision history: the whole window from `startDate` is recomputed with the
+budget's current settings, so edits apply as if they had always applied. A
+transaction counts only if its `plaidAccountID` is in `selectedAccountIDs`, it
+isn't fixed, and it is dated on/after `startDate` (manual and no-account rows
+never count). The same transaction can also count toward a goal; budget account
+selection never changes goal account associations. Start date range:
+`[max(today - 730 days, earliest imported transaction of the selected accounts),
+today]`. Unlinking an item removes its accounts from the selection; an empty
+selection shows "Choose accounts", and while account backfill runs the budget
+shows "Syncing account data...".
+
 **Day boundary**: a day starts/ends at the device's local midnight
 (`Calendar.current`, not a fixed timezone). Time-zone travel shifts the
 boundary with the device — acceptable for a single-user app.
@@ -71,6 +88,7 @@ boundary with the device — acceptable for a single-user app.
 | Entity | Key fields |
 |---|---|
 | `SavingsGoal` | `targetAmount`, `targetDate`, `startDate`, `startingBalance`, derived `currentBalance`, derived `dailyBase` (fixed at creation/edit, see Core mechanic) |
+| `Budget` | `monthlyAmount`, `startDate`, `carriesAcrossMonths`, `selectedAccountIDs`, `createdAt` (one app-wide row, `SchemaV9`; no relationship to `Transaction`) |
 | `Transaction` | `amount`, `date`, `merchantName`, `type` (variable/fixed), `entryMethod` (manual/imported), `plaidTransactionID` (nil for manual entries), `plaidItemID` (linked item; nil for manual entries), `plaidAccountID` (Plaid account the row belongs to; nil for manual entries and not-yet-backfilled rows, never overwritten once set; `SchemaV8`), `isManualOverride`, `wasMergedFromManual` |
 | `PendingTransactionMerge` | queued merge-prompt decision: `plaidTransactionID`, `incoming*` snapshot, `manualTransaction`, `plaidItemID`, `plaidAccountID` (`SchemaV8`) |
 | `MerchantRule` | `merchantName` (exact, case-insensitive match), `type` (variable/fixed) |
@@ -99,7 +117,7 @@ app-wide settings (linked accounts, notification prefs) live in a small
 Single `TabView`, four tabs:
 
 1. **Today** — daily limit view (launch screen; core mechanic lives here)
-2. **Goals** — progress + "at current pace" projections per `SavingsGoal`
+2. **Plans** (formerly Goals) — monthly budget card, then progress + "at current pace" projections per `SavingsGoal`
 3. **Transactions** — imported/manual list, fixed/variable tagging, `MerchantRule` management
 4. **Settings** — linked accounts (Plaid Link), starting balances, goal management
 
@@ -114,6 +132,7 @@ Single `TabView`, four tabs:
 | Goal progress + pace projection | Core "why" behind the daily number | Low — derived math from existing `SavingsGoal` fields | **MVP** |
 | Push notifications | Motivational hook | Local `UNUserNotificationCenter` scheduling, no backend needed | **Phase 2** |
 | Multi-account / multi-goal support | Useful once >1 goal exists | Landed. reservoir-loc.1: schema/storage foundation (SchemaV6's `SpendTransaction.plaidItemID`/`SavingsGoal.associatedItemIDs`, unbounded per-item Plaid storage, `GoalAccountAssociationService`). reservoir-loc.2: per-item dedup/import attribution. reservoir-loc.3: `SettingsView`'s unbounded linked-accounts list (independent relink/unlink/needsAttention per item) and `GoalFormView`'s multi-select account-association UI, both create and edit mode | **Phase 2 — done** |
+| Monthly budget (account-level) | Spend tracking without a savings goal; reuses the carry-forward loop | Moderate — `SchemaV9` `Budget`, monthly base schedule, account picker, Plans tab (reservoir-j8t) | **Phase 2 — PR2 landed (core); insights in PR3** |
 | Charts/trends | Satisfying, doesn't change daily behavior | Swift Charts, easy to add later | **Phase 2, low priority** |
 | Widgets / Lock Screen | High usefulness — glanceable number is the point | Needs App Group + shared SwiftData container | **Phase 2** |
 | Siri/Shortcuts | Low — single-user app | Nontrivial App Intents work for the value | **Cut** |
@@ -143,7 +162,7 @@ The Today tab is the launch screen and carries the core mechanic. Layout, top to
 - **Two-stat row**: spent today / remaining, in muted metric cards — supporting context, not competing with the hero number.
 - **Recent transactions** (last 2-3): icon, merchant, tag (variable/fixed) + timestamp, amount. Fixed expenses (e.g. rent) render muted with "excluded from limit" so users understand why they don't eat into the daily number, without cluttering the variable-spend view.
 - **Single primary action**: "Add transaction" — one tap, since Plaid import won't catch everything (cash, lag).
-- **Tab bar**: Today / Goals / Transactions / Settings, in that order of expected use frequency.
+- **Tab bar**: Today / Plans / Transactions / Settings, in that order of expected use frequency.
 
 Design principles driving these choices:
 - The number is the hero — a one-second glance should answer "how am I doing today," full stop.
