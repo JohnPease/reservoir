@@ -9,6 +9,7 @@ struct BudgetHeroCardView: View {
 
     let state: BudgetCalculator.CardState
     let summary: TodayScreenCalculator.Summary?
+    var insights: BudgetSummaryCalculator.BudgetInsights?
     var onChooseAccounts: () -> Void = {}
 
     var body: some View {
@@ -16,6 +17,9 @@ struct BudgetHeroCardView: View {
             VStack(spacing: 24) {
                 HeroSection(summary: summary, title: Self.title, identifiers: .budget)
                 TwoStatRow(summary: summary, identifier: HeroIdentifiers.budget.stats)
+                if let insights {
+                    BudgetProgressSentenceView(sentence: insights.sentence)
+                }
             }
         } else {
             BudgetStatusView(state: state, onChooseAccounts: onChooseAccounts)
@@ -59,6 +63,7 @@ struct BudgetCardView: View {
     let budget: Budget
     let state: BudgetCalculator.CardState
     let summary: TodayScreenCalculator.Summary?
+    var insights: BudgetSummaryCalculator.BudgetInsights?
     let onEdit: () -> Void
     let onDelete: () -> Void
 
@@ -104,6 +109,19 @@ struct BudgetCardView: View {
                     .foregroundStyle(summary.remaining < 0 ? Color("ReservoirDeficit") : Color("ReservoirTextPrimary"))
                     .accessibilityIdentifier("budget.card.today")
             }
+
+            if let insights {
+                BudgetProgressSentenceView(sentence: insights.sentence)
+                if let projection = insights.projection {
+                    Text(projection.text)
+                        .font(.subheadline)
+                        .foregroundStyle(Color("ReservoirTextSecondary"))
+                        .accessibilityIdentifier("budget.projection")
+                }
+                if let breakdown = insights.breakdown {
+                    BudgetBreakdownView(breakdown: breakdown)
+                }
+            }
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -139,5 +157,64 @@ struct BudgetSetRowView: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("budget.setRow")
+    }
+}
+
+/// The pace sentence; only the over-pace / over-budget phrase uses `ReservoirDeficit`.
+/// Wording and the three-part split come from `BudgetSummaryCalculator`.
+struct BudgetProgressSentenceView: View {
+    let sentence: BudgetSummaryCalculator.ProgressSentence
+
+    var body: some View {
+        Group {
+            if let deficit = sentence.deficitPhrase {
+                Text(sentence.lead) + Text(deficit).foregroundColor(Color("ReservoirDeficit")) + Text(sentence.tail)
+            } else {
+                Text(sentence.text)
+            }
+        }
+        .font(.subheadline)
+        .foregroundStyle(Color("ReservoirTextSecondary"))
+        .multilineTextAlignment(.leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(sentence.text)
+        .accessibilityIdentifier("budget.progressSentence")
+    }
+}
+
+/// Plain per-account list of this month's counted spend (no chart, no tap-through).
+struct BudgetBreakdownView: View {
+    let breakdown: BudgetSummaryCalculator.Breakdown
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(breakdown.rows, id: \.accountID) { row in
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack {
+                        Text(row.title)
+                            .foregroundStyle(Color("ReservoirTextPrimary"))
+                        Spacer()
+                        Text(row.spent, format: .currency(code: "USD"))
+                            .foregroundStyle(Color("ReservoirTextPrimary"))
+                    }
+                    if row.needsRelink {
+                        Text("Needs relink")
+                            .font(.caption)
+                            .foregroundStyle(Color("ReservoirTextMuted"))
+                    }
+                }
+                .font(.subheadline)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("budget.breakdown.row.\(row.accountID)")
+            }
+            if let caption = breakdown.unlinkedCaption {
+                Text(caption)
+                    .font(.caption)
+                    .foregroundStyle(Color("ReservoirTextMuted"))
+            }
+        }
+        .padding(.top, 4)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("budget.breakdown")
     }
 }

@@ -82,6 +82,14 @@ struct GoalsView: View {
                             budget: budget,
                             state: budgetModel.state,
                             summary: budgetModel.summary,
+                            insights: BudgetSummaryCalculator.insights(
+                                budget: budget,
+                                transactions: transactions,
+                                isAccountBackfillComplete: importService?.isAccountBackfillComplete ?? true,
+                                referenceDate: todayClock.referenceDate,
+                                summary: budgetModel.summary,
+                                calendar: calendar
+                            ),
                             onEdit: { budgetPendingEdit = budget },
                             onDelete: { budgetPendingDelete = budget }
                         )

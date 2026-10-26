@@ -103,6 +103,19 @@ struct TodayView: View {
         recentTransactionsQuery
     }
 
+    /// Pace sentence figures; Today renders only the sentence. Wording is in
+    /// `BudgetSummaryCalculator`.
+    private func budgetInsights(_ model: BudgetCalculator.CardModel) -> BudgetSummaryCalculator.BudgetInsights? {
+        BudgetSummaryCalculator.insights(
+            budget: budgets.first,
+            transactions: transactions,
+            isAccountBackfillComplete: importService?.isAccountBackfillComplete ?? true,
+            referenceDate: todayClock.referenceDate,
+            summary: model.summary,
+            calendar: calendar
+        )
+    }
+
     private var dateHeaderText: String {
         todayClock.referenceDate.formatted(.dateTime.weekday(.wide).month(.wide).day())
     }
@@ -124,6 +137,7 @@ struct TodayView: View {
                         BudgetHeroCardView(
                             state: budgetModel.state,
                             summary: budgetModel.summary,
+                            insights: budgetInsights(budgetModel),
                             onChooseAccounts: { tabSelection.selected = .goals }
                         )
                     }
