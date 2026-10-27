@@ -93,7 +93,7 @@ enum SchemaV8: VersionedSchema {
         var plaidItemID: String?
         /// The Plaid account (`PlaidAccount.account_id`) this transaction belongs to —
         /// nil for manual entries and for imported rows not yet stamped by the one-time
-        /// account backfill (reservoir-j8t). Never overwritten once non-nil.
+        /// account backfill (reservoir-j8t). The backfill replay and a merge never overwrite a non-nil value; only a Plaid `modified` event refreshes it.
         var plaidAccountID: String?
         /// True when a user explicitly set/changed `type` on this transaction.
         /// MerchantRule re-application must not overwrite a manual override.

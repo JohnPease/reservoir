@@ -123,7 +123,7 @@ boundary with the device — acceptable for a single-user app.
 |---|---|
 | `SavingsGoal` | `targetAmount`, `targetDate`, `startDate`, `startingBalance`, derived `currentBalance`, derived `dailyBase` (fixed at creation/edit, see Core mechanic) |
 | `Budget` | `monthlyAmount`, `startDate`, `carriesAcrossMonths`, `selectedAccountIDs`, `createdAt` (one app-wide row, `SchemaV9`; no relationship to `Transaction`) |
-| `Transaction` | `amount`, `date`, `merchantName`, `type` (variable/fixed), `entryMethod` (manual/imported), `plaidTransactionID` (nil for manual entries), `plaidItemID` (linked item; nil for manual entries), `plaidAccountID` (Plaid account the row belongs to; nil for manual entries and not-yet-backfilled rows, never overwritten once set; `SchemaV8`), `isManualOverride`, `wasMergedFromManual` |
+| `Transaction` | `amount`, `date`, `merchantName`, `type` (variable/fixed), `entryMethod` (manual/imported), `plaidTransactionID` (nil for manual entries), `plaidItemID` (linked item; nil for manual entries), `plaidAccountID` (Plaid account the row belongs to; nil for manual entries and not-yet-backfilled rows, stamped by the importer, never overwritten by the backfill replay or a merge; a Plaid `modified` event may refresh it; `SchemaV8`), `isManualOverride`, `wasMergedFromManual` |
 | `PendingTransactionMerge` | queued merge-prompt decision: `plaidTransactionID`, `incoming*` snapshot, `manualTransaction`, `plaidItemID`, `plaidAccountID` (`SchemaV8`) |
 | `MerchantRule` | `merchantName` (exact, case-insensitive match), `type` (variable/fixed) |
 
