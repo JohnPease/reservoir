@@ -64,16 +64,21 @@ public enum DailyLimitCalculator {
         guard startDay < today else { return 0 }
 
         let spentByDay = variableSpendByDay(goal.spendEntries, calendar: calendar)
-        let dayCount = calendar.dateComponents([.day], from: startDay, to: today).day ?? 0
         let resetsOnFirst = goal.monthBoundary == .reset
 
         var carry: Decimal = 0
-        for offset in 0..<dayCount {
-            let day = calendar.date(byAdding: .day, value: offset, to: startDay)!
+        // Walks day starts with `startOfDay` re-applied at every step rather than counting
+        // `dateComponents([.day])` offsets: in a zone whose DST change skips midnight (e.g.
+        // Sao Paulo, 2018-11-04) `startDay` is 01:00, so both a day count and
+        // `date(byAdding:)` from it drift off the `startOfDay` keys of `spentByDay`.
+        var day = startDay
+        while day < today {
             if resetsOnFirst && calendar.component(.day, from: day) == 1 {
                 carry = 0
             }
             carry += goal.schedule.base(on: day, calendar: calendar) - (spentByDay[day] ?? 0)
+            guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
+            day = calendar.startOfDay(for: next)
         }
         // The loop only visits days *before* `referenceDate`'s day, so a reset that falls
         // exactly on `referenceDate`'s own day (the 1st) must be applied here.

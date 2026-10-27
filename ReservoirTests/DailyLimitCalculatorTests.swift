@@ -378,4 +378,24 @@ final class DailyLimitCalculatorTests: XCTestCase {
 
         XCTAssertTrue(DailyLimitCalculator.isGoalMet(for: goal, targetDate: target, calendar: calendar))
     }
+
+    /// Sao Paulo skipped midnight on 2018-11-04 (DST began at 00:00 -> 01:00), so that day's
+    /// `startOfDay` is 01:00. Stepping forward from it must still land on each later day's
+    /// own `startOfDay` key, or its spend is silently dropped from the carry.
+    func testCarryForwardCountsSpendAfterStartDayWhoseMidnightDoesNotExist() {
+        var saoPaulo = Calendar(identifier: .gregorian)
+        saoPaulo.timeZone = TimeZone(identifier: "America/Sao_Paulo")!
+        let start = saoPaulo.startOfDay(for: saoPaulo.date(from: DateComponents(year: 2018, month: 11, day: 4, hour: 12))!)
+        let spendDay = saoPaulo.date(from: DateComponents(year: 2018, month: 11, day: 5, hour: 12))!
+        let today = saoPaulo.date(from: DateComponents(year: 2018, month: 11, day: 7, hour: 9))!
+        let goal = GoalCarryForwardInput(
+            id: "goal",
+            dailyBase: 10,
+            effectiveStartDate: start,
+            spendEntries: [.init(date: spendDay, amount: 4, kind: .variable)]
+        )
+
+        // Nov 4, 5, 6 -> 3 * 10 - 4.
+        XCTAssertEqual(DailyLimitCalculator.carryForward(for: goal, asOf: today, calendar: saoPaulo), 26)
+    }
 }
