@@ -344,6 +344,9 @@ enum UITestScenario: String {
             linkedAt: Date(),
             needsAttention: needsAttention
         ))
+        // A seeded bank is a settled one: without the flag the launch-time backfill retry
+        // (reservoir-0fq) would run an import that consumes scripted sync responses.
+        PlaidAccountBackfillStore().setComplete(for: PlaidEnvironmentStore().current, itemID: "uitest-item")
 
         // `UITEST_SEED_PLAID_SECOND_ITEM=1` (reservoir-loc.3) additionally seeds a
         // second, distinct item — "uitest-item-2" / "UITest Bank 2" — so a test can
@@ -360,6 +363,7 @@ enum UITestScenario: String {
             linkedAt: Date(),
             needsAttention: secondNeedsAttention
         ))
+        PlaidAccountBackfillStore().setComplete(for: PlaidEnvironmentStore().current, itemID: "uitest-item-2")
     }
 
     /// See `seedPlaidLinkedItemIfRequested()` above. Blocks synchronously, same

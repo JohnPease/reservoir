@@ -94,6 +94,7 @@ struct GoalsView: View {
                                 summary: budgetModel.summary,
                                 calendar: calendar
                             ),
+                            hasUnsyncedAccounts: importService?.hasUnsyncedAccounts ?? false,
                             onEdit: { budgetPendingEdit = budget },
                             onDelete: { budgetPendingDelete = budget }
                         )

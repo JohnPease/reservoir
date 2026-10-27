@@ -474,7 +474,8 @@ final class AccountBackfillImportTests: XCTestCase {
 
         XCTAssertEqual(h.cursors.cursor(for: .sandbox, itemID: Self.itemID), "i1", "the completed incremental pass advanced the cursor.")
         XCTAssertFalse(h.backfill.isComplete(for: .sandbox, itemID: Self.itemID))
-        XCTAssertFalse(h.sut.isAccountBackfillComplete)
+        XCTAssertTrue(h.sut.isAccountBackfillComplete, "a failed attempt stops gating; the gap is reported via hasUnsyncedAccounts.")
+        XCTAssertTrue(h.sut.hasUnsyncedAccounts)
 
         ScriptedProtocol.reset()
         ScriptedProtocol.script = [page(next: "i2"), page(next: "r9")]
@@ -590,16 +591,50 @@ final class AccountBackfillImportTests: XCTestCase {
         XCTAssertFalse(h.sut.hasPendingAccountBackfill)
     }
 
-    func test_runAccountBackfillIfNeeded_doesNothingWhenNotOwed() async {
+    func test_runAccountBackfillIfNeeded_doesNothingWhenAlreadyBackfilled() async {
         ScriptedProtocol.script = []
-        let fresh = makeHarness(storedCursor: nil)
-        XCTAssertFalse(fresh.sut.hasPendingAccountBackfill, "a fresh link (no cursor) is not owed a replay.")
-        await fresh.sut.runAccountBackfillIfNeeded()
         let done = makeHarness(storedCursor: "c", backfillDone: true)
         XCTAssertFalse(done.sut.hasPendingAccountBackfill)
         await done.sut.runAccountBackfillIfNeeded()
-        XCTAssertTrue(fresh.accounts.loadAll().isEmpty)
         XCTAssertTrue(done.accounts.loadAll().isEmpty)
+        XCTAssertTrue(ScriptedProtocol.requestCursors.isEmpty, "no sync may run when nothing is owed.")
+    }
+
+    func test_runAccountBackfillIfNeeded_retriesAFreshLinkWhoseFirstPassNeverFinished() async throws {
+        // No stored cursor and no flag: a link interrupted before its first pass completed.
+        ScriptedProtocol.script = [page(added: [tx("t1")], accounts: acc("acc-1"), next: "first-cursor")]
+        let h = makeHarness(storedCursor: nil)
+        XCTAssertTrue(h.sut.hasPendingAccountBackfill)
+
+        await h.sut.runAccountBackfillIfNeeded()
+
+        XCTAssertEqual(try allTransactions().count, 1)
+        XCTAssertEqual(h.accounts.loadAll().map(\.accountID), ["acc-1"])
+        XCTAssertEqual(h.cursors.cursor(for: .sandbox, itemID: Self.itemID), "first-cursor")
+        XCTAssertTrue(h.backfill.isComplete(for: .sandbox, itemID: Self.itemID))
+        XCTAssertFalse(h.sut.hasPendingAccountBackfill)
+    }
+
+    // MARK: - A failing item stops gating the budget
+
+    func test_failedBackfill_stopsGating_flagsUnsynced_andClearsOnSuccess() async {
+        ScriptedProtocol.script = [(500, #"{"error_type":"API_ERROR","error_code":"INTERNAL_SERVER_ERROR","error_message":"x"}"#)]
+        let h = makeHarness(storedCursor: "c")
+        XCTAssertFalse(h.sut.isAccountBackfillComplete)
+        XCTAssertFalse(h.sut.hasUnsyncedAccounts)
+
+        await h.sut.runImport()
+
+        XCTAssertTrue(h.sut.isAccountBackfillComplete, "an item that failed to sync must not block the budget forever.")
+        XCTAssertTrue(h.sut.hasUnsyncedAccounts, "the gap must be reported so the UI can say spending may be missing.")
+        XCTAssertFalse(h.backfill.isComplete(for: .sandbox, itemID: Self.itemID))
+
+        ScriptedProtocol.script = [page(next: "c2"), page(accounts: acc("acc-1"), next: "c3")]
+        await h.sut.runImport()
+
+        XCTAssertTrue(h.backfill.isComplete(for: .sandbox, itemID: Self.itemID))
+        XCTAssertTrue(h.sut.isAccountBackfillComplete)
+        XCTAssertFalse(h.sut.hasUnsyncedAccounts)
     }
 
     func test_stuckStoredCursor_isDroppedAndItemResyncsFromTheBeginning() async throws {

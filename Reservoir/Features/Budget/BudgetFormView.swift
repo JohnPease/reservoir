@@ -105,6 +105,10 @@ struct BudgetFormView: View {
                             }
                             .accessibilityElement(children: .combine)
                             .accessibilityIdentifier("budget.form.syncingAccounts")
+                        } else if importService?.hasUnsyncedAccounts == true {
+                            Text("Couldn't load your account details. Pull down on the Transactions tab to try again.")
+                                .foregroundStyle(Color("ReservoirTextSecondary"))
+                                .accessibilityIdentifier("budget.form.syncFailed")
                         } else {
                             Text("Link an account in Settings to track a budget.")
                                 .foregroundStyle(Color("ReservoirTextSecondary"))

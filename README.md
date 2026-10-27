@@ -873,8 +873,11 @@ app-wide setting.
     data..."); items needing relink are excluded.
     - **Launch trigger and stuck cursors** (reservoir-0fq): imports otherwise start only on a
       background-to-active transition or pull-to-refresh, so `RootTabView` and the budget form call
-      `runAccountBackfillIfNeeded()` when an item has a stored cursor but no backfill flag, and the
-      account picker shows "Syncing account data…" until it completes. If Plaid rejects an item's
+      `runAccountBackfillIfNeeded()` when any healthy item has no backfill flag (an upgraded item
+      owing the replay, or a fresh link whose first pass never finished), and the account picker
+      shows "Syncing account data…" until it completes. An item whose attempt fails this session
+      stops gating the budget: `hasUnsyncedAccounts` makes the Plans card say spending may be
+      missing, and the picker says account details couldn't be loaded; a later success clears it. If Plaid rejects an item's
       stored cursor with `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION` before returning any page,
       the cursor is dropped once and that item re-syncs from the beginning (idempotent for rows we
       already hold; a transaction deleted locally can reappear). If the fresh start fails too, the

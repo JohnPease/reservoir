@@ -289,6 +289,13 @@ final class TransactionImportService {
     /// unlink or environment change).
     private(set) var isAccountBackfillComplete = true
 
+    /// True when a healthy item's account backfill failed this session, so the budget is
+    /// computed without that item's account data (see `refreshAccountBackfillStatus`).
+    private(set) var hasUnsyncedAccounts = false
+
+    /// Items whose most recent backfill attempt ended in an error (in-memory only).
+    private var failedBackfillItemIDs: Set<String> = []
+
     /// Re-reads everything cached from the linked-item/backfill stores
     /// (`needsAttention`, `isAccountBackfillComplete`). Call after any change made outside
     /// an import run: link, relink, unlink, environment switch.
@@ -297,23 +304,21 @@ final class TransactionImportService {
         refreshAccountBackfillStatus()
     }
 
-    /// True when some healthy linked item already has a stored cursor but has not finished
-    /// its one-time account backfill — i.e. the app was upgraded onto existing data and the
-    /// stamp-only replay is still owed. Fresh links (no cursor yet) are not "owed"; they
-    /// set the flag when their first pass completes.
+    /// True when some healthy linked item has not finished its one-time account backfill:
+    /// an existing item that still owes the stamp-only replay (stored cursor, no flag), or a
+    /// fresh link whose first pass never completed (app killed mid-link, or Plaid still
+    /// NOT_READY after the post-link poll gave up). Both are retried at launch.
     var hasPendingAccountBackfill: Bool {
         let environment = environmentStore.current
         return linkedItemStore.loadAll().contains {
-            !$0.needsAttention
-                && cursorStore.cursor(for: environment, itemID: $0.itemID) != nil
-                && !backfillStore.isComplete(for: environment, itemID: $0.itemID)
+            !$0.needsAttention && !backfillStore.isComplete(for: environment, itemID: $0.itemID)
         }
     }
 
     /// Runs one ordinary import when the account backfill is owed. Imports otherwise only
     /// start on a background-to-active transition or a pull-to-refresh, so without this a
-    /// cold launch right after an upgrade would leave the budget's account picker empty
-    /// until the user happened to background the app.
+    /// cold launch right after an upgrade (or an interrupted link) would leave the budget's
+    /// account picker empty until the user happened to background the app.
     func runAccountBackfillIfNeeded() async {
         guard !isImporting, hasPendingAccountBackfill else { return }
         await runImport()
@@ -322,9 +327,14 @@ final class TransactionImportService {
     /// Recomputes `isAccountBackfillComplete` from the stores.
     func refreshAccountBackfillStatus() {
         let environment = environmentStore.current
-        isAccountBackfillComplete = linkedItemStore.loadAll().allSatisfy {
-            $0.needsAttention || backfillStore.isComplete(for: environment, itemID: $0.itemID)
+        let pending = linkedItemStore.loadAll().filter {
+            !$0.needsAttention && !backfillStore.isComplete(for: environment, itemID: $0.itemID)
         }
+        // An item whose backfill attempt failed this session (outage, network) stops gating:
+        // the budget shows what it has and `hasUnsyncedAccounts` explains the gap, instead of
+        // "Syncing account data..." forever. Cleared on success and on every fresh launch.
+        isAccountBackfillComplete = pending.allSatisfy { failedBackfillItemIDs.contains($0.itemID) }
+        hasUnsyncedAccounts = pending.contains { failedBackfillItemIDs.contains($0.itemID) }
     }
 
     /// How many times one item's pagination may restart after Plaid's
@@ -637,6 +647,7 @@ final class TransactionImportService {
                         presentedErrorDetail = String(describing: error)
                         logger.error("sync page failed pass=\(isReplay ? "replay" : "incremental", privacy: .public): \(String(describing: error), privacy: .public)")
                         sawError = true
+                        failedBackfillItemIDs.insert(itemID)
                         // "Still fetching" must not sit beside an error banner.
                         isInitialDataPending = false
                         lastResponseNotReady = false
@@ -705,6 +716,7 @@ final class TransactionImportService {
                 // was needed, otherwise the (fresh-link or already-backfilled) incremental pass.
                 if isReplay || !needsBackfillReplay {
                     backfillStore.setComplete(for: environment, itemID: itemID)
+                    failedBackfillItemIDs.remove(itemID)
                 }
             }
         }

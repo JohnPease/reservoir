@@ -64,6 +64,8 @@ struct BudgetCardView: View {
     let state: BudgetCalculator.CardState
     let summary: TodayScreenCalculator.Summary?
     var insights: BudgetSummaryCalculator.BudgetInsights?
+    /// A linked bank's account data failed to load, so the numbers may be missing its spending.
+    var hasUnsyncedAccounts = false
     let onEdit: () -> Void
     let onDelete: () -> Void
 
@@ -110,6 +112,13 @@ struct BudgetCardView: View {
                     .font(.subheadline)
                     .foregroundStyle(summary.remaining < 0 ? Color("ReservoirDeficit") : Color("ReservoirTextPrimary"))
                     .accessibilityIdentifier("budget.card.today")
+            }
+
+            if hasUnsyncedAccounts {
+                Text("Some account data couldn't be loaded, so spending may be missing. Pull down on Transactions to retry.")
+                    .font(.footnote)
+                    .foregroundStyle(Color("ReservoirTextSecondary"))
+                    .accessibilityIdentifier("budget.card.unsynced")
             }
 
             if let insights {
