@@ -574,6 +574,53 @@ final class AccountBackfillImportTests: XCTestCase {
         XCTAssertFalse(sut.needsAttention)
     }
 
+    // MARK: - Launch-time trigger (reservoir-0fq)
+
+    func test_runAccountBackfillIfNeeded_runsWhenOwed_andCachesAccounts() async {
+        // Pass 1 (incremental, no accounts listed), pass 2 (stamp-only replay lists them).
+        ScriptedProtocol.script = [page(next: "cursor-inc"), page(accounts: acc("acc-1"), next: "cursor-replay")]
+        let h = makeHarness(storedCursor: "old-cursor")
+        XCTAssertTrue(h.sut.hasPendingAccountBackfill)
+        XCTAssertTrue(h.accounts.loadAll().isEmpty)
+
+        await h.sut.runAccountBackfillIfNeeded()
+
+        XCTAssertEqual(h.accounts.loadAll().map(\.accountID), ["acc-1"], "the picker's account metadata must be cached after the launch-time run.")
+        XCTAssertTrue(h.sut.isAccountBackfillComplete)
+        XCTAssertFalse(h.sut.hasPendingAccountBackfill)
+    }
+
+    func test_runAccountBackfillIfNeeded_doesNothingWhenNotOwed() async {
+        ScriptedProtocol.script = []
+        let fresh = makeHarness(storedCursor: nil)
+        XCTAssertFalse(fresh.sut.hasPendingAccountBackfill, "a fresh link (no cursor) is not owed a replay.")
+        await fresh.sut.runAccountBackfillIfNeeded()
+        let done = makeHarness(storedCursor: "c", backfillDone: true)
+        XCTAssertFalse(done.sut.hasPendingAccountBackfill)
+        await done.sut.runAccountBackfillIfNeeded()
+        XCTAssertTrue(fresh.accounts.loadAll().isEmpty)
+        XCTAssertTrue(done.accounts.loadAll().isEmpty)
+    }
+
+    func test_stuckStoredCursor_isDroppedAndItemResyncsFromTheBeginning() async throws {
+        // Plaid rejects the stored cursor outright (4 attempts = first try + 3 restarts), then serves
+        // the full history from a nil cursor, then the stamp-only replay.
+        ScriptedProtocol.script = Array(repeating: mutationError(), count: 4) + [
+            page(added: [tx("t1")], accounts: acc("acc-1"), next: "fresh-cursor"),
+            page(added: [tx("t1")], accounts: acc("acc-1"), next: "replay-cursor")
+        ]
+        let h = makeHarness(storedCursor: "stuck-cursor")
+
+        await h.sut.runImport()
+
+        XCTAssertNil(h.sut.presentedError, "recovering from a stuck cursor must not surface an error.")
+        XCTAssertEqual(h.cursors.cursor(for: .sandbox, itemID: Self.itemID), "fresh-cursor")
+        XCTAssertEqual(try allTransactions().count, 1)
+        XCTAssertEqual(try allTransactions().first?.plaidAccountID, "acc-1")
+        XCTAssertEqual(h.accounts.loadAll().map(\.accountID), ["acc-1"])
+        XCTAssertTrue(h.sut.isAccountBackfillComplete)
+    }
+
     // MARK: - Gate excludes needs-attention items
 
     private func gateService(_ items: StubLinkedItemStore, _ backfill: StubAccountBackfillStore) -> TransactionImportService {
@@ -695,7 +742,9 @@ final class AccountBackfillImportTests: XCTestCase {
         ScriptedProtocol.script = [mutationError()]
         let h = makeHarness(storedCursor: "old")
         await h.sut.runImport()
-        XCTAssertEqual(ScriptedProtocol.requestCursors.count, TransactionImportService.maxPaginationMutationRestarts + 1)
+        // Exhausted restarts from the stored cursor, one more full set from a nil cursor (the
+        // stuck-cursor recovery), then the error surfaces and the stored cursor is put back.
+        XCTAssertEqual(ScriptedProtocol.requestCursors.count, 2 * (TransactionImportService.maxPaginationMutationRestarts + 1))
         XCTAssertNotNil(h.sut.presentedError)
         XCTAssertEqual(h.cursors.cursor(for: .sandbox, itemID: Self.itemID), "old")
         XCTAssertFalse(h.backfill.isComplete(for: .sandbox, itemID: Self.itemID))

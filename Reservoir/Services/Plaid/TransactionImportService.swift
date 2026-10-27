@@ -297,6 +297,28 @@ final class TransactionImportService {
         refreshAccountBackfillStatus()
     }
 
+    /// True when some healthy linked item already has a stored cursor but has not finished
+    /// its one-time account backfill — i.e. the app was upgraded onto existing data and the
+    /// stamp-only replay is still owed. Fresh links (no cursor yet) are not "owed"; they
+    /// set the flag when their first pass completes.
+    var hasPendingAccountBackfill: Bool {
+        let environment = environmentStore.current
+        return linkedItemStore.loadAll().contains {
+            !$0.needsAttention
+                && cursorStore.cursor(for: environment, itemID: $0.itemID) != nil
+                && !backfillStore.isComplete(for: environment, itemID: $0.itemID)
+        }
+    }
+
+    /// Runs one ordinary import when the account backfill is owed. Imports otherwise only
+    /// start on a background-to-active transition or a pull-to-refresh, so without this a
+    /// cold launch right after an upgrade would leave the budget's account picker empty
+    /// until the user happened to background the app.
+    func runAccountBackfillIfNeeded() async {
+        guard !isImporting, hasPendingAccountBackfill else { return }
+        await runImport()
+    }
+
     /// Recomputes `isAccountBackfillComplete` from the stores.
     func refreshAccountBackfillStatus() {
         let environment = environmentStore.current
@@ -534,7 +556,9 @@ final class TransactionImportService {
             for pass in passes {
                 let isReplay = pass == .stampOnlyReplay
                 var requestCursor = isReplay ? nil : storedCursor
-                let paginationStartCursor = requestCursor
+                var paginationStartCursor = requestCursor
+                var pagesFetched = 0
+                var droppedStoredCursor: String?
                 var mutationRestarts = 0
                 var passCompletedCleanly = false
                 var hasMore = true
@@ -567,6 +591,24 @@ final class TransactionImportService {
                             passCompletedCleanly = false
                             continue
                         }
+                        // The stored cursor itself is stuck: Plaid rejects it before returning a
+                        // single page, so restarting from it can never succeed (seen on a real
+                        // item whose cursor was persisted mid-pagination and then went stale).
+                        // Drop it and re-sync that item from the beginning; `added` for rows we
+                        // already hold only stamps a nil account, so this is idempotent
+                        // (reservoir-0fq). Once per pass; a later failure surfaces normally.
+                        if let apiError = error as? PlaidAPIError,
+                           PlaidErrorClassifier.isSyncMutationDuringPagination(errorCode: apiError.errorCode),
+                           !isReplay, pagesFetched == 0, paginationStartCursor != nil {
+                            logger.error("stored sync cursor rejected with mutation-during-pagination; resetting item cursor")
+                            cursorStore.clearCursor(for: environment, itemID: itemID)
+                            droppedStoredCursor = paginationStartCursor
+                            paginationStartCursor = nil
+                            requestCursor = nil
+                            mutationRestarts = 0
+                            passCompletedCleanly = false
+                            continue
+                        }
                         // A decoded Plaid item-level error body (reservoir-adq.6.5) is
                         // classified distinctly from every other failure here — a genuine
                         // ITEM_LOGIN_REQUIRED sets the persistent needsAttention flag; a
@@ -588,7 +630,12 @@ final class TransactionImportService {
                         } else {
                             presentedError = PlaidErrorClassifier.classify(.exchangeError(error))
                         }
+                        // A fresh start failed as well, so the cursor wasn't the culprit: put it back.
+                        if let dropped = droppedStoredCursor, pagesFetched == 0 {
+                            cursorStore.setCursor(dropped, for: environment, itemID: itemID)
+                        }
                         presentedErrorDetail = String(describing: error)
+                        logger.error("sync page failed pass=\(isReplay ? "replay" : "incremental", privacy: .public): \(String(describing: error), privacy: .public)")
                         sawError = true
                         // "Still fetching" must not sit beside an error banner.
                         isInitialDataPending = false
@@ -600,6 +647,7 @@ final class TransactionImportService {
                     // must not be written either.
                     guard isStillLinked(itemID) else { lastResponseNotReady = false; break }
 
+                    pagesFetched += 1
                     // Merge this page's account metadata (never deleting on absence).
                     upsertAccounts(response.accounts, item: item)
 
@@ -616,6 +664,7 @@ final class TransactionImportService {
                     summary.modified += pageResult.summary.modified
                     summary.removed += pageResult.summary.removed
                     summary.queuedForMerge += pageResult.summary.queuedForMerge
+                    logger.info("sync page item=\(itemID, privacy: .private) pass=\(isReplay ? "replay" : "incremental", privacy: .public) added=\(response.added.count) modified=\(response.modified.count) removed=\(response.removed.count) accounts=\(response.accounts?.count ?? -1) hasMore=\(response.has_more) allHandled=\(pageResult.allHandled)")
 
                     if pageResult.allHandled {
                         // Never a nil/empty cursor, never one from a not-ready empty page
@@ -646,6 +695,7 @@ final class TransactionImportService {
                 }
                 if lastResponseNotReady { anyItemStillNotReady = true }
 
+                logger.info("sync pass ended pass=\(isReplay ? "replay" : "incremental", privacy: .public) clean=\(passCompletedCleanly) notReady=\(lastResponseNotReady) stillLinked=\(self.isStillLinked(itemID))")
                 // Only a pass that finished (`has_more == false`, every page handled, not a
                 // not-ready empty page) for an item that is still linked counts; anything
                 // else (error, cancellation, unlink, unhandled page) stops here, leaves the

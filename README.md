@@ -871,6 +871,14 @@ app-wide setting.
     error. `TransactionImportService.isAccountBackfillComplete` tells later UI
     whether every healthy linked item has finished (to show "Syncing account
     data..."); items needing relink are excluded.
+    - **Launch trigger and stuck cursors** (reservoir-0fq): imports otherwise start only on a
+      background-to-active transition or pull-to-refresh, so `RootTabView` and the budget form call
+      `runAccountBackfillIfNeeded()` when an item has a stored cursor but no backfill flag, and the
+      account picker shows "Syncing account data…" until it completes. If Plaid rejects an item's
+      stored cursor with `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION` before returning any page,
+      the cursor is dropped once and that item re-syncs from the beginning (idempotent for rows we
+      already hold; a transaction deleted locally can reappear). If the fresh start fails too, the
+      old cursor is restored and the error surfaces.
   - **Remove transactions from unlinked accounts** (reservoir-xxm): a
     destructive button in its own Settings section, shown only when leftovers
     exist (hidden otherwise) and disabled while any import is running. It

@@ -10,6 +10,7 @@ struct BudgetFormView: View {
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(TransactionImportService.self) private var importService: TransactionImportService?
 
     /// All transactions, used only to find the earliest imported row of the selected
     /// accounts (the start-date floor).
@@ -94,9 +95,21 @@ struct BudgetFormView: View {
 
                 if linkedAccounts.isEmpty && pickerGroups.isEmpty {
                     Section("Accounts") {
-                        Text("Link an account in Settings to track a budget.")
-                            .foregroundStyle(Color("ReservoirTextSecondary"))
-                            .accessibilityIdentifier("budget.form.noAccounts")
+                        if importService?.isAccountBackfillComplete == false {
+                            // Accounts are linked but their names haven't been fetched yet
+                            // (reservoir-0fq); the sync started below fills this in.
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                Text("Syncing account data…")
+                                    .foregroundStyle(Color("ReservoirTextSecondary"))
+                            }
+                            .accessibilityElement(children: .combine)
+                            .accessibilityIdentifier("budget.form.syncingAccounts")
+                        } else {
+                            Text("Link an account in Settings to track a budget.")
+                                .foregroundStyle(Color("ReservoirTextSecondary"))
+                                .accessibilityIdentifier("budget.form.noAccounts")
+                        }
                     }
                 }
                 ForEach(pickerGroups) { group in
@@ -179,6 +192,13 @@ struct BudgetFormView: View {
         .task {
             linkedAccounts = linkedAccountStore.loadAll()
             refreshEarliestImportedDate()
+            // The picker needs cached account metadata; if the backfill that provides it is
+            // still owed, run it now and reload (reservoir-0fq).
+            await importService?.runAccountBackfillIfNeeded()
+            linkedAccounts = linkedAccountStore.loadAll()
+        }
+        .onChange(of: importService?.isImporting) {
+            linkedAccounts = linkedAccountStore.loadAll()
         }
         // Selecting different accounts can move the start-date floor; recompute it so
         // the validator (and date range) re-evaluate the current start date.
