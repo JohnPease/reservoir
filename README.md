@@ -62,7 +62,7 @@ Technical details below).
 
 - **Platform**: iOS 17+, Swift + SwiftUI
 - **Persistence**: SwiftData, wrapped in a `VersionedSchema` (currently
-  `SchemaV4`) from day one so migrations don't require retrofitting. Bumping
+  `SchemaV9`) from day one so migrations don't require retrofitting. Bumping
   the schema version (rather than editing the current `VersionedSchema` in
   place) is required any time a `@Model` type's shape changes — see "Data
   model" below
@@ -76,7 +76,7 @@ Project layout:
 ```
 Reservoir/
   App/            — entry point, RootTabView, ModelContainer setup
-  Features/       — one folder per tab (Today, Goals, Transactions, Settings)
+  Features/       — one folder per tab (Today, Plans, Transactions, Settings; Plans = the Goals/ and Budget/ folders)
   Models/         — SwiftData @Model types
     Migrations/   — VersionedSchema (SchemaV1, SchemaV2, …) + SchemaMigrationPlan
   Services/       — I/O boundaries (Plaid, persistence) and business logic
@@ -86,21 +86,26 @@ ReservoirTests/    — XCTest
 ReservoirUITests/  — XCUITest
 ```
 
-**Data model** (current — `Models/Migrations/SchemaV6.swift`; the app-wide
+**Data model** (current — `Models/Migrations/SchemaV9.swift`; the app-wide
 type aliases in `Models/CurrentSchema.swift` always point at the current
 version, so the rest of the app never references a `SchemaVN` directly):
 
 | Entity | Key fields |
 |---|---|
 | `SavingsGoal` | `targetAmount`, `targetDate`, `startDate` (user-editable/backdatable at creation — see "Goals screen" below), `startingBalance`, `dailyBase` (fixed at creation/edit), `dismissedAt` (set when the user dismisses a completion banner; added in `SchemaV2`), `createdAt` (real creation timestamp, never user-editable; added in `SchemaV3` — see "Goals screen" below), `associatedItemIDs: [String]` (linked-item IDs this goal is associated with, at most one goal per item ID at a time, enforced by `GoalAccountAssociationService`; added in `SchemaV6`, defaults to `[]`) |
-| `SpendTransaction` | `amount`, `date`, `merchantName`, `type` (variable/fixed), `entryMethod` (manual/imported), `plaidTransactionID`, `plaidItemID` (which linked item this row was imported from; nil for manual entries, same convention as `plaidTransactionID`; added in `SchemaV6`, backfilled for existing imported rows — see "Migrations" below), `isManualOverride`, `createdAt` (record-creation time, distinct from the user-facing `date`; breaks ties when ordering same-day transactions; added in `SchemaV2`), `wasMergedFromManual` (added in `SchemaV4`) |
+| `SpendTransaction` | `amount`, `date`, `merchantName`, `type` (variable/fixed), `entryMethod` (manual/imported), `plaidTransactionID`, `plaidItemID` (which linked item this row was imported from; nil for manual entries, same convention as `plaidTransactionID`; added in `SchemaV6`, backfilled for existing imported rows — see "Migrations" below), `plaidAccountID` (which Plaid account — checking, credit card, ... — the row belongs to; nil for manual entries and not-yet-backfilled rows; the backfill replay and a merge never overwrite it, only a Plaid `modified` event refreshes it; added in `SchemaV8`, stamped by the one-time account backfill — see "Account capture and backfill" in the Plaid section), `isManualOverride`, `createdAt` (record-creation time, distinct from the user-facing `date`; breaks ties when ordering same-day transactions; added in `SchemaV2`), `wasMergedFromManual` (added in `SchemaV4`) |
+| `Budget` | the one app-wide monthly budget (added in `SchemaV9`): `monthlyAmount`, `startDate`, `carriesAcrossMonths` (true = "Carry over", the default; false = "Start fresh"), `selectedAccountIDs: [String]` (Plaid account IDs whose transactions count), `createdAt`. No relationship to `SpendTransaction` and no revision history — see "Monthly budget" below |
 | `MerchantRule` | `merchantName` (exact, case-insensitive match), `type` |
-| `PendingTransactionMerge` | durable form of a queued merge-prompt decision (added in `SchemaV5`) |
+| `PendingTransactionMerge` | durable form of a queued merge-prompt decision (added in `SchemaV5`); carries `plaidItemID` (`SchemaV7`) and `plaidAccountID` (`SchemaV8`) of the incoming transaction |
 
 **Migrations**: `Models/Migrations/MigrationPlan.swift`'s
 `ReservoirMigrationPlan` lists every `VersionedSchema` in order and the
 `MigrationStage`s between them. `SchemaV1` -> `SchemaV2`, `SchemaV2` ->
-`SchemaV3`, `SchemaV3` -> `SchemaV4`, and `SchemaV4` -> `SchemaV5` are all
+`SchemaV3`, `SchemaV3` -> `SchemaV4`, `SchemaV4` -> `SchemaV5`,
+`SchemaV6` -> `SchemaV7`, `SchemaV7` -> `SchemaV8` (reservoir-j8t: the
+nil-defaulted `plaidAccountID` fields; existing rows are stamped by the
+importer's account backfill, not by the migration), and `SchemaV8` ->
+`SchemaV9` (reservoir-j8t: the new `Budget` model) are all
 lightweight (inferred) stages — every new field is optional, or non-optional
 with a property-level default (see `SchemaV3`'s `createdAt` note below). Any
 change to a `@Model` type's shape (new/removed/retyped field) requires a new
@@ -212,6 +217,99 @@ adq.3, same as `CreateGoalStubSheet` was retired in adq.5 when goal creation
 started opening the real `GoalFormView`. Covered by
 `ReservoirTests/TodayScreenCalculatorTests.swift` and
 `ReservoirUITests/TodayScreenUITests.swift`.
+
+**Monthly budget** (reservoir-j8t): one optional, app-wide monthly budget,
+tracked independently of savings goals. A transaction counts toward it only
+if its `plaidAccountID` is in the budget's `selectedAccountIDs`, it isn't
+tagged fixed, and it falls on/after `startDate` — manual and not-yet-backfilled
+rows (no account) never count. That rule lives in one predicate,
+`BudgetCalculator.countsTowardBudget` (an overload only pre-normalizes the start day). The same transaction may also count
+toward a goal; selecting budget accounts never touches
+`GoalAccountAssociationService` or any goal's `associatedItemIDs`.
+
+The daily base on a day is `monthlyAmount / daysInMonth(that day)` (so a month
+always sums to exactly the monthly amount; shares are rounded to 10 decimal
+places and the month's last day absorbs the remainder). The math reuses
+`DailyLimitCalculator`'s single carry-forward loop: `GoalCarryForwardInput`
+carries a `BaseSchedule` (`.constant` for goals, `.monthly` for the budget) and
+a `MonthBoundary` (`.carry`, or `.reset` for "Start fresh", which zeroes carry
+on every 1st). The budget has no revision history — `BudgetCalculator`
+recomputes the whole window from `startDate` with the budget's *current* fields,
+so editing a setting recalculates everything as if it had always applied.
+`BudgetValidator` (pure) owns form validation and the start-date floor
+(`max(today - 730 days, earliest imported transaction among the selected
+accounts)`); `BudgetService` enforces "only one budget" and wraps saves in
+`PersistenceSaveHelper`; `BudgetAccountService` shapes the account picker
+(grouped by institution, "Name ••mask", "Closed account" rows for selected
+accounts that are no longer linked) and prunes a budget's selection when an
+item is unlinked or the Plaid environment changes (read from
+`LinkedAccountStore` before it is cleared). While
+`TransactionImportService.isAccountBackfillComplete` is false the budget cards
+show "Syncing account data..." instead of numbers; an empty selection shows
+"Choose accounts" (`BudgetCalculator.cardState`). The flag is false until every
+HEALTHY linked item has completed its backfill. Items flagged `needsAttention`
+(for example after `ITEM_LOGIN_REQUIRED`) are excluded so a broken connection
+never blocks the budget; the breakdown's "Needs relink" row covers them. The gate
+recomputes when an item flips to needs-attention (in the failed-sync path) and on
+relink (`refreshLinkedItemState()`); the relinked item's backfill flag is still
+unset, so its backfill runs to completion on the next sync and it then counts
+toward the gate again. Accepted limitations: if Plaid issues new account IDs
+after a relink, the budget's accounts may need to be re-picked (old ones show as
+Closed/Removed); and local transactions that Plaid no longer reports can't be
+stamped by the account backfill, so they never get an account and never count
+toward the budget. `BudgetValidator` also caps the monthly amount at $1,000,000
+inclusive ("Enter an amount of $1,000,000 or less.", Save disabled). The flag is a
+cached copy of `UserDefaults`-backed state, refreshed at the start and end of
+every import run and by `refreshLinkedItemState()` after link, relink, unlink
+and environment changes.
+
+**Budget insights** (reservoir-j8t PR3): `BudgetSummaryCalculator` (pure; SwiftData
+for model types only) resolves a single Codable `BudgetInsights` value that the
+views just render. Everything is month-local (calendar month, `Calendar.current`)
+and identical in carry and reset mode. `windowStart` is the later of the 1st of
+the month and `budget.startDate`; `spent` is counted spend
+(`BudgetCalculator.countsTowardBudget`) from `windowStart` through today;
+`budgetedToDate` is the sum of the `BaseSchedule` daily bases over those days;
+`paceDelta = budgetedToDate - spent` (positive = under pace).
+- *Progress sentence* (Today budget hero and Plans card): "Day 14 of 31. You've
+  spent $1,240, about $60 under pace." (or "over pace" in `ReservoirDeficit`, or
+  "right on pace" within $1). Variants: "No spending yet this month." on day 1
+  with no spend; "(tracking since Oct 12)" for a mid-month start; "You've spent
+  $3,150 of your $3,000 budget, $150 over for the month." once month spend
+  exceeds the window budget by at least $1 (for a mid-month start the window budget
+  is the prorated sum of daily bases from the start date through month end, the same
+  reference the projection uses, and the copy reads "of your $2,000 budget for this
+  period, $500 over.") (a few cents over reads as "right on pace");
+  on the 1st only, a carry clause ("$X carried over from
+  last month.", "Starting $X in the hole from last month.", or in reset mode
+  "Fresh month, nothing carried over.").
+- *Projection* (Plans card only): `rate = spend through yesterday / completed
+  days`; `projected = spent + rate * (days left in month)`, compared with the
+  budget for the window (the monthly amount, or the sum of daily bases from a
+  mid-month start). Hidden until `projectionMinimumCompletedDays` (7) days have
+  completed, and on the month's last day.
+- *Per-account breakdown* (Plans card only): this month's counted spend per
+  selected account, highest first, zero-spend accounts included; names/masks come
+  from `LinkedAccountStore` ("Unknown account" if the account's item is still
+  linked but its metadata isn't cached; "Removed account", plus an "N accounts no
+  longer linked." caption, when it isn't); a muted "Needs relink" shows for items
+  flagged `needsAttention`. Hidden for a single selected account.
+- Insights are withheld while the card is "Syncing account data..." or "Choose
+  accounts". `BudgetInsights.monthResult` (budgeted, spent, delta, endingCarry) is
+  exposed for the widget and month-end review but nothing is persisted.
+
+**Plans tab** (formerly "Goals"): the tab is labeled Plans (SF symbol and
+`AppTab.goals`/`GoalsView`/`goals.*` accessibility ids unchanged). It shows a
+"Monthly budget" section (budget card with Edit/Delete via `BudgetFormView`, or
+a quiet "Set a monthly budget" row) above "Savings goals" (the existing goals
+content). On Today, the budget hero renders above the savings hero (titled
+"Savings limit" only when both show) using the shared
+`Shared/HeroSection.swift`; a budget with no goal shows no goal prompt, and
+the no-goal-no-budget empty state adds an "Or set a monthly budget instead."
+link. The Today budget hero ends with the progress sentence; the Plans budget card
+shows the sentence, projection, and breakdown (accessibility ids
+`budget.progressSentence`, `budget.projection`, `budget.breakdown`,
+`budget.breakdown.row.<accountID>`).
 
 **Goals screen**: `Features/Goals/GoalsView.swift` lists every goal in three
 sections — active (sorted by `targetDate` ascending), completed-but-
@@ -726,8 +824,64 @@ app-wide setting.
     `SavingsGoal.transactions`, so they stay consistent. A failure is shown in
     a "Couldn't save" alert and the item stays linked. Finally
     `PlaidServiceLive.unlink(_ item:)` clears that item's `LinkedItemStore`
-    entry, Keychain access token, and sync cursor (reservoir-wo1; both
-    choices, since the cursor is orphaned either way).
+    entry, Keychain access token, sync cursor, account-backfill flag and
+    `LinkedAccountStore` accounts (reservoir-wo1; both choices, since the
+    cursor is orphaned either way). If the monthly budget includes any of the
+    item's accounts the confirmation adds a line saying so, and the accounts are
+    pruned from the budget's selection (`BudgetAccountService.prune`, before the
+    store is cleared); kept transactions then stop counting toward the budget.
+  - **Account capture and backfill** (reservoir-j8t; feeds the monthly budget).
+    `/transactions/sync` transactions carry an `account_id` (decoded
+    optionally, also on `removed` entries) and each response a top-level
+    `accounts` array. `account_id` flows through `PlaidTransactionMapper`
+    (`MappedPlaidTransaction.accountID`) and is stamped onto
+    `SpendTransaction.plaidAccountID` / `PendingTransactionMerge.plaidAccountID`
+    on new imports, "Keep both", "Merge" (`TransactionDedupMatcher.applyMerge`),
+    and `modified` events. Account metadata (`LinkedAccount`: account ID, item
+    ID, name, official name, mask, type, subtype, institution name) is kept in
+    `LinkedAccountStore` (`Services/Plaid/LinkedAccountStore.swift`,
+    `UserDefaults` JSON behind `LinkedAccountStoring`, same pattern as
+    `LinkedItemStore`). Each page lists only the accounts its own transactions
+    reference and a no-change sync returns `accounts: []`, so pages are
+    **upsert-merged by `account_id` and absence never deletes**. An item's
+    accounts are removed on unlink and on environment change.
+    **Safe replay**: in the `added` loop, before dedup matching, a transaction
+    whose `plaidTransactionID` already exists locally only gets a nil
+    `plaidAccountID` stamped (never overwritten); type, overrides, goal link,
+    merge state, amount/date/merchant are untouched and no merge prompt is
+    queued (this also keeps `@Attribute(.unique)` from ever upserting over an
+    existing row). **One-time backfill**: `PlaidAccountBackfillStore` holds a
+    per-`(environment, itemID)` "done" flag beside the sync cursor. An item with
+    a stored cursor and no flag gets two passes in one run: (1) the ordinary
+    incremental sync from the stored cursor, so anything added, modified or
+    removed since that cursor is applied normally and the cursor advances as
+    usual; then (2) a **stamp-only replay** of full history from a nil cursor
+    (up to 730 days) that only writes `plaidAccountID` onto rows (and queued
+    merge decisions) that already exist locally. The replay inserts, updates and
+    deletes nothing, ignores `modified`/`removed`, and its cursors are never
+    persisted. Consequences worth knowing: a Plaid transaction with no local row
+    (one you deleted, a credit that was never imported) is **not** re-added by
+    the backfill, and a local row Plaid no longer reports stays without an
+    account (so it never counts toward a budget). The flag is set only when the
+    replay pass completes (`has_more == false`, every page handled, item still
+    linked); an error, cancellation or unlink mid-pass leaves it unset and the
+    next sync repeats both passes. A fresh link has no stored cursor, so it needs
+    no replay and sets the flag after its first complete pass. `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION` restarts the
+    pagination from its starting cursor (up to 3 times) instead of surfacing an
+    error. `TransactionImportService.isAccountBackfillComplete` tells later UI
+    whether every healthy linked item has finished (to show "Syncing account
+    data..."); items needing relink are excluded.
+    - **Launch trigger and stuck cursors** (reservoir-0fq): imports otherwise start only on a
+      background-to-active transition or pull-to-refresh, so `RootTabView` and the budget form call
+      `runAccountBackfillIfNeeded()` when any healthy item has no backfill flag (an upgraded item
+      owing the replay, or a fresh link whose first pass never finished), and the account picker
+      shows "Syncing account data…" until it completes. An item whose attempt fails this session
+      stops gating the budget: `hasUnsyncedAccounts` makes the Plans card say spending may be
+      missing, and the picker says account details couldn't be loaded; a later success clears it. If Plaid rejects an item's
+      stored cursor with `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION` before returning any page,
+      the cursor is dropped once and that item re-syncs from the beginning (idempotent for rows we
+      already hold; a transaction deleted locally can reappear). If the fresh start fails too, the
+      old cursor is restored and the error surfaces.
   - **Remove transactions from unlinked accounts** (reservoir-xxm): a
     destructive button in its own Settings section, shown only when leftovers
     exist (hidden otherwise) and disabled while any import is running. It
@@ -910,6 +1064,15 @@ to confirm rather than decided unilaterally.
   when there's no active goal; a completion banner appears once a goal's
   `targetDate` passes, and dismissing it resets to the empty state. See
   "Today screen" under Architecture above.
+- **Plans tab and monthly budget** (reservoir-j8t, implemented): the Goals
+  tab is renamed Plans and gains a "Monthly budget" section — set one monthly
+  amount, choose which linked accounts it tracks (account-level selection),
+  pick Carry over or Start fresh for month ends, and choose a start date
+  (default the 1st of this month, up to 730 days back). Today shows a budget
+  hero (daily limit, spent today, remaining, plus a pace sentence) above the
+  savings one; the Plans card adds an end-of-month projection and a per-account
+  spend breakdown. See
+  "Monthly budget" under Architecture above.
 - **Goals screen** (implemented): active-goal cards with a progress bar,
   target/start dates, and a per-card Pace/Simulation toggle for "at current
   pace" projections; completed-but-undismissed goals with the same banner as

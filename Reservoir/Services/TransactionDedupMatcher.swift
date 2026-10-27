@@ -48,5 +48,10 @@ enum TransactionDedupMatcher {
         manualTransaction.entryMethod = .imported
         manualTransaction.plaidTransactionID = incoming.plaidTransactionID
         manualTransaction.wasMergedFromManual = true
+        // Stamp the account only when Plaid supplied one and never clobber an existing
+        // value (reservoir-j8t).
+        if manualTransaction.plaidAccountID == nil {
+            manualTransaction.plaidAccountID = incoming.accountID
+        }
     }
 }

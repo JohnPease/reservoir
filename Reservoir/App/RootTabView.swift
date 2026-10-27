@@ -49,7 +49,7 @@ struct RootTabView: View {
                 .tag(AppTab.today)
 
             GoalsView()
-                .tabItem { Label("Goals", systemImage: "target") }
+                .tabItem { Label("Plans", systemImage: "target") }
                 .tag(AppTab.goals)
 
             TransactionsView()
@@ -110,6 +110,9 @@ struct RootTabView: View {
             // light/dark switching still comes from the Asset Catalog per
             // `docs/DESIGN_STANDARDS.md` §1.
             UITabBar.appearance().unselectedItemTintColor = UIColor(named: "ReservoirTextMuted")
+            // Cold launch after an upgrade: the one-time account backfill is owed but no
+            // scene-phase transition will trigger it (reservoir-0fq).
+            await importService?.runAccountBackfillIfNeeded()
         }
         .onChange(of: scenePhase) { _, newPhase in
             Task { await importService?.handleScenePhaseTransition(to: newPhase) }

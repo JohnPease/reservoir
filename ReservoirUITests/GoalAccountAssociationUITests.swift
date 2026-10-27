@@ -22,7 +22,7 @@ final class GoalAccountAssociationUITests: XCTestCase {
         app.launchEnvironment["UITEST_SCENARIO"] = scenario
         configure(app)
         app.launch()
-        app.tabBars.buttons["Goals"].tap()
+        app.tabBars.buttons["Plans"].tap()
         return app
     }
 

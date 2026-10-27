@@ -145,6 +145,8 @@ final class PlaidServiceLive: PlaidService {
     private let environmentStore: PlaidEnvironmentStoring
     private let cursorStore: PlaidSyncCursorStoring
     private let linkedItemStore: LinkedItemStoring
+    private let linkedAccountStore: LinkedAccountStoring
+    private let backfillStore: PlaidAccountBackfillStoring
     private let logger = Logger(subsystem: "com.reservoir.app", category: "PlaidServiceLive")
 
     /// The environment pinned for the Link flow currently in progress (set
@@ -196,13 +198,17 @@ final class PlaidServiceLive: PlaidService {
         urlSession: URLSession = .shared,
         environmentStore: PlaidEnvironmentStoring = PlaidEnvironmentStore(),
         cursorStore: PlaidSyncCursorStoring = PlaidSyncCursorStore(),
-        linkedItemStore: LinkedItemStoring = LinkedItemStore()
+        linkedItemStore: LinkedItemStoring = LinkedItemStore(),
+        linkedAccountStore: LinkedAccountStoring = LinkedAccountStore(),
+        backfillStore: PlaidAccountBackfillStoring = PlaidAccountBackfillStore()
     ) {
         self.keychain = keychain
         self.urlSession = urlSession
         self.environmentStore = environmentStore
         self.cursorStore = cursorStore
         self.linkedItemStore = linkedItemStore
+        self.linkedAccountStore = linkedAccountStore
+        self.backfillStore = backfillStore
         // Single-pointer `linkedItem` still reflects only "the" (most recently
         // active) item, kept for existing single-item call sites (see its doc
         // comment) — arbitrarily picks the first stored item when more than one
@@ -214,6 +220,8 @@ final class PlaidServiceLive: PlaidService {
         let keychainForInvalidation = keychain
         let cursorStoreForInvalidation = cursorStore
         let linkedItemStoreForInvalidation = linkedItemStore
+        let linkedAccountStoreForInvalidation = linkedAccountStore
+        let backfillStoreForInvalidation = backfillStore
         (environmentStore as? PlaidEnvironmentStore)?.onChange = { [weak self] _ in
             // Invalidate every sync cursor/token/metadata for every linked item, not
             // just the one `self?.linkedItem` currently points at (reservoir-loc.1) —
@@ -227,13 +235,19 @@ final class PlaidServiceLive: PlaidService {
             for item in items {
                 for candidate in PlaidEnvironment.allCases {
                     cursorStoreForInvalidation.clearCursor(for: candidate, itemID: item.itemID)
+                    backfillStoreForInvalidation.clear(for: candidate, itemID: item.itemID)
                 }
+                linkedAccountStoreForInvalidation.removeAll(itemID: item.itemID)
+                // Removed synchronously with the cursors/flags/accounts above so every
+                // reader (e.g. `TransactionImportService.refreshLinkedItemState()`, called
+                // right after the switch) sees one consistent "nothing linked" state; only
+                // the Keychain deletes need the async hop.
+                linkedItemStoreForInvalidation.remove(itemID: item.itemID)
             }
             Task { @MainActor in
                 self?.linkedItem = nil
                 self?.linkedItems = []
                 for item in items {
-                    linkedItemStoreForInvalidation.remove(itemID: item.itemID)
                     try? await keychainForInvalidation.delete(for: PlaidKeychainKey.accessToken(itemID: item.itemID))
                 }
             }
@@ -478,10 +492,12 @@ final class PlaidServiceLive: PlaidService {
 
     /// Severs the local Plaid connection for `item` — Settings' "Unlink" action.
     /// Deliberately narrow, matching this story's explicit acceptance criterion:
-    /// clears only `LinkedItemStore` (linked-item metadata) and the Keychain access
-    /// token, the same two things `PlaidEnvironmentStore.onChange`'s existing
-    /// invalidation hook clears on an environment switch. It never touches
-    /// `SpendTransaction` rows — whether those are kept or deleted is the caller's choice.
+    /// clears only the item's own connection state — its `LinkedItemStore` entry, the
+    /// Keychain access token, its `LinkedAccountStore` accounts and account-backfill flag
+    /// (reservoir-j8t), the same things `PlaidEnvironmentStore.onChange`'s invalidation
+    /// hook clears on an environment switch. It never touches `SpendTransaction` rows or
+    /// a budget's selection — whether rows are kept or deleted, and pruning the budget
+    /// (which must read the accounts before this clears them), are the caller's job.
     ///
     /// Also clears that item's Plaid sync cursor (reservoir-wo1): relinking after an unlink
     /// is a fresh Link, which mints a NEW Plaid item_id, so the old cursor is orphaned
@@ -513,6 +529,8 @@ final class PlaidServiceLive: PlaidService {
             linkedItem = remaining.first
         }
         cursorStore.clearCursor(for: environment, itemID: item.itemID)
+        backfillStore.clear(for: environment, itemID: item.itemID)
+        linkedAccountStore.removeAll(itemID: item.itemID)
         try? await keychain.delete(for: PlaidKeychainKey.accessToken(itemID: item.itemID))
     }
 

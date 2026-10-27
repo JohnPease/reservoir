@@ -20,6 +20,12 @@ struct TodayView: View {
     @Environment(TodayClock.self) private var todayClock
 
     @Query(sort: \SavingsGoal.targetDate) private var goals: [SavingsGoal]
+    @Query(sort: \Budget.createdAt) private var budgets: [Budget]
+
+    /// Read for `isAccountBackfillComplete` only (budget card gating) and the tab switch
+    /// to Plans from the "Choose accounts" state.
+    @Environment(TransactionImportService.self) private var importService: TransactionImportService?
+    @Environment(TabSelection.self) private var tabSelection
     /// Sorted so `spentToday`'s filtering doesn't have to fault/sort the whole table on
     /// every body re-evaluation to find today's entries; still unlimited because
     /// `spentToday` needs every transaction dated today, not just the most recent ones.
@@ -46,6 +52,7 @@ struct TodayView: View {
 
     @State private var isShowingAddTransaction = false
     @State private var isShowingCreateGoal = false
+    @State private var isShowingCreateBudget = false
     @State private var dismissError: String?
 
     private let calendar: Calendar = .current
@@ -96,14 +103,45 @@ struct TodayView: View {
         recentTransactionsQuery
     }
 
+    /// Pace sentence figures; Today renders only the sentence. Wording is in
+    /// `BudgetSummaryCalculator`.
+    private func budgetInsights(_ model: BudgetCalculator.CardModel) -> BudgetSummaryCalculator.BudgetInsights? {
+        BudgetSummaryCalculator.insights(
+            budget: budgets.first,
+            transactions: transactions,
+            isAccountBackfillComplete: importService?.isAccountBackfillComplete ?? true,
+            referenceDate: todayClock.referenceDate,
+            summary: model.summary,
+            calendar: calendar
+        )
+    }
+
     private var dateHeaderText: String {
         todayClock.referenceDate.formatted(.dateTime.weekday(.wide).month(.wide).day())
     }
 
     var body: some View {
+        // Resolved once per render (the budget figures are a full-window recompute).
+        let budgetModel = BudgetCalculator.cardModel(
+            budget: budgets.first,
+            allTransactions: transactions,
+            isAccountBackfillComplete: importService?.isAccountBackfillComplete ?? true,
+            referenceDate: todayClock.referenceDate,
+            calendar: calendar
+        )
+
         NavigationStack {
             ScrollView {
                 VStack(spacing: 24) {
+                    if let budgetModel {
+                        BudgetHeroCardView(
+                            state: budgetModel.state,
+                            summary: budgetModel.summary,
+                            insights: budgetInsights(budgetModel),
+                            onChooseAccounts: { tabSelection.selected = .goals }
+                        )
+                    }
+
                     ForEach(completedGoals, id: \.persistentModelID) { goal in
                         CompletionBannerView(goal: goal) {
                             dismiss(goal)
@@ -111,11 +149,23 @@ struct TodayView: View {
                     }
 
                     if let summary {
-                        HeroSection(summary: summary)
+                        // Titled only when the budget card is also showing, so a
+                        // savings-only Today is unchanged.
+                        HeroSection(summary: summary, title: budgetModel == nil ? nil : "Savings limit")
                         TwoStatRow(summary: summary)
                     } else if hasNoGoalsAtAll {
-                        NoActiveGoalPromptView {
-                            isShowingCreateGoal = true
+                        // A budget with no goal needs no goal prompt: the budget card is
+                        // the whole story.
+                        if budgetModel == nil {
+                            NoActiveGoalPromptView {
+                                isShowingCreateGoal = true
+                            }
+                            Button("Or set a monthly budget instead.") {
+                                isShowingCreateBudget = true
+                            }
+                            .font(.subheadline)
+                            .foregroundStyle(Color("ReservoirTextSecondary"))
+                            .accessibilityIdentifier("today.setBudgetLink")
                         }
                     } else {
                         // A completed-but-undismissed goal exists (its banner is already
@@ -147,6 +197,9 @@ struct TodayView: View {
         .sheet(isPresented: $isShowingCreateGoal) {
             GoalFormView(mode: .create, accessibilityIdentifier: "today.createGoalSheet")
         }
+        .sheet(isPresented: $isShowingCreateBudget) {
+            BudgetFormView(mode: .create, accessibilityIdentifier: "today.createBudgetSheet")
+        }
         .saveErrorAlert($dismissError)
     }
 
@@ -172,70 +225,8 @@ struct TodayView: View {
 
 }
 
-// MARK: - Hero
-
-private struct HeroSection: View {
-    let summary: TodayScreenCalculator.Summary
-
-    /// The fill-gauge and the hero number's own color switch both key off
-    /// `summary.limit` (today's daily limit — base + carry-forward), not
-    /// `summary.remaining`. Per §3.1, the gauge exists to "visually tie the hero number
-    /// to the reservoir/tank metaphor" — it's the hero number's own tank, not a
-    /// separate reading of the still-remaining balance (which the "Remaining" stat
-    /// card already covers on its own terms, §3.3). `summary.dailyBase` is the "full
-    /// tank" reference rate §4's formula scales to a week.
-    private var gaugeResult: FillGaugeCalculator.Result {
-        FillGaugeCalculator.result(currentBalance: summary.limit, baseDailyAmount: summary.dailyBase)
-    }
-
-    private var heroColor: Color {
-        summary.limit >= 0 ? Color("ReservoirTextPrimary") : Color("ReservoirDeficit")
-    }
-
-    var body: some View {
-        VStack(spacing: 4) {
-            HStack(spacing: 8) {
-                FillGaugeView(result: gaugeResult)
-
-                // 44px per PROJECT_SPEC's "UX design — Today screen" — a manual/code-review
-                // check (STANDARDS.md §5), not something asserted in XCUITest.
-                Text(summary.limit, format: .currency(code: "USD"))
-                    .font(.system(size: 44, weight: .bold))
-                    .foregroundStyle(heroColor)
-                    .accessibilityIdentifier("today.heroAmount")
-            }
-
-            Text("\(currency(summary.dailyBase)) base + \(currency(summary.carriedForward)) carried forward")
-                .font(.subheadline)
-                .foregroundStyle(Color("ReservoirTextSecondary"))
-        }
-        .frame(maxWidth: .infinity)
-        // .contain, not the default .automatic, so this stays queryable as its own
-        // "Other" element in XCUITest instead of being auto-flattened into a StaticText
-        // that swallows the identifier.
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("today.hero")
-    }
-
-    private func currency(_ amount: Decimal) -> String {
-        amount.formatted(.currency(code: "USD"))
-    }
-}
-
-// MARK: - Two-stat row
-
-private struct TwoStatRow: View {
-    let summary: TodayScreenCalculator.Summary
-
-    var body: some View {
-        HStack(spacing: 16) {
-            StatCard(title: "Spent today", amount: summary.spentToday, isOverLimit: false)
-            StatCard(title: "Remaining", amount: summary.remaining, isOverLimit: summary.remaining < 0)
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("today.stats")
-    }
-}
+// `HeroSection`/`TwoStatRow`/`StatCard` moved to `Reservoir/Shared/HeroSection.swift`
+// (reservoir-j8t) so the monthly-budget card reuses them (STANDARDS.md §3).
 
 /// Shown in place of `HeroSection`/`TwoStatRow` when there's no active goal (so no
 /// daily limit is defined) but there's still today's spend worth surfacing — e.g. every
@@ -249,32 +240,6 @@ private struct SpentTodayOnlyCard: View {
             // own "Other" element in XCUITest instead of being auto-flattened.
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("today.spentTodayOnly")
-    }
-}
-
-private struct StatCard: View {
-    let title: String
-    let amount: Decimal
-    let isOverLimit: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.caption)
-                // §3.3: deficit state reuses ReservoirDeficit for the label too — no
-                // separate dimmed asset; the caption's smaller size/weight already
-                // reads as "dimmed" relative to the value line below it.
-                .foregroundStyle(isOverLimit ? Color("ReservoirDeficit") : Color("ReservoirTextSecondary"))
-            Text(amount, format: .currency(code: "USD"))
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(isOverLimit ? Color("ReservoirDeficit") : Color("ReservoirTextPrimary"))
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .background(
-            isOverLimit ? Color("ReservoirSurfaceDeficit") : Color("ReservoirSurface"),
-            in: RoundedRectangle(cornerRadius: 12)
-        )
     }
 }
 

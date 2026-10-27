@@ -70,6 +70,17 @@ enum UITestScenario: String {
     /// (reservoir-xxm). Pair with `UITEST_SEED_PLAID_LINKED_ITEM=1`.
     case orphanedImportedTransactions
 
+    /// One monthly budget on the seeded linked account ("uitest-account", see
+    /// `seedLinkedAccountIfRequested()`) starting the 1st of this month, one imported
+    /// $20 transaction on it dated today, and no savings goal — Today shows the budget
+    /// card with no goal prompt; Plans shows the budget card (reservoir-j8t).
+    case budgetSeeded
+
+    /// Like `budgetSeeded` but selecting two accounts ("uitest-account", $20 today, and
+    /// "uitest-account-2", $45 today) so the Plans breakdown shows. Pair with
+    /// `UITEST_SEED_LINKED_ACCOUNT=1` and `UITEST_SEED_SECOND_LINKED_ACCOUNT=1`.
+    case budgetTwoAccounts
+
     static var current: UITestScenario? {
         ProcessInfo.processInfo.environment["UITEST_SCENARIO"].flatMap(UITestScenario.init(rawValue:))
     }
@@ -333,6 +344,9 @@ enum UITestScenario: String {
             linkedAt: Date(),
             needsAttention: needsAttention
         ))
+        // A seeded bank is a settled one: without the flag the launch-time backfill retry
+        // (reservoir-0fq) would run an import that consumes scripted sync responses.
+        PlaidAccountBackfillStore().setComplete(for: PlaidEnvironmentStore().current, itemID: "uitest-item")
 
         // `UITEST_SEED_PLAID_SECOND_ITEM=1` (reservoir-loc.3) additionally seeds a
         // second, distinct item — "uitest-item-2" / "UITest Bank 2" — so a test can
@@ -349,6 +363,7 @@ enum UITestScenario: String {
             linkedAt: Date(),
             needsAttention: secondNeedsAttention
         ))
+        PlaidAccountBackfillStore().setComplete(for: PlaidEnvironmentStore().current, itemID: "uitest-item-2")
     }
 
     /// See `seedPlaidLinkedItemIfRequested()` above. Blocks synchronously, same
@@ -442,11 +457,85 @@ enum UITestScenario: String {
         UserDefaults.standard.removeObject(forKey: "plaid.linkedItems")
     }
 
+    /// Seeds one `LinkedAccount` ("uitest-account", "Checking ••0000" at "UITest Bank")
+    /// into the real `UserDefaults`-backed `LinkedAccountStore` when
+    /// `UITEST_SEED_LINKED_ACCOUNT=1`, clearing any previous value first (the store, unlike
+    /// the in-memory SwiftData container, survives across launches). Backs the budget
+    /// account picker (reservoir-j8t).
+    static func seedLinkedAccountIfRequested() {
+        let environment = ProcessInfo.processInfo.environment
+        if environment["UITEST_SEED_LINKED_ACCOUNT"] == "1" || environment["UITEST_RESET_PLAID_LINKED_ITEMS"] == "1" {
+            UserDefaults.standard.removeObject(forKey: "plaid.linkedAccounts")
+        }
+        guard environment["UITEST_SEED_LINKED_ACCOUNT"] == "1" else { return }
+        if environment["UITEST_SEED_SECOND_LINKED_ACCOUNT"] == "1" {
+            LinkedAccountStore().upsert([
+                LinkedAccount(
+                    accountID: "uitest-account-2",
+                    itemID: "uitest-item",
+                    name: "Card",
+                    mask: "1111",
+                    type: "credit",
+                    institutionName: "UITest Bank"
+                )
+            ])
+        }
+        LinkedAccountStore().upsert([
+            LinkedAccount(
+                accountID: "uitest-account",
+                itemID: "uitest-item",
+                name: "Checking",
+                mask: "0000",
+                type: "depository",
+                subtype: "checking",
+                institutionName: "UITest Bank"
+            )
+        ])
+    }
+
     /// Seeds `context` with this scenario's fixtures and saves.
     func seed(into context: ModelContext) {
         switch self {
         case .emptyGoal:
             break
+
+        case .budgetSeeded:
+            let firstOfMonth = BudgetValidator.defaultStartDate(referenceDate: .now)
+            context.insert(Budget(
+                monthlyAmount: 3000,
+                startDate: firstOfMonth,
+                selectedAccountIDs: ["uitest-account"]
+            ))
+            context.insert(SpendTransaction(
+                amount: 20,
+                date: .now,
+                merchantName: "Budget Coffee",
+                type: .variable,
+                entryMethod: .imported,
+                plaidTransactionID: "uitest-budget-txn",
+                plaidItemID: "uitest-item",
+                plaidAccountID: "uitest-account"
+            ))
+
+        case .budgetTwoAccounts:
+            let firstOfMonth = BudgetValidator.defaultStartDate(referenceDate: .now)
+            context.insert(Budget(
+                monthlyAmount: 3000,
+                startDate: firstOfMonth,
+                selectedAccountIDs: ["uitest-account", "uitest-account-2"]
+            ))
+            for (index, entry) in [("uitest-account", Decimal(20)), ("uitest-account-2", Decimal(45))].enumerated() {
+                context.insert(SpendTransaction(
+                    amount: entry.1,
+                    date: .now,
+                    merchantName: "Budget Merchant \(index)",
+                    type: .variable,
+                    entryMethod: .imported,
+                    plaidTransactionID: "uitest-budget-txn-\(index)",
+                    plaidItemID: "uitest-item",
+                    plaidAccountID: entry.0
+                ))
+            }
 
         case .normal:
             let startDate = Calendar.current.date(byAdding: .day, value: -5, to: .now)!

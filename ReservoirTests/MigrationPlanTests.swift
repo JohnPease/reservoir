@@ -398,4 +398,163 @@ final class MigrationPlanTests: XCTestCase {
         XCTAssertEqual(fetchedTransactions.count, 1)
         XCTAssertEqual(fetchedTransactions.first?.merchantName, "Coffee Shop", "existing data must survive the migration intact.")
     }
+
+    /// Regression coverage for reservoir-j8t PR1: a store created under `SchemaV7` must
+    /// open cleanly under `SchemaV8` via `ReservoirMigrationPlan` (lightweight stage), with
+    /// existing data intact and the new `plaidAccountID` fields defaulted to `nil` on both
+    /// `SpendTransaction` and `PendingTransactionMerge`.
+    func testV7StoreMigratesToV8WithDataIntactAndPlaidAccountIDDefaultedNil() throws {
+        let v7Schema = Schema(versionedSchema: SchemaV7.self)
+        let v7Configuration = ModelConfiguration(schema: v7Schema, url: storeURL)
+        do {
+            let v7Container = try ModelContainer(for: v7Schema, configurations: [v7Configuration])
+            let context = ModelContext(v7Container)
+            let manual = SchemaV7.SpendTransaction(
+                amount: 12.50,
+                date: .now,
+                merchantName: "Coffee Shop",
+                type: .variable,
+                entryMethod: .manual
+            )
+            context.insert(manual)
+            let imported = SchemaV7.SpendTransaction(
+                amount: 30,
+                date: .now,
+                merchantName: "Grocer",
+                type: .fixed,
+                entryMethod: .imported,
+                plaidTransactionID: "plaid-existing",
+                plaidItemID: "item-1",
+                isManualOverride: true,
+                wasMergedFromManual: true
+            )
+            context.insert(imported)
+            context.insert(SchemaV7.PendingTransactionMerge(
+                plaidTransactionID: "plaid-pending-existing",
+                incomingAmount: 12.50,
+                incomingDate: .now,
+                incomingMerchantName: "Coffee Shop",
+                manualTransaction: manual,
+                plaidItemID: "item-1"
+            ))
+            try context.save()
+        }
+
+        let v8Schema = Schema(versionedSchema: SchemaV8.self)
+        let v8Configuration = ModelConfiguration(schema: v8Schema, url: storeURL)
+        let v8Container = try ModelContainer(
+            for: v8Schema,
+            migrationPlan: ReservoirMigrationPlan.self,
+            configurations: [v8Configuration]
+        )
+        let context = ModelContext(v8Container)
+        let pending = try context.fetch(FetchDescriptor<SchemaV8.PendingTransactionMerge>())
+        XCTAssertEqual(pending.count, 1)
+        XCTAssertEqual(pending.first?.plaidItemID, "item-1")
+        XCTAssertNil(pending.first?.plaidAccountID)
+
+        let transactions = try context.fetch(FetchDescriptor<SchemaV8.SpendTransaction>())
+        XCTAssertEqual(transactions.count, 2)
+        XCTAssertTrue(transactions.allSatisfy { $0.plaidAccountID == nil })
+        let migratedImport = transactions.first { $0.plaidTransactionID == "plaid-existing" }
+        XCTAssertEqual(migratedImport?.plaidItemID, "item-1")
+        XCTAssertEqual(migratedImport?.isManualOverride, true)
+        XCTAssertEqual(migratedImport?.wasMergedFromManual, true)
+        XCTAssertEqual(migratedImport?.type, .fixed)
+    }
+
+    /// Regression coverage for reservoir-j8t PR2: a store created under `SchemaV8` must
+    /// open cleanly under `SchemaV9` via `ReservoirMigrationPlan` (lightweight stage), with
+    /// existing data intact and the new `Budget` table present and empty, then accept and
+    /// persist a `Budget` with its defaults.
+    func testV8StoreMigratesToV9WithDataIntactAndEmptyBudgetTable() throws {
+        let v8Schema = Schema(versionedSchema: SchemaV8.self)
+        let v8Configuration = ModelConfiguration(schema: v8Schema, url: storeURL)
+        do {
+            let v8Container = try ModelContainer(for: v8Schema, configurations: [v8Configuration])
+            let context = ModelContext(v8Container)
+            context.insert(SchemaV8.SpendTransaction(
+                amount: 30,
+                date: .now,
+                merchantName: "Grocer",
+                type: .variable,
+                entryMethod: .imported,
+                plaidTransactionID: "plaid-existing",
+                plaidItemID: "item-1",
+                plaidAccountID: "acct-1"
+            ))
+            try context.save()
+        }
+
+        let v9Schema = Schema(versionedSchema: SchemaV9.self)
+        let v9Configuration = ModelConfiguration(schema: v9Schema, url: storeURL)
+        let v9Container = try ModelContainer(
+            for: v9Schema,
+            migrationPlan: ReservoirMigrationPlan.self,
+            configurations: [v9Configuration]
+        )
+        let context = ModelContext(v9Container)
+        let transactions = try context.fetch(FetchDescriptor<SchemaV9.SpendTransaction>())
+        XCTAssertEqual(transactions.count, 1)
+        XCTAssertEqual(transactions.first?.plaidAccountID, "acct-1")
+        XCTAssertEqual(try context.fetch(FetchDescriptor<SchemaV9.Budget>()).count, 0)
+
+        context.insert(SchemaV9.Budget(monthlyAmount: 1500, startDate: .now, selectedAccountIDs: ["acct-1"]))
+        try context.save()
+        let budgets = try context.fetch(FetchDescriptor<SchemaV9.Budget>())
+        XCTAssertEqual(budgets.count, 1)
+        XCTAssertEqual(budgets.first?.monthlyAmount, 1500)
+        XCTAssertEqual(budgets.first?.carriesAcrossMonths, true)
+        XCTAssertEqual(budgets.first?.selectedAccountIDs, ["acct-1"])
+    }
+
+    /// A user upgrading straight from a build that shipped `SchemaV7` to one that ships
+    /// `SchemaV9` runs both lightweight stages (V7 -> V8 -> V9) in a single open. Existing
+    /// goals, links and pending merges must survive; the new fields default to nil / empty.
+    func testV7StoreMigratesStraightToV9WithDataIntact() throws {
+        let v7Schema = Schema(versionedSchema: SchemaV7.self)
+        let v7Configuration = ModelConfiguration(schema: v7Schema, url: storeURL)
+        do {
+            let v7Container = try ModelContainer(for: v7Schema, configurations: [v7Configuration])
+            let context = ModelContext(v7Container)
+            let goal = SchemaV7.SavingsGoal(
+                targetAmount: 1000, targetDate: .now.addingTimeInterval(86_400 * 30), startDate: .now,
+                startingBalance: 0, dailyBase: 33, associatedItemIDs: ["item-1"]
+            )
+            context.insert(goal)
+            let manual = SchemaV7.SpendTransaction(
+                amount: 12.50, date: .now, merchantName: "Coffee Shop", type: .variable, entryMethod: .manual, savingsGoal: goal
+            )
+            context.insert(manual)
+            context.insert(SchemaV7.SpendTransaction(
+                amount: 30, date: .now, merchantName: "Grocer", type: .variable, entryMethod: .imported,
+                plaidTransactionID: "plaid-existing", plaidItemID: "item-1"
+            ))
+            context.insert(SchemaV7.PendingTransactionMerge(
+                plaidTransactionID: "plaid-pending", incomingAmount: 12.50, incomingDate: .now,
+                incomingMerchantName: "Coffee Shop", manualTransaction: manual, plaidItemID: "item-1"
+            ))
+            try context.save()
+        }
+
+        let v9Schema = Schema(versionedSchema: SchemaV9.self)
+        let v9Container = try ModelContainer(
+            for: v9Schema,
+            migrationPlan: ReservoirMigrationPlan.self,
+            configurations: [ModelConfiguration(schema: v9Schema, url: storeURL)]
+        )
+        let context = ModelContext(v9Container)
+        let goals = try context.fetch(FetchDescriptor<SchemaV9.SavingsGoal>())
+        XCTAssertEqual(goals.count, 1)
+        XCTAssertEqual(goals.first?.associatedItemIDs, ["item-1"])
+        XCTAssertEqual(goals.first?.transactions.count, 1)
+        let transactions = try context.fetch(FetchDescriptor<SchemaV9.SpendTransaction>())
+        XCTAssertEqual(transactions.count, 2)
+        XCTAssertTrue(transactions.allSatisfy { $0.plaidAccountID == nil })
+        let pending = try context.fetch(FetchDescriptor<SchemaV9.PendingTransactionMerge>())
+        XCTAssertEqual(pending.count, 1)
+        XCTAssertEqual(pending.first?.manualTransaction?.merchantName, "Coffee Shop")
+        XCTAssertNil(pending.first?.plaidAccountID)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<SchemaV9.Budget>()).count, 0)
+    }
 }

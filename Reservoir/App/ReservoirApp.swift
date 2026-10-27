@@ -11,6 +11,7 @@ struct ReservoirApp: App {
         UITestScenario.resetPlaidEnvironmentIfRequested()
         UITestScenario.resetPlaidLinkedItemsIfRequested()
         UITestScenario.seedPlaidLinkedItemIfRequested()
+        UITestScenario.seedLinkedAccountIfRequested()
         UITestScenario.seedPlaidTokenIfRequested()
         #endif
     }
@@ -20,7 +21,7 @@ struct ReservoirApp: App {
     /// try once more against a fresh store file before falling back to an
     /// in-memory container (data loss, but the app stays usable).
     private static func makeModelContainer() -> ModelContainer {
-        let schema = Schema(versionedSchema: SchemaV7.self)
+        let schema = Schema(versionedSchema: SchemaV9.self)
 
         #if DEBUG
         if let scenario = UITestScenario.current {

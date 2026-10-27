@@ -84,3 +84,41 @@ final class StubLinkedItemStore: LinkedItemStoring, @unchecked Sendable {
         items[index].needsAttention = needsAttention
     }
 }
+
+/// In-memory `LinkedAccountStoring` stub (reservoir-j8t) — shares `LinkedAccount.upserting`
+/// with the real store so merge semantics are exercised, not re-implemented.
+final class StubLinkedAccountStore: LinkedAccountStoring, @unchecked Sendable {
+    private(set) var accounts: [LinkedAccount] = []
+    private(set) var removedItemIDs: [String] = []
+    func loadAll() -> [LinkedAccount] { accounts }
+    func upsert(_ incoming: [LinkedAccount]) {
+        accounts = LinkedAccount.upserting(incoming, into: accounts)
+    }
+    func removeAll(itemID: String) {
+        removedItemIDs.append(itemID)
+        accounts.removeAll { $0.itemID == itemID }
+    }
+}
+
+/// In-memory `PlaidAccountBackfillStoring` stub (reservoir-j8t).
+final class StubAccountBackfillStore: PlaidAccountBackfillStoring, @unchecked Sendable {
+    private struct Key: Hashable { let environment: PlaidEnvironment; let itemID: String }
+    private var done: Set<Key> = []
+    /// When true, every (environment, item) reports complete unless explicitly `clear`ed
+    /// — lets pre-backfill tests keep using their seeded cursors as-is.
+    private let defaultComplete: Bool
+    private var cleared: Set<Key> = []
+    init(defaultComplete: Bool = false) { self.defaultComplete = defaultComplete }
+    func isComplete(for environment: PlaidEnvironment, itemID: String) -> Bool {
+        let key = Key(environment: environment, itemID: itemID)
+        return done.contains(key) || (defaultComplete && !cleared.contains(key))
+    }
+    func setComplete(for environment: PlaidEnvironment, itemID: String) {
+        done.insert(Key(environment: environment, itemID: itemID))
+        cleared.remove(Key(environment: environment, itemID: itemID))
+    }
+    func clear(for environment: PlaidEnvironment, itemID: String) {
+        done.remove(Key(environment: environment, itemID: itemID))
+        cleared.insert(Key(environment: environment, itemID: itemID))
+    }
+}
