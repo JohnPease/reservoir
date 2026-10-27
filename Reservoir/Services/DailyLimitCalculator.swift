@@ -54,6 +54,9 @@ public enum DailyLimitCalculator {
     /// Days with no recorded spend still contribute a full `dailyBase` to the carry
     /// forward, which is what makes multi-day gaps (app not opened for several days)
     /// resolve correctly without any special-casing.
+    ///
+    /// `BudgetMonthReviewCalculator.reviews` mirrors this day stepping and the reset-on-the-1st
+    /// rule for the budget's per-month review; change both together.
     public static func carryForward(
         for goal: GoalCarryForwardInput,
         asOf referenceDate: Date,

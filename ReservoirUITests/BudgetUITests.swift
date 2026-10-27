@@ -130,4 +130,60 @@ final class BudgetUITests: XCTestCase {
         XCTAssertTrue(card.label.contains("Card ••1111"), card.label)
         XCTAssertTrue(app.descendants(matching: .any)["budget.breakdown.row.uitest-account"].exists)
     }
+
+    // MARK: - Past months (reservoir-62p)
+
+    private func monthID(monthsAgo: Int) -> String {
+        let calendar = Calendar.current
+        let date = calendar.date(byAdding: .month, value: -monthsAgo, to: .now)!
+        let c = calendar.dateComponents([.year, .month], from: date)
+        return String(format: "%04d-%02d", c.year!, c.month!)
+    }
+
+    private func openPastMonths(_ app: XCUIApplication) {
+        let row = app.buttons["budget.pastMonths.row"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        row.tap()
+        XCTAssertTrue(app.otherElements["budget.pastMonths.sheet"].waitForExistence(timeout: 5))
+    }
+
+    func testPastMonthsRowIsTappableAcrossItsWidth() {
+        let app = launchedApp(scenario: "budgetSeeded", seedAccount: true)
+        app.tabBars.buttons["Plans"].tap()
+        let row = app.buttons["budget.pastMonths.row"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        row.tap()
+        XCTAssertTrue(app.otherElements["budget.pastMonths.sheet"].waitForExistence(timeout: 5), "tapping the middle of the row must open Past months")
+    }
+
+    func testPastMonthsShowsEmptyStateForBudgetStartedThisMonth() {
+        let app = launchedApp(scenario: "budgetSeeded", seedAccount: true)
+        app.tabBars.buttons["Plans"].tap()
+        openPastMonths(app)
+        XCTAssertTrue(app.staticTexts["budget.pastMonths.empty"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["budget.pastMonths.empty"].label, "No completed months yet")
+        app.buttons["budget.pastMonths.done"].tap()
+        XCTAssertTrue(app.otherElements["budget.card"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.otherElements["budget.pastMonths.sheet"].exists)
+    }
+
+    func testPastMonthsListsCompletedMonthsNewestFirst() {
+        let app = launchedApp(scenario: "budgetPastMonths", seedAccount: true)
+        app.tabBars.buttons["Plans"].tap()
+        openPastMonths(app)
+
+        let last = app.descendants(matching: .any)["budget.pastMonths.row.\(monthID(monthsAgo: 1))"]
+        let older = app.descendants(matching: .any)["budget.pastMonths.row.\(monthID(monthsAgo: 2))"]
+        XCTAssertTrue(last.waitForExistence(timeout: 5))
+        XCTAssertTrue(older.exists)
+        XCTAssertLessThan(last.frame.minY, older.frame.minY, "newest month first")
+        XCTAssertFalse(app.descendants(matching: .any)["budget.pastMonths.row.\(monthID(monthsAgo: 0))"].exists, "current month is not reviewed")
+        XCTAssertFalse(app.staticTexts["budget.pastMonths.empty"].exists)
+
+        let lastDelta = app.staticTexts["budget.pastMonths.delta.\(monthID(monthsAgo: 1))"]
+        XCTAssertTrue(lastDelta.exists)
+        XCTAssertTrue(lastDelta.label.hasSuffix("under"), lastDelta.label)
+        XCTAssertEqual(app.staticTexts["budget.pastMonths.daysOver.\(monthID(monthsAgo: 1))"].label, "0 days over")
+        XCTAssertTrue(app.staticTexts["budget.pastMonths.carry.\(monthID(monthsAgo: 1))"].label.hasPrefix("Ended with"))
+    }
 }
