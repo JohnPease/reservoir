@@ -139,7 +139,10 @@ struct BudgetCardView: View {
                 HStack {
                     Text("Past months")
                     Spacer()
-                    Image(systemName: "chevron.right").font(.caption)
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(Color("ReservoirTextMuted"))
+                        .accessibilityHidden(true)
                 }
                 .font(.subheadline)
                 .foregroundStyle(Color("ReservoirTextPrimary"))

@@ -2,7 +2,8 @@ import SwiftData
 import SwiftUI
 
 /// "Past months" screen (reservoir-62p): presentation only. Everything shown comes from
-/// `BudgetMonthReviewCalculator.screen`, computed when the sheet is opened.
+/// `BudgetMonthReviewCalculator.screen`, recomputed from the inputs the host passes in, so a
+/// sync or budget edit while the sheet is open is reflected on the next render.
 struct BudgetMonthReviewView: View {
     let budget: Budget
     let transactions: [SpendTransaction]

@@ -302,7 +302,7 @@ the month and `budget.startDate`; `spent` is counted spend
 **Month-end review** (reservoir-62p): a "Past months" row on the Plans budget card
 opens `BudgetMonthReviewView`, a list of every completed month (budget start month
 through last month; the current month is excluded), newest first. It is recomputed
-each time it opens by `BudgetMonthReviewCalculator` (pure; SwiftData for model types
+from the current budget and transactions on every render by `BudgetMonthReviewCalculator` (pure; SwiftData for model types
 only) with no schema change and no stored snapshots. Per month: budgeted (sum of the
 daily bases over tracked days; a partial first month is labeled "from Sep 14"),
 counted spend, "$X under" / "$X over" / "right on" (within the $1 tolerance), days
