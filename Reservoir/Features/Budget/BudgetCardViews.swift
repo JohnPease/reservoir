@@ -68,6 +68,7 @@ struct BudgetCardView: View {
     var hasUnsyncedAccounts = false
     let onEdit: () -> Void
     let onDelete: () -> Void
+    var onShowPastMonths: () -> Void = {}
 
     private var detailLine: String {
         let count = budget.selectedAccountIDs.count
@@ -133,6 +134,23 @@ struct BudgetCardView: View {
                     BudgetBreakdownView(breakdown: breakdown)
                 }
             }
+
+            Button(action: onShowPastMonths) {
+                HStack {
+                    Text("Past months")
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(Color("ReservoirTextMuted"))
+                        .accessibilityHidden(true)
+                }
+                .font(.subheadline)
+                .foregroundStyle(Color("ReservoirTextPrimary"))
+                .padding(.top, 4)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("budget.pastMonths.row")
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)

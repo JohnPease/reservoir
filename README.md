@@ -296,7 +296,24 @@ the month and `budget.startDate`; `spent` is counted spend
   flagged `needsAttention`. Hidden for a single selected account.
 - Insights are withheld while the card is "Syncing account data..." or "Choose
   accounts". `BudgetInsights.monthResult` (budgeted, spent, delta, endingCarry) is
-  exposed for the widget and month-end review but nothing is persisted.
+  exposed for the widget but nothing is persisted (completed months are served by
+  `BudgetMonthReviewCalculator`, below).
+
+**Month-end review** (reservoir-62p): a "Past months" row on the Plans budget card
+opens `BudgetMonthReviewView`, a list of every completed month (budget start month
+through last month; the current month is excluded), newest first. It is recomputed
+from the current budget and transactions on every render by `BudgetMonthReviewCalculator` (pure; SwiftData for model types
+only) with no schema change and no stored snapshots. Per month: budgeted (sum of the
+daily bases over tracked days; a partial first month is labeled "from Sep 14"),
+counted spend, "$X under" / "$X over" / "right on" (within the $1 tolerance), days
+over (days whose spend exceeded that day's base + carry; zero-spend days never
+count), and the ended carry ("Fresh start" in Start fresh mode). One day walk uses
+the same stepping and reset-on-the-1st rule as `DailyLimitCalculator.carryForward`,
+so a carry-mode `endingCarry` equals `carryForward(asOf:)` on the next 1st. The
+screen is gated like the budget cards (syncing / choose accounts show the message,
+not zeros) and shows "No completed months yet" when there is nothing to list.
+Accessibility ids: `budget.pastMonths.row` (on the card), `.sheet`, `.done`, `.status`,
+`.empty`, and per month (`yyyy-MM`) `.row.`, `.delta.`, `.daysOver.`, `.carry.`.
 
 **Plans tab** (formerly "Goals"): the tab is labeled Plans (SF symbol and
 `AppTab.goals`/`GoalsView`/`goals.*` accessibility ids unchanged). It shows a

@@ -27,6 +27,7 @@ struct GoalsView: View {
     @State private var isShowingCreateBudget = false
     @State private var budgetPendingEdit: Budget?
     @State private var budgetPendingDelete: Budget?
+    @State private var budgetPendingReview: Budget?
     @State private var isShowingCreateGoal = false
     @State private var goalPendingEdit: SavingsGoal?
     @State private var goalPendingDelete: SavingsGoal?
@@ -96,7 +97,8 @@ struct GoalsView: View {
                             ),
                             hasUnsyncedAccounts: importService?.hasUnsyncedAccounts ?? false,
                             onEdit: { budgetPendingEdit = budget },
-                            onDelete: { budgetPendingDelete = budget }
+                            onDelete: { budgetPendingDelete = budget },
+                            onShowPastMonths: { budgetPendingReview = budget }
                         )
                     } else {
                         BudgetSetRowView { isShowingCreateBudget = true }
@@ -161,6 +163,14 @@ struct GoalsView: View {
         }
         .editSheet(pendingItem: $budgetPendingEdit) { budget in
             BudgetFormView(mode: .edit(budget), accessibilityIdentifier: "budget.editBudgetSheet")
+        }
+        .editSheet(pendingItem: $budgetPendingReview) { budget in
+            BudgetMonthReviewView(
+                budget: budget,
+                transactions: transactions,
+                isAccountBackfillComplete: importService?.isAccountBackfillComplete ?? true,
+                referenceDate: todayClock.referenceDate
+            )
         }
         .deleteConfirmation(
             pendingItem: $budgetPendingDelete,

@@ -60,8 +60,8 @@ enum BudgetSummaryCalculator {
         var unlinkedCaption: String?
     }
 
-    /// Month-to-date result; the hook for the widget and the month-end review. Not
-    /// persisted anywhere.
+    /// Month-to-date result; the hook for the widget. Completed months are reviewed by
+    /// `BudgetMonthReviewCalculator`. Not persisted anywhere.
     struct MonthResult: Codable, Equatable {
         var budgeted: Decimal
         var spent: Decimal

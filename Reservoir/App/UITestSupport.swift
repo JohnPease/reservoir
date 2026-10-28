@@ -81,6 +81,11 @@ enum UITestScenario: String {
     /// `UITEST_SEED_LINKED_ACCOUNT=1` and `UITEST_SEED_SECOND_LINKED_ACCOUNT=1`.
     case budgetTwoAccounts
 
+    /// A budget on "uitest-account" that started the 1st of the month two months ago, with one
+    /// $50 imported transaction on the 2nd of last month, so the Past months sheet lists
+    /// two completed months (reservoir-62p).
+    case budgetPastMonths
+
     static var current: UITestScenario? {
         ProcessInfo.processInfo.environment["UITEST_SCENARIO"].flatMap(UITestScenario.init(rawValue:))
     }
@@ -513,6 +518,27 @@ enum UITestScenario: String {
                 type: .variable,
                 entryMethod: .imported,
                 plaidTransactionID: "uitest-budget-txn",
+                plaidItemID: "uitest-item",
+                plaidAccountID: "uitest-account"
+            ))
+
+        case .budgetPastMonths:
+            let calendar = Calendar.current
+            let thisMonth = BudgetValidator.defaultStartDate(referenceDate: .now)
+            let lastMonth = calendar.date(byAdding: .month, value: -1, to: thisMonth)!
+            let twoMonthsAgo = calendar.date(byAdding: .month, value: -2, to: thisMonth)!
+            context.insert(Budget(
+                monthlyAmount: 3000,
+                startDate: twoMonthsAgo,
+                selectedAccountIDs: ["uitest-account"]
+            ))
+            context.insert(SpendTransaction(
+                amount: 50,
+                date: calendar.date(byAdding: .day, value: 1, to: lastMonth)!,
+                merchantName: "Past Coffee",
+                type: .variable,
+                entryMethod: .imported,
+                plaidTransactionID: "uitest-budget-past-txn",
                 plaidItemID: "uitest-item",
                 plaidAccountID: "uitest-account"
             ))
