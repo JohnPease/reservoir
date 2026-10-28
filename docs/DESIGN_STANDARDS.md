@@ -85,7 +85,29 @@ decision that generalizes beyond that screen, promote it here.
 - Animation on data-driven visual transitions is a Phase 2 nice-to-have, not
   required for initial delivery of a new visual element.
 
-## 5. Definition of done addendum for visual/design-system work
+## 5. Widgets (home screen and lock screen)
+
+- **Tokens only, shared catalog.** The widget extension compiles the app's
+  `Assets.xcassets` and uses the same `Reservoir*` color sets via
+  `Color("...")`. No hex literals, no `colorScheme` branching, in widget views.
+- **Deficit surface.** When the leading figure is over, the widget background
+  (`containerBackground`) switches from `ReservoirSurface` to
+  `ReservoirSurfaceDeficit`; amounts use the text token `ReservoirDeficit`, the
+  droplet the decorative `ReservoirDropletDeficit`.
+- **Tabular numerals.** Every amount uses `.monospacedDigit()` (rounded design
+  for the big number) so values don't jitter between timeline entries.
+- **Privacy.** Amounts and the month progress sentence are
+  `.privacySensitive()` so they redact on the locked lock screen. The snapshot
+  file contains amounts, the month name and the progress sentence only: no
+  merchants, account or institution names, or identifiers.
+- **Accessory (lock screen) widgets are single color.** The system tints them,
+  so no red/accent tokens: over budget is a minus sign plus the words "over
+  today", and the header uses `.widgetAccentable()`.
+- **Estimate and stale states are labeled**, never silently shown as live
+  numbers (an "estimate" tag after midnight, "Updated <time>" when old).
+- Widgets never compute: they render the app-written snapshot only.
+
+## 6. Definition of done addendum for visual/design-system work
 
 In addition to `STANDARDS.md` §9, a visual change is done when:
 - [ ] No hardcoded hex or `Color(...)` literals in view code — all colors

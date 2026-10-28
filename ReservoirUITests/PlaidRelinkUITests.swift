@@ -41,7 +41,7 @@ import XCTest
 /// underlying multi-item data rather than a stale single-item assumption.
 final class PlaidRelinkUITests: XCTestCase {
     private func launchedApp(_ configure: (XCUIApplication) -> Void = { _ in }) -> XCUIApplication {
-        let app = XCUIApplication()
+        let app = XCUIApplication.reservoirApp()
         app.launchEnvironment["UITEST_RESET_PLAID_LINKED_ITEMS"] = "1"
         configure(app)
         app.launch()

@@ -9,7 +9,7 @@ import XCTest
 final class TransactionsScreenUITests: XCTestCase {
 
     private func launchedApp(scenario: String) -> XCUIApplication {
-        let app = XCUIApplication()
+        let app = XCUIApplication.reservoirApp()
         app.launchEnvironment["UITEST_SCENARIO"] = scenario
         app.launch()
         return app

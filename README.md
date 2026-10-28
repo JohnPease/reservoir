@@ -81,7 +81,10 @@ Reservoir/
     Migrations/   — VersionedSchema (SchemaV1, SchemaV2, …) + SchemaMigrationPlan
   Services/       — I/O boundaries (Plaid, persistence) and business logic
   Shared/         — reusable views, extensions
+    Widget/       — snapshot/planner/presentation code compiled into BOTH the app and the widget extension
+  Services/Widget/ — WidgetSnapshotBuilder + WidgetSnapshotPublisher (app only)
   Resources/      — assets
+ReservoirWidget/   — WidgetKit extension (provider, views, Info.plist, entitlements)
 ReservoirTests/    — XCTest
 ReservoirUITests/  — XCUITest
 ```
@@ -296,8 +299,9 @@ the month and `budget.startDate`; `spent` is counted spend
   flagged `needsAttention`. Hidden for a single selected account.
 - Insights are withheld while the card is "Syncing account data..." or "Choose
   accounts". `BudgetInsights.monthResult` (budgeted, spent, delta, endingCarry) is
-  exposed for the widget but nothing is persisted (completed months are served by
-  `BudgetMonthReviewCalculator`, below).
+  computed but nothing is persisted; the widget does not use it (it reads `spent` and
+  the progress sentence). Completed months are served by
+  `BudgetMonthReviewCalculator`, below.
 
 **Month-end review** (reservoir-62p): a "Past months" row on the Plans budget card
 opens `BudgetMonthReviewView`, a list of every completed month (budget start month
@@ -1034,6 +1038,41 @@ not general-purpose errors — no dedicated error token exists, and introducing
 one wasn't obviously justified for two call sites; flagged for product-lead/JP
 to confirm rather than decided unilaterally.
 
+### Home screen widget (reservoir-apd)
+
+A `ReservoirWidget` app extension (`ReservoirWidget/`, bundle id
+`com.johnpease.Reservoir.Widget`, embedded in the app) shows what is left to
+spend today on the home screen (small, medium) and lock screen
+(`accessoryRectangular`, `accessoryInline`). Tapping it opens the app on Today
+(`reservoir://today`, handled by `RootTabView`'s `onOpenURL`).
+
+- **Data flow**: the widget never computes and never opens SwiftData. The app
+  writes a small JSON `WidgetSnapshot` (amounts and strings only, no identifiers
+  or names) into the App Group container `group.com.johnpease.Reservoir`
+  (`widget-snapshot.json`). The existing SwiftData store is not moved or shared;
+  there is no schema change.
+- **What the snapshot holds**: figures as of now and as of the start of the next
+  day, produced by calling the same calculators the Today screen uses
+  (`BudgetCalculator.cardModel`, `TodayScreenCalculator.summary`,
+  `BudgetSummaryCalculator.insights`) via `WidgetSnapshotBuilder`
+  (`Services/Widget/`). After local midnight the widget shows the next-day
+  figures tagged "estimate"; after about 36 hours without an app launch it shows
+  "Open Reservoir to refresh"; small and medium add an "Updated <time>" caption
+  once the data is over about 3 hours old.
+- **Publishing**: `WidgetSnapshotPublisher`, owned by `RootTabView`, rebuilds
+  the snapshot (debounced) on foreground, `ModelContext.didSave` (edits and
+  imports), backfill completion and the midnight tick, skips the write if the
+  figures are unchanged and the stored snapshot is under an hour old, then calls
+  `WidgetCenter.reloadAllTimelines()`. It is a no-op under unit tests and
+  `UITEST_*` launches.
+- **Shared code**: `Reservoir/Shared/Widget/` is compiled into both the app and
+  the extension (`WidgetSnapshot`, store, `WidgetTimelinePlanner`,
+  `WidgetPresentation`, `CurrencyFormatting`, `DropletShape`). Calculators and
+  SwiftData stay in the app target. The extension uses the app's Asset Catalog
+  color tokens (same `Assets.xcassets`, listed as a source of both targets).
+- Amounts are `.privacySensitive()` (redacted while the phone is locked).
+  Out of scope: widget configuration, interactivity, per-account breakdown.
+
 ## Technical details
 
 - **Minimum iOS version**: 17.0 (required for SwiftData and `@Observable`)
@@ -1041,9 +1080,17 @@ to confirm rather than decided unilaterally.
   [`project.yml`](project.yml) via [XcodeGen](https://github.com/yonaskolb/XcodeGen)
   rather than committing `Reservoir.xcodeproj` directly — see "Running
   locally" above for setup steps.
-- **Signing/distribution**: sideloaded via Xcode, not App Store — set your
-  own development team in Xcode's Signing & Capabilities before running on
-  a device.
+- **Signing/distribution**: sideloaded via Xcode, not App Store.
+  `DEVELOPMENT_TEAM` is set in `project.yml` (team `H7B8E54884`; change it
+  there if you build with a different team). The app and the widget extension
+  share the App Group `group.com.johnpease.Reservoir`, which needs a paid
+  Apple Developer Program membership with the current Program License
+  Agreement accepted (xcodebuild with `-allowProvisioningUpdates` registers
+  the identifiers and group automatically). In Xcode this appears as the App
+  Groups capability on both the `Reservoir` and `ReservoirWidget` targets; it is
+  defined in `project.yml` (entitlements), so after changing it run
+  `xcodegen generate`. The Simulator needs none of this. Unsigned builds fall
+  back gracefully (the snapshot store is a no-op without the container).
 - **Plaid setup**: `Config/Plaid.xcconfig` is committed with safe empty
   placeholder defaults, so `xcodegen generate` and a plain build work on a
   fresh clone with no setup at all (Plaid calls just fail until configured).
@@ -1130,6 +1177,11 @@ to confirm rather than decided unilaterally.
   Sandbox/Production toggle, link/relink/unlink a bank account. Does not
   manage goals or starting balances (see "Settings tab" under Architecture
   above for why). See "Settings tab" under Architecture above.
+- **Home screen widget** (apd, implemented): small, medium, lock screen
+  rectangular and inline widgets showing the amount left to spend today (budget
+  and/or savings limit), with over-budget, syncing, choose-accounts,
+  set-up, estimate-after-midnight and needs-refresh states. See "Home screen
+  widget" under Architecture above.
 - 🚧 Everything else is still in progress — see
   [`docs/PROJECT_SPEC.md`](docs/PROJECT_SPEC.md) and the `reservoir-adq`
   epic (`bd show reservoir-adq`) for what's left.
@@ -1151,6 +1203,31 @@ to confirm rather than decided unilaterally.
   `UITEST_ENABLE_POST_LINK_HOOK=1`. Real Plaid Link can't be automated, so the
   `onLinkSuccess` wiring is covered by unit tests and manual verification, and
   the UI test calls `runImportAfterLink(itemID:)` directly.
+- UI tests create the app only through `XCUIApplication.reservoirApp()`
+  (`ReservoirUITests/XCUIApplication+TestHelpers.swift`), which sets
+  `UITEST_DISABLE_WIDGET_PUBLISH=1` so the widget publisher is a no-op and a UI
+  test never writes the real App Group snapshot or reloads widget timelines.
+- Manual widget checklist (on a device, or the simulator's home screen):
+  1. Add each size: small, medium, lock screen rectangular and inline (the
+     lock screen ones need a device or iOS 17+ simulator lock screen).
+  2. Add and edit a transaction in the app; the widget amount updates within a
+     few seconds of leaving or while the app is in the foreground.
+  3. Cross local midnight (change the device clock): the widget shows the
+     "estimate" figures after midnight, and "Open Reservoir to refresh" after
+     about 36 hours with no app launch.
+  4. Stale: with no launch for 3+ hours the small/medium widgets show
+     "Updated <time>".
+  5. Light and dark appearance (both home screen and over-budget deficit
+     surface).
+  6. Lock screen redaction: with the phone locked and the widget on the lock
+     screen, amounts are redacted (privacy sensitive).
+  7. Tap the widget from another tab and from a cold launch: the app opens on
+     Today (`reservoir://today`).
+- Widget logic (`WidgetSnapshotBuilder`, `WidgetTimelinePlanner`,
+  `WidgetPresentation`, snapshot store and publish policy) is unit tested in
+  `WidgetTimelinePlannerTests`, `WidgetPresentationTests` and
+  `WidgetSnapshotTests`. The widget's SwiftUI layout is verified manually
+  (Xcode previews in `ReservoirWidget.swift`, or add the widget on a device).
 - Coverage target: 80% minimum on business logic and data model code (see
   `STANDARDS.md` §5). Measure with:
   ```

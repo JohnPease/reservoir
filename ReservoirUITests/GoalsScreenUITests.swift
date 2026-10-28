@@ -8,7 +8,7 @@ import XCTest
 final class GoalsScreenUITests: XCTestCase {
 
     private func launchedApp(scenario: String) -> XCUIApplication {
-        let app = XCUIApplication()
+        let app = XCUIApplication.reservoirApp()
         app.launchEnvironment["UITEST_SCENARIO"] = scenario
         app.launch()
         app.tabBars.buttons["Plans"].tap()

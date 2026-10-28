@@ -9,7 +9,7 @@ import XCTest
 final class MerchantRulesUITests: XCTestCase {
 
     private func launchedOnMerchantRulesScreen(scenario: String) -> XCUIApplication {
-        let app = XCUIApplication()
+        let app = XCUIApplication.reservoirApp()
         app.launchEnvironment["UITEST_SCENARIO"] = scenario
         app.launch()
         app.tabBars.buttons["Transactions"].tap()
