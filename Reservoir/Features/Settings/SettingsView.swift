@@ -193,6 +193,14 @@ struct SettingsView: View {
                 )
                 .saveErrorAlert($unlinkError)
 
+                Section {
+                    NavigationLink("Sync log") { SyncLogView() }
+                        .accessibilityIdentifier("settings.syncLog")
+                } footer: {
+                    Text("When each sync ran and what Plaid returned. Counts only, no merchants or amounts.")
+                        .foregroundStyle(Color("ReservoirTextSecondary"))
+                }
+
                 // Hidden (not disabled) when nothing is left over, matching the "Linked
                 // accounts" section's own empty handling; disabled only while a sync runs.
                 if !orphanedData.isEmpty {
