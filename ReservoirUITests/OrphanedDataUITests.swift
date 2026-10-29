@@ -7,7 +7,7 @@ final class OrphanedDataUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
     private func launchedApp() -> XCUIApplication {
-        let app = XCUIApplication()
+        let app = XCUIApplication.reservoirApp()
         app.launchEnvironment["UITEST_SCENARIO"] = "orphanedImportedTransactions"
         app.launchEnvironment["UITEST_RESET_PLAID_LINKED_ITEMS"] = "1"
         app.launchEnvironment["UITEST_SEED_PLAID_LINKED_ITEM"] = "1"

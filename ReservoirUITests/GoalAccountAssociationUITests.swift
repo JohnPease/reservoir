@@ -17,7 +17,7 @@ import XCTest
 /// reset between tests, unlike this app's always-fresh in-memory SwiftData store.
 final class GoalAccountAssociationUITests: XCTestCase {
     private func launchedApp(scenario: String, configure: (XCUIApplication) -> Void = { _ in }) -> XCUIApplication {
-        let app = XCUIApplication()
+        let app = XCUIApplication.reservoirApp()
         app.launchEnvironment["UITEST_RESET_PLAID_LINKED_ITEMS"] = "1"
         app.launchEnvironment["UITEST_SCENARIO"] = scenario
         configure(app)

@@ -6,6 +6,9 @@ options:
 settings:
   base:
     SWIFT_VERSION: 6.0
+    # Apple Developer Program team (personal, sideloaded use). Not a secret; needed for
+    # on-device signing and for the App Group shared with the widget extension.
+    DEVELOPMENT_TEAM: H7B8E54884
 packages:
   LinkKit:
     url: https://github.com/plaid/plaid-link-ios-spm.git
@@ -18,6 +21,8 @@ targets:
       - path: Reservoir
     dependencies:
       - package: LinkKit
+      - target: ReservoirWidget
+        embed: true
     info:
       path: Reservoir/Resources/Info.plist
       properties:
@@ -39,11 +44,18 @@ targets:
         PlaidProductionSecret: "$(PLAID_PRODUCTION_SECRET)"
         LSApplicationQueriesSchemes:
           - "plaidlink"
+        # reservoir://today, opened by the home screen widget (RootTabView.onOpenURL).
+        CFBundleURLTypes:
+          - CFBundleURLName: com.johnpease.Reservoir
+            CFBundleURLSchemes:
+              - reservoir
     entitlements:
       path: Reservoir/Resources/Reservoir.entitlements
       properties:
         com.apple.developer.associated-domains:
           - applinks:johnpease.github.io
+        com.apple.security.application-groups:
+          - group.com.johnpease.Reservoir
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.johnpease.Reservoir
@@ -53,6 +65,41 @@ targets:
     configFiles:
       Debug: Config/Plaid.xcconfig
       Release: Config/Plaid.xcconfig
+  ReservoirWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: ReservoirWidget
+      # Pure snapshot/planner/presentation code and the droplet shape, compiled into both
+      # the app and the widget (calculators and SwiftData stay in the app target only).
+      - path: Reservoir/Shared/Widget
+      # Same asset catalog as the app: the widget uses the app's color tokens.
+      - path: Reservoir/Resources/Assets.xcassets
+    info:
+      path: ReservoirWidget/Info.plist
+      properties:
+        CFBundleDisplayName: Reservoir
+        CFBundleExecutable: "$(EXECUTABLE_NAME)"
+        CFBundleIdentifier: "$(PRODUCT_BUNDLE_IDENTIFIER)"
+        CFBundleInfoDictionaryVersion: "6.0"
+        CFBundleName: "$(PRODUCT_NAME)"
+        CFBundlePackageType: XPC!
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: ReservoirWidget/ReservoirWidget.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.johnpease.Reservoir
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.johnpease.Reservoir.Widget
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1"
+        SKIP_INSTALL: YES
   ReservoirTests:
     type: bundle.unit-test
     platform: iOS
@@ -78,6 +125,7 @@ schemes:
     build:
       targets:
         Reservoir: all
+        ReservoirWidget: all
         ReservoirTests: [test]
         ReservoirUITests: [test]
     test:

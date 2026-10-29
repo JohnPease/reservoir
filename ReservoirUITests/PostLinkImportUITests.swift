@@ -12,7 +12,7 @@ import XCTest
 /// (`neverReady`); poll waits are shortened to 1.5s in those scenarios.
 final class PostLinkImportUITests: XCTestCase {
     private func launchedApp(scenario: String, uiScenario: String = "transactionsZeroGoals") -> XCUIApplication {
-        let app = XCUIApplication()
+        let app = XCUIApplication.reservoirApp()
         app.launchEnvironment["UITEST_SCENARIO"] = uiScenario
         app.launchEnvironment["UITEST_SEED_PLAID_LINKED_ITEM"] = "1"
         app.launchEnvironment["UITEST_SEED_PLAID_TOKEN"] = "1"

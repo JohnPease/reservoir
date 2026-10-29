@@ -71,7 +71,7 @@ struct HeroSection: View {
     }
 
     private func currency(_ amount: Decimal) -> String {
-        amount.formatted(.currency(code: "USD"))
+        CurrencyFormatting.usd(amount)
     }
 }
 

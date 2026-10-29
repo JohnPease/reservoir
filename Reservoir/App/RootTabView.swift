@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 import UIKit
 
 /// Identifies each of `RootTabView`'s tabs, so its `TabView` can bind `selection:` to
@@ -41,6 +42,10 @@ struct RootTabView: View {
     /// it via `.environment(_:)` below, instead of three independent import paths racing
     /// against the same persisted store.
     @State private var importService: TransactionImportService?
+
+    /// Keeps the home screen widget's App Group snapshot current (reservoir-apd). Owned
+    /// here, above the tabs, so it works whichever tab is showing; a no-op under tests.
+    @State private var widgetPublisher: WidgetSnapshotPublishing = WidgetSnapshotPublisher.makeDefault()
 
     var body: some View {
         TabView(selection: Bindable(tabSelection).selected) {
@@ -112,11 +117,31 @@ struct RootTabView: View {
             UITabBar.appearance().unselectedItemTintColor = UIColor(named: "ReservoirTextMuted")
             // Cold launch after an upgrade: the one-time account backfill is owed but no
             // scene-phase transition will trigger it (reservoir-0fq).
+            requestWidgetRefresh()
             await importService?.runAccountBackfillIfNeeded()
         }
         .onChange(of: scenePhase) { _, newPhase in
             Task { await importService?.handleScenePhaseTransition(to: newPhase) }
+            if newPhase == .active { requestWidgetRefresh() }
         }
+        // Widget snapshot triggers: first launch / import service ready, backfill
+        // finishing, the midnight tick, and any SwiftData save (transaction, goal,
+        // budget or account-selection edits, import completion).
+        .onChange(of: importService?.isAccountBackfillComplete) { requestWidgetRefresh() }
+        .onChange(of: todayClock.referenceDate) { requestWidgetRefresh() }
+        .onReceive(NotificationCenter.default.publisher(for: ModelContext.didSave)) { _ in
+            requestWidgetRefresh()
+        }
+        .onOpenURL { url in
+            if WidgetDeepLink.isToday(url) { tabSelection.selected = .today }
+        }
+    }
+
+    private func requestWidgetRefresh() {
+        widgetPublisher.requestRefresh(
+            modelContext: modelContext,
+            isAccountBackfillComplete: importService?.isAccountBackfillComplete ?? true
+        )
     }
 
     /// `mergePromptConfirmation`'s `pendingItem` binding, sourced from

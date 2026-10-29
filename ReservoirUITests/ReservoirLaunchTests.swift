@@ -2,7 +2,7 @@ import XCTest
 
 final class ReservoirLaunchTests: XCTestCase {
     func testAppLaunchesToTabBar() throws {
-        let app = XCUIApplication()
+        let app = XCUIApplication.reservoirApp()
         app.launch()
 
         XCTAssertTrue(app.tabBars.buttons["Today"].waitForExistence(timeout: 5))

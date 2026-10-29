@@ -6,7 +6,7 @@ import XCTest
 final class BudgetUITests: XCTestCase {
 
     private func launchedApp(scenario: String, seedAccount: Bool = false, seedSecondAccount: Bool = false) -> XCUIApplication {
-        let app = XCUIApplication()
+        let app = XCUIApplication.reservoirApp()
         app.launchEnvironment["UITEST_SCENARIO"] = scenario
         app.launchEnvironment["UITEST_RESET_PLAID_LINKED_ITEMS"] = "1"
         if seedAccount { app.launchEnvironment["UITEST_SEED_LINKED_ACCOUNT"] = "1" }

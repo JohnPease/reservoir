@@ -110,8 +110,8 @@ completed days and on the last day of the month) and a per-account breakdown
 (selected accounts, spend descending, zero rows kept, hidden for a single
 account; "Unknown account"/"Removed account"/"Needs relink" states). Insights
 follow the same syncing/"Choose accounts" gate as the cards. A `MonthResult`
-(budgeted, spent, delta, endingCarry) is computed for the future widget and
-month-end review but nothing is persisted.
+(budgeted, spent, delta, endingCarry) is computed but nothing is persisted (the
+widget does not use it; it shows `spent` and the progress sentence).
 
 **Day boundary**: a day starts/ends at the device's local midnight
 (`Calendar.current`, not a fixed timezone). Time-zone travel shifts the
@@ -168,7 +168,7 @@ Single `TabView`, four tabs:
 | Multi-account / multi-goal support | Useful once >1 goal exists | Landed. reservoir-loc.1: schema/storage foundation (SchemaV6's `SpendTransaction.plaidItemID`/`SavingsGoal.associatedItemIDs`, unbounded per-item Plaid storage, `GoalAccountAssociationService`). reservoir-loc.2: per-item dedup/import attribution. reservoir-loc.3: `SettingsView`'s unbounded linked-accounts list (independent relink/unlink/needsAttention per item) and `GoalFormView`'s multi-select account-association UI, both create and edit mode | **Phase 2 — done** |
 | Monthly budget (account-level) | Spend tracking without a savings goal; reuses the carry-forward loop | Moderate — `SchemaV9` `Budget`, monthly base schedule, account picker, Plans tab (reservoir-j8t) | **Phase 2 — PR2 landed (core); PR3 insights landed** |
 | Charts/trends | Satisfying, doesn't change daily behavior | Swift Charts, easy to add later | **Phase 2, low priority** |
-| Widgets / Lock Screen | High usefulness — glanceable number is the point | Needs App Group + shared SwiftData container | **Phase 2** |
+| Widgets / Lock Screen | High usefulness — glanceable number is the point | Landed (reservoir-apd). The app writes a small JSON snapshot into an App Group container and the widget only reads it; SwiftData is NOT shared and the store/schema are unchanged. Needs the App Group capability (paid team, PLA accepted). Small, medium, lock screen rectangular and inline | **Phase 2 — done** |
 | Siri/Shortcuts | Low — single-user app | Nontrivial App Intents work for the value | **Cut** |
 
 ## Productionalize (Phase 3)

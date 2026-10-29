@@ -35,7 +35,7 @@ final class PlaidDebugLinkUITests: XCTestCase {
         resetPlaidKeychain: Bool = false,
         resetPlaidEnvironment: Bool = false
     ) -> XCUIApplication {
-        let app = XCUIApplication()
+        let app = XCUIApplication.reservoirApp()
         if forcePlaidError {
             app.launchEnvironment["UITEST_FORCE_PLAID_ERROR"] = "1"
         }

@@ -12,7 +12,7 @@ import XCTest
 /// local credentials in `Config/Plaid.xcconfig`.
 final class TransactionImportUITests: XCTestCase {
     private func launchedApp() -> XCUIApplication {
-        let app = XCUIApplication()
+        let app = XCUIApplication.reservoirApp()
         app.launchEnvironment["UITEST_SCENARIO"] = "transactionImportMergePrompt"
         app.launchEnvironment["UITEST_SEED_PLAID_LINKED_ITEM"] = "1"
         app.launchEnvironment["UITEST_SEED_PLAID_TOKEN"] = "1"
@@ -60,7 +60,7 @@ final class TransactionImportUITests: XCTestCase {
     /// `.refreshable` to its `List` — the empty-state `ContentUnavailableView` branch has no
     /// pull-to-refresh surface at all (see `TransactionsView.body`).
     func testPullToRefresh_seededSandboxTransaction_appearsInList() {
-        let app = XCUIApplication()
+        let app = XCUIApplication.reservoirApp()
         app.launchEnvironment["UITEST_SCENARIO"] = "merchantRulesRetag"
         app.launchEnvironment["UITEST_SEED_PLAID_LINKED_ITEM"] = "1"
         app.launchEnvironment["UITEST_SEED_PLAID_TOKEN"] = "1"
@@ -94,7 +94,7 @@ final class TransactionImportUITests: XCTestCase {
     /// and that tapping it reveals `presentedErrorDetail` (the underlying raw error) in a
     /// "Technical details" sheet — an explicit opt-in reveal, not shown by default.
     func testImportFailure_showsErrorBanner_tapRevealsTechnicalDetail() {
-        let app = XCUIApplication()
+        let app = XCUIApplication.reservoirApp()
         app.launchEnvironment["UITEST_SEED_PLAID_LINKED_ITEM"] = "1"
         app.launchEnvironment["UITEST_SEED_PLAID_TOKEN"] = "1"
         app.launchEnvironment["UITEST_FORCE_PLAID_ERROR"] = "1"
@@ -128,7 +128,7 @@ final class TransactionImportUITests: XCTestCase {
     /// present (rather than crashing or vanishing into a stuck state) confirms the button
     /// actually re-invokes the import pipeline instead of being a dead/no-op control.
     func testImportFailure_retryButton_reInvokesImportPipeline() {
-        let app = XCUIApplication()
+        let app = XCUIApplication.reservoirApp()
         app.launchEnvironment["UITEST_SEED_PLAID_LINKED_ITEM"] = "1"
         app.launchEnvironment["UITEST_SEED_PLAID_TOKEN"] = "1"
         app.launchEnvironment["UITEST_FORCE_PLAID_ERROR"] = "1"
