@@ -162,7 +162,7 @@ extension WidgetPresentation {
                 return message.title
             case .amount(let remaining, _):
                 let amount = CurrencyFormatting.usdWithTypographicMinus(remaining)
-                if remaining < 0 { return "\(amount) over today" }
+                if remaining < 0 { return isEstimate ? "\(amount) over today est." : "\(amount) over today" }
                 return isEstimate ? "Left today \(amount) est." : "Left today \(amount)"
             }
         }
@@ -185,7 +185,7 @@ extension WidgetPresentation {
                 let amount = CurrencyFormatting.usdWithTypographicMinus(remaining)
                 let detail: String
                 if remaining < 0 {
-                    detail = "over today"
+                    detail = isEstimate ? "over today \u{00B7} estimate" : "over today"
                 } else {
                     detail = (isEstimate ? "left today \u{00B7} estimate" : "left today")
                         + " \u{00B7} of " + CurrencyFormatting.usd(limit)

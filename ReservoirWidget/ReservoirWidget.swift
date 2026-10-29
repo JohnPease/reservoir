@@ -10,7 +10,7 @@ struct ReservoirEntry: TimelineEntry {
 
 struct ReservoirTimelineProvider: TimelineProvider {
     var store: WidgetSnapshotStoring = FileWidgetSnapshotStore.appGroup()
-    var calendar: Calendar = .current
+    var calendar: Calendar = .autoupdatingCurrent
 
     func placeholder(in context: Context) -> ReservoirEntry {
         sampleEntry(now: .now)

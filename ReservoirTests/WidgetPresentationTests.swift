@@ -71,6 +71,15 @@ final class WidgetPresentationTests: XCTestCase {
         XCTAssertEqual(p.rectangularText, .init(header: "Budget", headline: "\u{2212}$12.60", detail: "over today"))
     }
 
+    func testOverBudgetEstimateIsLabeledOnAccessoryFamilies() {
+        let over = WidgetSnapshot.Section.active(remaining: -12.60, limit: 40, spentToday: 52.60)
+        let p = WidgetPresentation.make(
+            snapshot: snapshot(budget: active, savings: .notSet, tomorrowBudget: over), phase: .estimate, showsUpdatedCaption: false
+        )
+        XCTAssertEqual(p.inlineText, "\u{2212}$12.60 over today est.")
+        XCTAssertEqual(p.rectangularText.detail, "over today \u{00B7} estimate")
+    }
+
     func testEstimatePhaseUsesTomorrowFiguresAndLabels() {
         let tomorrow = WidgetSnapshot.Section.active(remaining: 52.40, limit: 52.40, spentToday: 0)
         let p = WidgetPresentation.make(snapshot: snapshot(budget: active, savings: .notSet, tomorrowBudget: tomorrow), phase: .estimate, showsUpdatedCaption: true)

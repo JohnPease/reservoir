@@ -30,7 +30,7 @@ final class WidgetSnapshotPublisher: WidgetSnapshotPublishing {
     init(
         store: WidgetSnapshotStoring = FileWidgetSnapshotStore.appGroup(),
         reloadTimelines: @escaping () -> Void = { WidgetCenter.shared.reloadAllTimelines() },
-        calendar: Calendar = .current,
+        calendar: Calendar = .autoupdatingCurrent,
         debounce: Duration = .milliseconds(500),
         minimumRewriteInterval: TimeInterval = 3600
     ) {
