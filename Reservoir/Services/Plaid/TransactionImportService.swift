@@ -19,6 +19,9 @@ struct PlaidTransaction: Decodable {
     /// Plaid account the transaction belongs to (reservoir-j8t). Always present on real
     /// responses; decoded optionally so older fixtures keep decoding.
     var account_id: String? = nil
+    /// Plaid's pending flag (reservoir-bz5). Decoded only so the sync log can count pending
+    /// charges; nothing else reads it yet.
+    var pending: Bool? = nil
 }
 
 /// One entry of `/transactions/sync`'s top-level `accounts` array (reservoir-j8t). Each
@@ -230,6 +233,7 @@ final class TransactionImportService {
     private let linkedAccountStore: LinkedAccountStoring
     private let backfillStore: PlaidAccountBackfillStoring
     private let logger: Logger
+    private let syncLog: SyncLogStoring
     private let sleep: @MainActor (Duration) async throws -> Void
     private let postLinkBackoff: [Duration]
     /// Items whose post-link import was requested while another post-link poll was
@@ -251,6 +255,7 @@ final class TransactionImportService {
         linkedAccountStore: LinkedAccountStoring = LinkedAccountStore(),
         backfillStore: PlaidAccountBackfillStoring = PlaidAccountBackfillStore(),
         logger: Logger = Logger(subsystem: "com.reservoir.app", category: "TransactionImportService"),
+        syncLog: SyncLogStoring = SyncLogStore(),
         postLinkBackoff: [Duration] = TransactionImportService.defaultPostLinkBackoff,
         sleep: @escaping @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
@@ -265,6 +270,7 @@ final class TransactionImportService {
         self.linkedAccountStore = linkedAccountStore
         self.backfillStore = backfillStore
         self.logger = logger
+        self.syncLog = syncLog
         // OR across every linked item (reservoir-loc.2) — see the property's doc comment
         // for why a single-item `.first?.needsAttention` read would silently mask a
         // non-first item's login-required state once more than one item is linked.
@@ -321,7 +327,7 @@ final class TransactionImportService {
     /// account picker empty until the user happened to background the app.
     func runAccountBackfillIfNeeded() async {
         guard !isImporting, hasPendingAccountBackfill else { return }
-        await runImport()
+        await runImport(trigger: "backfill")
     }
 
     /// Recomputes `isAccountBackfillComplete` from the stores.
@@ -390,7 +396,7 @@ final class TransactionImportService {
         case .active:
             guard hasBackgroundedSinceActive, !isImporting else { return }
             hasBackgroundedSinceActive = false
-            await runImport()
+            await runImport(trigger: "foreground")
         default:
             break
         }
@@ -423,11 +429,14 @@ final class TransactionImportService {
     /// that item's turn comes, so a poll that starts mid-run is respected). It never polls
     /// on NOT_READY and never runs the queued post-link items inline — if any are waiting
     /// it hands them to a detached task when it finishes, so a refresh returns promptly.
-    func runImport() async {
-        guard !isImporting else { return }
+    func runImport(trigger: String = "refresh") async {
+        guard !isImporting else {
+            syncLog.append("run skipped trigger=\(trigger): another sync is already running")
+            return
+        }
         isImporting = true
         defer { isImporting = false }
-        await performImport(onlyItemID: nil, pollsUntilReady: false)
+        await performImport(onlyItemID: nil, pollsUntilReady: false, trigger: trigger)
         startQueuedPostLinkDrainIfNeeded()
     }
 
@@ -456,7 +465,7 @@ final class TransactionImportService {
     private func pollPostLink(itemID: String) async {
         initialImportItemID = itemID
         defer { initialImportItemID = nil }
-        await performImport(onlyItemID: itemID, pollsUntilReady: true)
+        await performImport(onlyItemID: itemID, pollsUntilReady: true, trigger: "after-link")
     }
 
     /// Polls queued post-link items one at a time. An item currently mid-sync in an
@@ -487,7 +496,8 @@ final class TransactionImportService {
     /// caller owns the run-level flag (`isImporting` / `initialImportItemID`).
     /// `onlyItemID` scopes the run to one linked item; `pollsUntilReady` enables the
     /// bounded not-ready re-poll loop.
-    private func performImport(onlyItemID: String?, pollsUntilReady: Bool) async {
+    private func performImport(onlyItemID: String?, pollsUntilReady: Bool, trigger: String) async {
+        syncLog.append("run start trigger=\(trigger)")
         // Refreshed up front too, so a just-linked item (no flag yet) flips the budget to
         // "Syncing account data..." as soon as its first sync starts, not only when it ends.
         refreshAccountBackfillStatus()
@@ -541,6 +551,7 @@ final class TransactionImportService {
             guard inFlightItemIDs.insert(itemID).inserted else { continue }
             defer { inFlightItemIDs.remove(itemID) }
             guard let accessToken = try? await keychain.read(for: PlaidKeychainKey.accessToken(itemID: itemID)) else {
+                syncLog.append("item \(Self.tag(itemID)) skipped: access token unreadable from Keychain")
                 // A keychain read failure for this one item shouldn't abort every other
                 // linked item's sync — skip it and move on, same "log and continue"
                 // isolation `processPage`'s per-transaction failures already use.
@@ -565,6 +576,7 @@ final class TransactionImportService {
 
             for pass in passes {
                 let isReplay = pass == .stampOnlyReplay
+                syncLog.append("item \(Self.tag(itemID)) pass=\(isReplay ? "replay" : "incremental") start cursor=\(isReplay || storedCursor == nil ? "none" : "stored")")
                 var requestCursor = isReplay ? nil : storedCursor
                 var paginationStartCursor = requestCursor
                 var pagesFetched = 0
@@ -582,6 +594,7 @@ final class TransactionImportService {
                     do {
                         response = try await syncPage(accessToken: accessToken, cursor: requestCursor, environment: environment)
                     } catch {
+                        syncLog.append("item \(Self.tag(itemID)) request failed: \(Self.describe(error))")
                         // Cancellation (task cancelled, or URLSession reporting `.cancelled`) is
                         // not a failure: stop this item quietly, no banner, no pending change.
                         if Self.isCancellation(error) {
@@ -675,6 +688,7 @@ final class TransactionImportService {
                     summary.modified += pageResult.summary.modified
                     summary.removed += pageResult.summary.removed
                     summary.queuedForMerge += pageResult.summary.queuedForMerge
+                    syncLog.append("item \(Self.tag(itemID)) page \(pagesFetched) pass=\(isReplay ? "replay" : "incremental") \(Self.describe(response)) handled=\(pageResult.allHandled)")
                     logger.info("sync page item=\(itemID, privacy: .private) pass=\(isReplay ? "replay" : "incremental", privacy: .public) added=\(response.added.count) modified=\(response.modified.count) removed=\(response.removed.count) accounts=\(response.accounts?.count ?? -1) hasMore=\(response.has_more) allHandled=\(pageResult.allHandled)")
 
                     if pageResult.allHandled {
@@ -706,6 +720,7 @@ final class TransactionImportService {
                 }
                 if lastResponseNotReady { anyItemStillNotReady = true }
 
+                syncLog.append("item \(Self.tag(itemID)) pass=\(isReplay ? "replay" : "incremental") end clean=\(passCompletedCleanly) pages=\(pagesFetched)")
                 logger.info("sync pass ended pass=\(isReplay ? "replay" : "incremental", privacy: .public) clean=\(passCompletedCleanly) notReady=\(lastResponseNotReady) stillLinked=\(self.isStillLinked(itemID))")
                 // Only a pass that finished (`has_more == false`, every page handled, not a
                 // not-ready empty page) for an item that is still linked counts; anything
@@ -721,6 +736,9 @@ final class TransactionImportService {
             }
         }
 
+        defer {
+            syncLog.append("run end added=\(summary.added) modified=\(summary.modified) removed=\(summary.removed) error=\(sawError)")
+        }
         guard sawAnyAccessToken else {
             // Every linked item's keychain read failed — nothing was actually imported
             // this run. `needsAttention` was already resynced by `refreshNeedsAttention()`
@@ -733,6 +751,26 @@ final class TransactionImportService {
         // not-ready state of the item it is waiting on.
         if !sawError, pollsUntilReady || initialImportItemID == nil { isInitialDataPending = anyItemStillNotReady }
         lastImportSummary = summary
+    }
+
+    /// Last four characters of an item ID: enough to tell items apart in the log without
+    /// writing the full identifier.
+    private static func tag(_ itemID: String) -> String { "…" + itemID.suffix(4) }
+
+    /// Counts, pending counts and the newest `added` date for one page. No names or amounts.
+    private static func describe(_ response: PlaidSyncResponseBody) -> String {
+        let addedPending = response.added.filter { $0.pending == true }.count
+        let modifiedPending = response.modified.filter { $0.pending == true }.count
+        let newest = response.added.map(\.date).max() ?? "-"
+        return "added=\(response.added.count)(pending \(addedPending)) modified=\(response.modified.count)(pending \(modifiedPending)) "
+            + "removed=\(response.removed.count) newestAdded=\(newest) hasMore=\(response.has_more) "
+            + "status=\(response.transactions_update_status ?? "-") cursor=\(response.next_cursor.map { $0.isEmpty ? "empty" : "returned" } ?? "absent")"
+    }
+
+    private static func describe(_ error: Error) -> String {
+        if let api = error as? PlaidAPIError { return "plaid \(api.errorType ?? "-")/\(api.errorCode ?? "-")" }
+        if let url = error as? URLError { return "network \(url.code.rawValue)" }
+        return String(describing: type(of: error))
     }
 
     private func upsertAccounts(_ accounts: [PlaidAccount]?, item: LinkedItem) {

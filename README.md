@@ -529,6 +529,14 @@ appears anywhere in the app. It owns two responsibilities:
   and Plaid's own `LinkDemo-SwiftUI` sample app, which has no URL-handling
   code anywhere in its `App` entry point or session example view.
 
+  **Sync log (reservoir-bz5)**: every `/transactions/sync` run is recorded in a
+  capped (500 lines) JSON file in Application Support (`SyncLogStore`,
+  `Services/Plaid/SyncLogStore.swift`) and shown under Settings > Sync log, with
+  share and clear buttons. Each line is a trigger, per-page counts (including how
+  many transactions Plaid flagged `pending`), the newest `added` date, `has_more`,
+  Plaid's update status, or the error code. It never records merchants, amounts,
+  full item IDs or tokens.
+
   `KeychainService` (`Services/Plaid/KeychainService.swift`) wraps the
   `Security` framework's generic-password APIs directly — no third-party
   dependency, since iOS ships no SwiftData/Keychain bridge. The Plaid

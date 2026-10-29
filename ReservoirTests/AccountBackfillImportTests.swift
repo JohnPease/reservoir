@@ -87,6 +87,7 @@ final class AccountBackfillImportTests: XCTestCase {
         let backfill: StubAccountBackfillStore
         let accounts: StubLinkedAccountStore
         let items: StubLinkedItemStore
+        let log: InMemorySyncLog
     }
 
     private func makeHarness(
@@ -94,6 +95,7 @@ final class AccountBackfillImportTests: XCTestCase {
         backfillDone: Bool = false,
         modelContext: ModelContext? = nil
     ) -> Harness {
+        let log = InMemorySyncLog()
         let cursors = StubCursorStore()
         if let storedCursor { cursors.setCursor(storedCursor, for: .sandbox, itemID: Self.itemID) }
         let backfill = StubAccountBackfillStore()
@@ -108,9 +110,10 @@ final class AccountBackfillImportTests: XCTestCase {
             cursorStore: cursors,
             linkedItemStore: items,
             linkedAccountStore: accounts,
-            backfillStore: backfill
+            backfillStore: backfill,
+            syncLog: log
         )
-        return Harness(sut: sut, cursors: cursors, backfill: backfill, accounts: accounts, items: items)
+        return Harness(sut: sut, cursors: cursors, backfill: backfill, accounts: accounts, items: items, log: log)
     }
 
     private let dateString = "2026-07-16"
@@ -173,6 +176,45 @@ final class AccountBackfillImportTests: XCTestCase {
         XCTAssertEqual(PlaidTransactionMapper.map(dto)?.accountID, "acc-9")
         let bare = try JSONDecoder().decode(PlaidTransaction.self, from: Data(tx("t2", account: nil).utf8))
         XCTAssertNil(PlaidTransactionMapper.map(bare)?.accountID)
+    }
+
+    // MARK: - Sync log (reservoir-bz5)
+
+    func test_syncLog_recordsRunPageAndPendingCountsWithoutMerchantsOrAmounts() async {
+        let pendingTx = #"{"transaction_id":"p1","amount":1.19,"date":"2026-07-16","merchant_name":"Secret Cafe","name":"Secret Cafe","account_id":"acc-1","pending":true}"#
+        ScriptedProtocol.script = [page(added: [pendingTx, tx("t2")], next: "c1")]
+        let h = makeHarness()
+        await h.sut.runImport(trigger: "foreground")
+        let lines = h.log.messages
+        XCTAssertEqual(lines.first, "run start trigger=foreground")
+        XCTAssertTrue(lines.contains { $0.contains("added=2(pending 1)") && $0.contains("newestAdded=2026-07-16") })
+        XCTAssertTrue(lines.last?.hasPrefix("run end added=2") == true)
+        let joined = lines.joined()
+        XCTAssertFalse(joined.contains("Secret Cafe"))
+        XCTAssertFalse(joined.contains("1.19"))
+        XCTAssertFalse(joined.contains(Self.itemID))
+    }
+
+    func test_syncLog_recordsPlaidErrorCode() async {
+        ScriptedProtocol.script = [(400, #"{"error_type":"ITEM_ERROR","error_code":"ITEM_LOGIN_REQUIRED","error_message":"x"}"#)]
+        let h = makeHarness(storedCursor: "c0", backfillDone: true)
+        await h.sut.runImport()
+        XCTAssertTrue(h.log.messages.contains { $0.contains("request failed: plaid ITEM_ERROR/ITEM_LOGIN_REQUIRED") })
+    }
+
+    func test_syncLog_recordsSkippedWhenAlreadyRunning() async {
+        ScriptedProtocol.script = [page()]
+        let h = makeHarness()
+        async let first: Void = h.sut.runImport()
+        async let second: Void = h.sut.runImport(trigger: "foreground")
+        _ = await (first, second)
+        XCTAssertEqual(h.log.messages.filter { $0.hasPrefix("run start") }.count + h.log.messages.filter { $0.hasPrefix("run skipped") }.count, 2)
+    }
+
+    func test_decode_pendingFlagIsOptional() throws {
+        let with = try JSONDecoder().decode(PlaidTransaction.self, from: Data(#"{"transaction_id":"t","amount":1,"date":"2026-07-16","merchant_name":null,"name":"n","pending":true}"#.utf8))
+        XCTAssertEqual(with.pending, true)
+        XCTAssertNil(try JSONDecoder().decode(PlaidTransaction.self, from: Data(tx("t2").utf8)).pending)
     }
 
     // MARK: - Accounts merge across pages
