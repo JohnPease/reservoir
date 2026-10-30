@@ -86,6 +86,14 @@ struct TransactionsView: View {
                     .accessibilityElement(children: .combine)
                     .accessibilityIdentifier("transactions.importingBanner")
                 }
+                DataFreshnessLabel(
+                    lastSync: importService?.lastSuccessfulSync,
+                    transactions: transactions,
+                    now: todayClock.referenceDate,
+                    identifier: "transactions.dataFreshness"
+                )
+                .padding(.horizontal)
+                .padding(.vertical, 4)
                 Group {
                     if transactions.isEmpty {
                         // In a ScrollView so the empty states are pull-to-refreshable too
