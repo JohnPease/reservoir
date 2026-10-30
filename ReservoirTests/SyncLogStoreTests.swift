@@ -63,3 +63,8 @@ final class SyncLogStoreTests: XCTestCase {
         XCTAssertTrue(lines[1].hasSuffix(" b"))
     }
 }
+
+final class InMemoryLastSync: LastSyncStoring, @unchecked Sendable {
+    private(set) var lastSuccessfulSync: Date?
+    func setLastSuccessfulSync(_ date: Date) { lastSuccessfulSync = date }
+}

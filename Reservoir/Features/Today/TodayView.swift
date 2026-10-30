@@ -133,6 +133,13 @@ struct TodayView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 24) {
+                    DataFreshnessLabel(
+                        lastSync: importService?.lastSuccessfulSync,
+                        transactions: transactions,
+                        now: todayClock.referenceDate,
+                        identifier: "today.dataFreshness"
+                    )
+
                     if let budgetModel {
                         BudgetHeroCardView(
                             state: budgetModel.state,

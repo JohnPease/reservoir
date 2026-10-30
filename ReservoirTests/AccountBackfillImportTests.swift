@@ -88,6 +88,7 @@ final class AccountBackfillImportTests: XCTestCase {
         let accounts: StubLinkedAccountStore
         let items: StubLinkedItemStore
         let log: InMemorySyncLog
+        let lastSync: InMemoryLastSync
     }
 
     private func makeHarness(
@@ -96,6 +97,7 @@ final class AccountBackfillImportTests: XCTestCase {
         modelContext: ModelContext? = nil
     ) -> Harness {
         let log = InMemorySyncLog()
+        let lastSync = InMemoryLastSync()
         let cursors = StubCursorStore()
         if let storedCursor { cursors.setCursor(storedCursor, for: .sandbox, itemID: Self.itemID) }
         let backfill = StubAccountBackfillStore()
@@ -111,9 +113,10 @@ final class AccountBackfillImportTests: XCTestCase {
             linkedItemStore: items,
             linkedAccountStore: accounts,
             backfillStore: backfill,
-            syncLog: log
+            syncLog: log,
+            lastSyncStore: lastSync
         )
-        return Harness(sut: sut, cursors: cursors, backfill: backfill, accounts: accounts, items: items, log: log)
+        return Harness(sut: sut, cursors: cursors, backfill: backfill, accounts: accounts, items: items, log: log, lastSync: lastSync)
     }
 
     private let dateString = "2026-07-16"
@@ -209,6 +212,21 @@ final class AccountBackfillImportTests: XCTestCase {
         async let second: Void = h.sut.runImport(trigger: "foreground")
         _ = await (first, second)
         XCTAssertEqual(h.log.messages.filter { $0.hasPrefix("run start") }.count + h.log.messages.filter { $0.hasPrefix("run skipped") }.count, 2)
+    }
+
+    func test_lastSuccessfulSync_setOnCleanRun_notOnError() async {
+        ScriptedProtocol.script = [page()]
+        let h = makeHarness(storedCursor: "c0", backfillDone: true)
+        XCTAssertNil(h.sut.lastSuccessfulSync)
+        await h.sut.runImport()
+        XCTAssertNotNil(h.sut.lastSuccessfulSync)
+        XCTAssertEqual(h.lastSync.lastSuccessfulSync, h.sut.lastSuccessfulSync)
+
+        let failing = makeHarness(storedCursor: "c0", backfillDone: true)
+        ScriptedProtocol.reset()
+        ScriptedProtocol.script = [(400, #"{"error_type":"ITEM_ERROR","error_code":"ITEM_LOGIN_REQUIRED","error_message":"x"}"#)]
+        await failing.sut.runImport()
+        XCTAssertNil(failing.sut.lastSuccessfulSync)
     }
 
     func test_decode_pendingFlagIsOptional() throws {

@@ -195,6 +195,10 @@ final class TransactionImportService {
     /// `presentedError` is `nil`.
     private(set) var presentedErrorDetail: String?
     private(set) var lastImportSummary: ImportSummary?
+
+    /// When a run last finished with a clean pass and no error (reservoir-3oe); drives the
+    /// "Synced …" caption. Persisted so it survives relaunch.
+    private(set) var lastSuccessfulSync: Date?
     /// In-memory mirror of the `PendingTransactionMerge` rows in `modelContext` —
     /// durable persistence (see `SchemaV5`'s doc comment) is what actually survives app
     /// relaunch; this array is re-hydrated from that store at `init` and at the start of
@@ -234,6 +238,7 @@ final class TransactionImportService {
     private let backfillStore: PlaidAccountBackfillStoring
     private let logger: Logger
     private let syncLog: SyncLogStoring
+    private let lastSyncStore: LastSyncStoring
     private let sleep: @MainActor (Duration) async throws -> Void
     private let postLinkBackoff: [Duration]
     /// Items whose post-link import was requested while another post-link poll was
@@ -256,6 +261,7 @@ final class TransactionImportService {
         backfillStore: PlaidAccountBackfillStoring = PlaidAccountBackfillStore(),
         logger: Logger = Logger(subsystem: "com.reservoir.app", category: "TransactionImportService"),
         syncLog: SyncLogStoring = SyncLogStore(),
+        lastSyncStore: LastSyncStoring = LastSyncStore(),
         postLinkBackoff: [Duration] = TransactionImportService.defaultPostLinkBackoff,
         sleep: @escaping @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
@@ -271,6 +277,8 @@ final class TransactionImportService {
         self.backfillStore = backfillStore
         self.logger = logger
         self.syncLog = syncLog
+        self.lastSyncStore = lastSyncStore
+        self.lastSuccessfulSync = lastSyncStore.lastSuccessfulSync
         // OR across every linked item (reservoir-loc.2) — see the property's doc comment
         // for why a single-item `.first?.needsAttention` read would silently mask a
         // non-first item's login-required state once more than one item is linked.
@@ -541,6 +549,7 @@ final class TransactionImportService {
         var sawAnyAccessToken = false
         var anyItemStillNotReady = false
         var sawError = false
+        var sawCleanPass = false
 
         for item in items {
             let itemID = item.itemID
@@ -719,6 +728,7 @@ final class TransactionImportService {
                     }
                 }
                 if lastResponseNotReady { anyItemStillNotReady = true }
+                if passCompletedCleanly { sawCleanPass = true }
 
                 syncLog.append("item \(Self.tag(itemID)) pass=\(isReplay ? "replay" : "incremental") end clean=\(passCompletedCleanly) pages=\(pagesFetched)")
                 logger.info("sync pass ended pass=\(isReplay ? "replay" : "incremental", privacy: .public) clean=\(passCompletedCleanly) notReady=\(lastResponseNotReady) stillLinked=\(self.isStillLinked(itemID))")
@@ -738,6 +748,11 @@ final class TransactionImportService {
 
         defer {
             syncLog.append("run end added=\(summary.added) modified=\(summary.modified) removed=\(summary.removed) error=\(sawError)")
+        }
+        if sawCleanPass, !sawError {
+            let finished = Date()
+            lastSyncStore.setLastSuccessfulSync(finished)
+            lastSuccessfulSync = finished
         }
         guard sawAnyAccessToken else {
             // Every linked item's keychain read failed — nothing was actually imported
