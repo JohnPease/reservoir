@@ -537,6 +537,12 @@ appears anywhere in the app. It owns two responsibilities:
   Plaid's update status, or the error code. It never records merchants, amounts,
   full item IDs or tokens.
 
+  **Data freshness (reservoir-3oe)**: Chase data reaches Plaid about a day late,
+  so Today and Transactions show a caption like "Synced 3:12 PM · latest imported
+  charge yesterday" (`DataFreshnessCalculator`, `DataFreshnessLabel`). The sync
+  time is the last run that finished a clean pass with no error
+  (`LastSyncStore`, `UserDefaults`); it is hidden for manual-only users.
+
   `KeychainService` (`Services/Plaid/KeychainService.swift`) wraps the
   `Security` framework's generic-password APIs directly — no third-party
   dependency, since iOS ships no SwiftData/Keychain bridge. The Plaid
