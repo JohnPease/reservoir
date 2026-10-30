@@ -34,4 +34,15 @@ final class DataFreshnessCalculatorTests: XCTestCase {
         let text = DataFreshnessCalculator.text(lastSync: nil, newestImportedDate: date(2026, 10, 29), now: now, calendar: calendar)
         XCTAssertEqual(text, "latest imported charge today")
     }
+
+    func test_formatsInInjectedCalendarTimeZone() {
+        // 03:30 UTC on Oct 30 is 10:30 PM Oct 29 in Chicago; with Chicago's "now" that is today.
+        var utc = DateComponents(year: 2026, month: 10, day: 30, hour: 3, minute: 30)
+        utc.timeZone = TimeZone(identifier: "UTC")
+        let lastSync = Calendar(identifier: .gregorian).date(from: utc)!
+        let text = DataFreshnessCalculator.text(lastSync: lastSync, newestImportedDate: nil, now: now, calendar: calendar)
+        XCTAssertEqual(text?.hasPrefix("Synced "), true)
+        XCTAssertEqual(text?.contains("Oct"), false)
+        XCTAssertEqual(text?.contains("10:30"), true)
+    }
 }

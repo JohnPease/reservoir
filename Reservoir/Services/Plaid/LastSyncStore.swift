@@ -1,6 +1,6 @@
 import Foundation
 
-/// When the last `/transactions/sync` run finished cleanly (reservoir-3oe), so the app can
+/// When the last `/transactions/sync` run finished a clean pass for every item it covered (reservoir-3oe), so the app can
 /// say how fresh its imported data is. Stored in `UserDefaults` like the cursor store.
 protocol LastSyncStoring: Sendable {
     var lastSuccessfulSync: Date? { get }

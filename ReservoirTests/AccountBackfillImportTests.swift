@@ -229,6 +229,47 @@ final class AccountBackfillImportTests: XCTestCase {
         XCTAssertNil(failing.sut.lastSuccessfulSync)
     }
 
+    func test_lastSuccessfulSync_notSetWhenAnItemIsSkippedForMissingToken() async {
+        let log = InMemorySyncLog()
+        let lastSync = InMemoryLastSync()
+        let sut = TransactionImportService(
+            modelContext: context,
+            keychain: StubKeychain(),
+            urlSession: session(),
+            environmentStore: StubEnvironmentStore(.sandbox),
+            cursorStore: StubCursorStore(),
+            linkedItemStore: StubLinkedItemStore(initial: LinkedItem(itemID: Self.itemID, institutionName: "Test Bank", linkedAt: .now)),
+            linkedAccountStore: StubLinkedAccountStore(),
+            backfillStore: StubAccountBackfillStore(defaultComplete: true),
+            syncLog: log,
+            lastSyncStore: lastSync
+        )
+        await sut.runImport()
+        XCTAssertNil(sut.lastSuccessfulSync)
+        XCTAssertNil(lastSync.lastSuccessfulSync)
+        XCTAssertTrue(log.messages.contains { $0.contains("skipped: access token unreadable") })
+        XCTAssertTrue(log.messages.last?.hasPrefix("run end") == true)
+    }
+
+    func test_syncLog_noLinkedItems_logsRunEnd() async {
+        let log = InMemorySyncLog()
+        let sut = TransactionImportService(
+            modelContext: context,
+            keychain: StubKeychain(),
+            urlSession: session(),
+            environmentStore: StubEnvironmentStore(.sandbox),
+            cursorStore: StubCursorStore(),
+            linkedItemStore: StubLinkedItemStore(),
+            linkedAccountStore: StubLinkedAccountStore(),
+            backfillStore: StubAccountBackfillStore(defaultComplete: true),
+            syncLog: log,
+            lastSyncStore: InMemoryLastSync()
+        )
+        await sut.runImport(trigger: "foreground")
+        XCTAssertEqual(log.messages, ["run start trigger=foreground", "run end: no linked items"])
+        XCTAssertNil(sut.lastSuccessfulSync)
+    }
+
     func test_decode_pendingFlagIsOptional() throws {
         let with = try JSONDecoder().decode(PlaidTransaction.self, from: Data(#"{"transaction_id":"t","amount":1,"date":"2026-07-16","merchant_name":null,"name":"n","pending":true}"#.utf8))
         XCTAssertEqual(with.pending, true)
@@ -621,7 +662,9 @@ final class AccountBackfillImportTests: XCTestCase {
         let sut = TransactionImportService(
             modelContext: context, keychain: StubKeychain(), urlSession: session(),
             environmentStore: StubEnvironmentStore(.sandbox), cursorStore: StubCursorStore(),
-            linkedItemStore: items, linkedAccountStore: StubLinkedAccountStore(), backfillStore: backfill
+            linkedItemStore: items, linkedAccountStore: StubLinkedAccountStore(), backfillStore: backfill,
+            syncLog: InMemorySyncLog(),
+            lastSyncStore: InMemoryLastSync()
         )
         XCTAssertTrue(sut.isAccountBackfillComplete)
         XCTAssertFalse(sut.needsAttention)
@@ -722,7 +765,9 @@ final class AccountBackfillImportTests: XCTestCase {
         TransactionImportService(
             modelContext: context, keychain: StubKeychain(), urlSession: session(),
             environmentStore: StubEnvironmentStore(.sandbox), cursorStore: StubCursorStore(),
-            linkedItemStore: items, linkedAccountStore: StubLinkedAccountStore(), backfillStore: backfill
+            linkedItemStore: items, linkedAccountStore: StubLinkedAccountStore(), backfillStore: backfill,
+            syncLog: InMemorySyncLog(),
+            lastSyncStore: InMemoryLastSync()
         )
     }
 
@@ -784,7 +829,9 @@ final class AccountBackfillImportTests: XCTestCase {
         let sut = TransactionImportService(
             modelContext: context, keychain: StubKeychain(), urlSession: session(),
             environmentStore: StubEnvironmentStore(.sandbox), cursorStore: StubCursorStore(),
-            linkedItemStore: items, linkedAccountStore: StubLinkedAccountStore(), backfillStore: backfill
+            linkedItemStore: items, linkedAccountStore: StubLinkedAccountStore(), backfillStore: backfill,
+            syncLog: InMemorySyncLog(),
+            lastSyncStore: InMemoryLastSync()
         )
         XCTAssertTrue(sut.isAccountBackfillComplete)
         items.save(LinkedItem(itemID: "x", institutionName: "X", linkedAt: .now))
@@ -857,7 +904,9 @@ final class AccountBackfillImportTests: XCTestCase {
         let sut = TransactionImportService(
             modelContext: context, keychain: StubKeychain(), urlSession: session(),
             environmentStore: StubEnvironmentStore(.sandbox), cursorStore: cursors,
-            linkedItemStore: StubLinkedItemStore(), linkedAccountStore: accounts, backfillStore: backfill
+            linkedItemStore: StubLinkedItemStore(), linkedAccountStore: accounts, backfillStore: backfill,
+            syncLog: InMemorySyncLog(),
+            lastSyncStore: InMemoryLastSync()
         )
         XCTAssertNil(sut.removeOrphanedLocalData())
         XCTAssertFalse(backfill.isComplete(for: .sandbox, itemID: "gone"))

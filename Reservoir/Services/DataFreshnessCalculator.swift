@@ -13,11 +13,13 @@ enum DataFreshnessCalculator {
         calendar: Calendar = .current
     ) -> String? {
         var parts: [String] = []
+        let timeStyle = Date.FormatStyle(date: .omitted, time: .shortened, calendar: calendar, timeZone: calendar.timeZone)
+        let dayStyle = Date.FormatStyle(calendar: calendar, timeZone: calendar.timeZone).month(.abbreviated).day()
         if let lastSync {
             if calendar.isDate(lastSync, inSameDayAs: now) {
-                parts.append("Synced \(lastSync.formatted(date: .omitted, time: .shortened))")
+                parts.append("Synced \(lastSync.formatted(timeStyle))")
             } else {
-                parts.append("Synced \(lastSync.formatted(.dateTime.month(.abbreviated).day())), \(lastSync.formatted(date: .omitted, time: .shortened))")
+                parts.append("Synced \(lastSync.formatted(dayStyle)), \(lastSync.formatted(timeStyle))")
             }
         }
         if let newest = newestImportedDate {
@@ -29,7 +31,7 @@ enum DataFreshnessCalculator {
             } else if let yesterday = calendar.date(byAdding: .day, value: -1, to: startOfToday), day == yesterday {
                 label = "yesterday"
             } else {
-                label = newest.formatted(.dateTime.month(.abbreviated).day())
+                label = newest.formatted(dayStyle)
             }
             parts.append("latest imported charge \(label)")
         }

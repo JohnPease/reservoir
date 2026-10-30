@@ -7,6 +7,7 @@ struct DataFreshnessLabel: View {
     let transactions: [SpendTransaction]
     let now: Date
     var identifier = "dataFreshness"
+    var isCentered = false
 
     var body: some View {
         if let text = DataFreshnessCalculator.text(
@@ -17,7 +18,8 @@ struct DataFreshnessLabel: View {
             Text(text)
                 .font(.caption)
                 .foregroundStyle(Color("ReservoirTextMuted"))
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .multilineTextAlignment(isCentered ? .center : .leading)
+                .frame(maxWidth: .infinity, alignment: isCentered ? .center : .leading)
                 .accessibilityIdentifier(identifier)
         }
     }

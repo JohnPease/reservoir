@@ -31,10 +31,8 @@ final class SyncLogStore: SyncLogStoring, @unchecked Sendable {
         self.now = now
     }
 
-    static var defaultURL: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("sync-log.json")
-    }
+    static let defaultURL: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("sync-log.json")
 
     func append(_ message: String) {
         lock.lock()
@@ -64,6 +62,8 @@ final class SyncLogStore: SyncLogStoring, @unchecked Sendable {
 
     private func save(_ entries: [SyncLogEntry]) {
         guard let data = try? JSONEncoder().encode(entries) else { return }
+        // Application Support may not exist yet on a fresh install.
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? data.write(to: url, options: .atomic)
     }
 }

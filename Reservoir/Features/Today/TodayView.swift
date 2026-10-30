@@ -133,13 +133,6 @@ struct TodayView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 24) {
-                    DataFreshnessLabel(
-                        lastSync: importService?.lastSuccessfulSync,
-                        transactions: transactions,
-                        now: todayClock.referenceDate,
-                        identifier: "today.dataFreshness"
-                    )
-
                     if let budgetModel {
                         BudgetHeroCardView(
                             state: budgetModel.state,
@@ -196,6 +189,21 @@ struct TodayView: View {
                 .padding()
             }
             .background(Color("ReservoirBackground"))
+            // Pinned just above the tab bar so it stays visible without scrolling.
+            .safeAreaInset(edge: .bottom) {
+                DataFreshnessLabel(
+                    lastSync: importService?.lastSuccessfulSync,
+                    transactions: transactions,
+                    now: todayClock.referenceDate,
+                    identifier: "today.dataFreshness",
+                    isCentered: true
+                )
+                .padding(.horizontal)
+                .padding(.vertical, 6)
+                .lineLimit(2)
+                .minimumScaleFactor(0.8)
+                .background(Color("ReservoirBackground"))
+            }
             .navigationTitle(dateHeaderText)
         }
         .sheet(isPresented: $isShowingAddTransaction) {
