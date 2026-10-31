@@ -50,8 +50,13 @@ struct TransactionRowView: View {
             TransactionDirectionIcon(isDebit: isDebit)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(transaction.merchantName)
-                    .foregroundStyle(isFixed ? Color("ReservoirTextSecondary") : Color("ReservoirTextPrimary"))
+                HStack(spacing: 6) {
+                    Text(transaction.merchantName)
+                        .foregroundStyle(isFixed ? Color("ReservoirTextSecondary") : Color("ReservoirTextPrimary"))
+                    if transaction.isPending {
+                        PendingBadge()
+                    }
+                }
                 if isFixed {
                     Text("Excluded from limit")
                         .font(.caption)
@@ -109,5 +114,21 @@ private struct TransactionDirectionIcon: View {
                 .foregroundStyle(isDebit ? Color("ReservoirDeficit") : Color("ReservoirAccent"))
         }
         .frame(width: 30, height: 30)
+    }
+}
+
+/// Small "Pending" capsule shown beside a merchant name while Plaid still reports the
+/// transaction as pending (reservoir-z4p). Muted tokens so it reads as status, not alert.
+private struct PendingBadge: View {
+    var body: some View {
+        Text("Pending")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(Color("ReservoirTextSecondary"))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(Color("ReservoirSurface")))
+            .overlay(Capsule().strokeBorder(Color("ReservoirTextMuted"), lineWidth: 0.5))
+            .accessibilityLabel("Pending")
+            .accessibilityIdentifier("transactions.row.pendingBadge")
     }
 }

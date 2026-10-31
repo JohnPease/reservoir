@@ -557,4 +557,35 @@ final class MigrationPlanTests: XCTestCase {
         XCTAssertNil(pending.first?.plaidAccountID)
         XCTAssertEqual(try context.fetch(FetchDescriptor<SchemaV9.Budget>()).count, 0)
     }
+
+    /// reservoir-z4p: a store created under `SchemaV9` opens under `SchemaV10` with data
+    /// intact and every existing row reading as not pending.
+    func testV9StoreMigratesToV10WithRowsNotPending() throws {
+        let v9Schema = Schema(versionedSchema: SchemaV9.self)
+        do {
+            let container = try ModelContainer(for: v9Schema, configurations: [ModelConfiguration(schema: v9Schema, url: storeURL)])
+            let context = ModelContext(container)
+            context.insert(SchemaV9.SpendTransaction(
+                amount: 12, date: .now, merchantName: "Cafe", type: .variable, entryMethod: .imported,
+                plaidTransactionID: "plaid-1", plaidItemID: "item-1", plaidAccountID: "acct-1"
+            ))
+            try context.save()
+        }
+
+        let v10Schema = Schema(versionedSchema: SchemaV10.self)
+        let container = try ModelContainer(
+            for: v10Schema,
+            migrationPlan: ReservoirMigrationPlan.self,
+            configurations: [ModelConfiguration(schema: v10Schema, url: storeURL)]
+        )
+        let context = ModelContext(container)
+        let rows = try context.fetch(FetchDescriptor<SchemaV10.SpendTransaction>())
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.plaidTransactionID, "plaid-1")
+        XCTAssertEqual(rows.first?.isPending, false)
+
+        rows.first?.isPending = true
+        try context.save()
+        XCTAssertEqual(try context.fetch(FetchDescriptor<SchemaV10.SpendTransaction>()).first?.isPending, true)
+    }
 }

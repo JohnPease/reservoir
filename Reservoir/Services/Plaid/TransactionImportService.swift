@@ -22,6 +22,9 @@ struct PlaidTransaction: Decodable {
     /// Plaid's pending flag (reservoir-bz5). Decoded only so the sync log can count pending
     /// charges; nothing else reads it yet.
     var pending: Bool? = nil
+    /// For a posted transaction that replaces a pending one: the pending transaction's ID
+    /// (reservoir-z4p). The importer updates that row in place instead of deleting and re-adding.
+    var pending_transaction_id: String? = nil
 }
 
 /// One entry of `/transactions/sync`'s top-level `accounts` array (reservoir-j8t). Each
@@ -926,6 +929,7 @@ final class TransactionImportService {
         }
 
         var rowStamps: [(row: SpendTransaction, accountID: String)] = []
+        var pendingFixes: [(row: SpendTransaction, isPending: Bool)] = []
         var queuedStamps: [(plaidTransactionID: String, accountID: String)] = []
 
         for raw in response.added {
@@ -942,11 +946,43 @@ final class TransactionImportService {
                 if existing.plaidAccountID == nil, let accountID = mapped.accountID {
                     rowStamps.append((existing, accountID))
                 }
+                // Rows imported before `isPending` existed read as not pending; the one-time
+                // replay (and any redelivered page) refreshes the flag from Plaid (reservoir-z4p).
+                if existing.isPending != mapped.isPending {
+                    pendingFixes.append((existing, mapped.isPending))
+                }
                 continue
             }
             if let queuedIndex = mergeQueue.firstIndex(where: { $0.id == mapped.plaidTransactionID }) {
                 if let accountID = mapped.accountID, mergeQueue[queuedIndex].incoming.accountID == nil {
                     queuedStamps.append((mapped.plaidTransactionID, accountID))
+                }
+                continue
+            }
+
+            // A posted transaction that replaces a pending one we hold (reservoir-z4p): update
+            // that row in place (new Plaid ID, Plaid's amount/date/merchant/account,
+            // `isPending` off) so the user's type, goal and merge state survive, rather
+            // than adding a new row and letting `removed` delete the old one. The later
+            // `removed` entry for the pending ID finds no row and is a no-op. (If Plaid
+            // delivers `removed` on an earlier page than this `added`, the pending row is
+            // already gone and this falls through to an ordinary insert.)
+            if !stampOnly, let pendingID = mapped.pendingTransactionID, !mapped.isPending,
+               let pendingRow = importedByPlaidID[pendingID] {
+                let original = SnapshotForRollback(pendingRow)
+                let failureMessage = PersistenceSaveHelper.saveOrRollback(
+                    modelContext: modelContext,
+                    mutate: { Self.applyPosted(pendingRow, mapped: mapped, rules: rules) },
+                    rollback: { original.restore(to: pendingRow) },
+                    logger: logger
+                )
+                if let failureMessage {
+                    logger.error("Failed to update pending transaction in place \(pendingID, privacy: .public): \(failureMessage, privacy: .public)")
+                    result.allHandled = false
+                } else {
+                    importedByPlaidID.removeValue(forKey: pendingID)
+                    importedByPlaidID[mapped.plaidTransactionID] = pendingRow
+                    result.summary.modified += 1
                 }
                 continue
             }
@@ -1008,8 +1044,8 @@ final class TransactionImportService {
             }
         }
 
-        if !rowStamps.isEmpty || !queuedStamps.isEmpty {
-            if !applyAccountStamps(rowStamps, queuedStamps) { result.allHandled = false }
+        if !rowStamps.isEmpty || !queuedStamps.isEmpty || !pendingFixes.isEmpty {
+            if !applyAccountStamps(rowStamps, queuedStamps, pendingFixes) { result.allHandled = false }
         }
 
         // A replay page from a nil cursor is a snapshot of `added` only, and its
@@ -1125,8 +1161,10 @@ final class TransactionImportService {
     /// Returns `false` (and rolls back) on a save failure.
     private func applyAccountStamps(
         _ rowStamps: [(row: SpendTransaction, accountID: String)],
-        _ queuedStamps: [(plaidTransactionID: String, accountID: String)]
+        _ queuedStamps: [(plaidTransactionID: String, accountID: String)],
+        _ pendingFixes: [(row: SpendTransaction, isPending: Bool)] = []
     ) -> Bool {
+        let originalPending = pendingFixes.map { $0.row.isPending }
         let records: [(record: PendingTransactionMerge, accountID: String)] = queuedStamps.compactMap { stamp in
             fetchPendingMerge(plaidTransactionID: stamp.plaidTransactionID).map { ($0, stamp.accountID) }
         }
@@ -1134,10 +1172,12 @@ final class TransactionImportService {
             modelContext: modelContext,
             mutate: {
                 for stamp in rowStamps where stamp.row.plaidAccountID == nil { stamp.row.plaidAccountID = stamp.accountID }
+                for fix in pendingFixes { fix.row.isPending = fix.isPending }
                 for stamp in records where stamp.record.plaidAccountID == nil { stamp.record.plaidAccountID = stamp.accountID }
             },
             rollback: {
                 for stamp in rowStamps where stamp.row.plaidAccountID == stamp.accountID { stamp.row.plaidAccountID = nil }
+                for (fix, original) in zip(pendingFixes, originalPending) { fix.row.isPending = original }
                 for stamp in records where stamp.record.plaidAccountID == stamp.accountID { stamp.record.plaidAccountID = nil }
             },
             logger: logger
@@ -1262,6 +1302,7 @@ final class TransactionImportService {
         let plaidTransactionID: String?
         let plaidAccountID: String?
         let wasMergedFromManual: Bool
+        let isPending: Bool
 
         init(_ transaction: SpendTransaction) {
             amount = transaction.amount
@@ -1272,6 +1313,7 @@ final class TransactionImportService {
             plaidTransactionID = transaction.plaidTransactionID
             plaidAccountID = transaction.plaidAccountID
             wasMergedFromManual = transaction.wasMergedFromManual
+            isPending = transaction.isPending
         }
 
         func restore(to transaction: SpendTransaction) {
@@ -1283,6 +1325,7 @@ final class TransactionImportService {
             transaction.plaidTransactionID = plaidTransactionID
             transaction.plaidAccountID = plaidAccountID
             transaction.wasMergedFromManual = wasMergedFromManual
+            transaction.isPending = isPending
         }
     }
 
@@ -1290,10 +1333,17 @@ final class TransactionImportService {
     /// resolution path); `type` is re-derived via `MerchantMatcher` only when the
     /// transaction hasn't been manually overridden — an explicit user choice must never
     /// be silently clobbered by an upstream Plaid edit. `savingsGoal` is left untouched.
+    /// A pending row's posted replacement (reservoir-z4p): `applyModified` plus the new Plaid ID.
+    private static func applyPosted(_ existing: SpendTransaction, mapped: MappedPlaidTransaction, rules: [MerchantRule]) {
+        existing.plaidTransactionID = mapped.plaidTransactionID
+        applyModified(existing, mapped: mapped, rules: rules)
+    }
+
     private static func applyModified(_ existing: SpendTransaction, mapped: MappedPlaidTransaction, rules: [MerchantRule]) {
         existing.amount = mapped.amount
         existing.date = mapped.date
         existing.merchantName = mapped.merchantName
+        existing.isPending = mapped.isPending
         // Stamp (or refresh) the account when Plaid supplies one (reservoir-j8t).
         if let accountID = mapped.accountID { existing.plaidAccountID = accountID }
         if !existing.isManualOverride {
@@ -1405,7 +1455,8 @@ final class TransactionImportService {
             plaidItemID: sourceItemID,
             plaidAccountID: sourceAccountID ?? mapped.accountID,
             isManualOverride: false,
-            savingsGoal: goal
+            savingsGoal: goal,
+            isPending: mapped.isPending
         )
     }
 

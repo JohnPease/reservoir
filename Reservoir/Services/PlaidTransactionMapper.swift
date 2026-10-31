@@ -10,13 +10,22 @@ struct MappedPlaidTransaction: Equatable {
     let merchantName: String
     /// Plaid account the transaction belongs to; nil when the payload carried none.
     let accountID: String?
+    /// Plaid's pending flag (reservoir-z4p).
+    let isPending: Bool
+    /// The pending transaction this posted one replaces, if Plaid says so.
+    let pendingTransactionID: String?
 
-    init(plaidTransactionID: String, amount: Decimal, date: Date, merchantName: String, accountID: String? = nil) {
+    init(
+        plaidTransactionID: String, amount: Decimal, date: Date, merchantName: String, accountID: String? = nil,
+        isPending: Bool = false, pendingTransactionID: String? = nil
+    ) {
         self.plaidTransactionID = plaidTransactionID
         self.amount = amount
         self.date = date
         self.merchantName = merchantName
         self.accountID = accountID
+        self.isPending = isPending
+        self.pendingTransactionID = pendingTransactionID
     }
 }
 
@@ -57,7 +66,9 @@ enum PlaidTransactionMapper {
             amount: transaction.amount,
             date: date,
             merchantName: resolvedName,
-            accountID: transaction.account_id
+            accountID: transaction.account_id,
+            isPending: transaction.pending == true,
+            pendingTransactionID: transaction.pending_transaction_id
         )
     }
 

@@ -537,6 +537,17 @@ appears anywhere in the app. It owns two responsibilities:
   Plaid's update status, or the error code. It never records merchants, amounts,
   full item IDs or tokens.
 
+  **Pending transactions (reservoir-z4p)**: Plaid pending charges are imported like
+  any other and keep counting toward the limit, budget and goals. `SchemaV10` adds
+  `SpendTransaction.isPending` (lightweight migration); rows show a "Pending" tag on
+  Today and Transactions (`TransactionRowView`). When the posted version arrives
+  (`pending_transaction_id`), the importer updates the same row in place (new Plaid ID,
+  Plaid's amount/date/merchant, `isPending` off) so type, goal and merge state survive;
+  a pending charge Plaid drops is deleted. If Plaid delivers `removed` on an earlier
+  page than the posted `added`, the edits on that row are lost. The account-backfill
+  flag key was bumped to `v2` so every item replays once and refreshes `isPending` on
+  rows imported before the field existed.
+
   **Re-scan (reservoir-kuc)**: Settings > Re-scan Plaid (read-only) pulls each
   item's full history from a nil cursor (`runDiagnosticRescan()`) and reports how
   many transactions Plaid holds, the newest date, and how many are missing from the
