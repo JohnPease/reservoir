@@ -20,6 +20,7 @@ struct SettingsView: View {
     @State private var pendingEnvironment: PlaidEnvironment?
     @State private var pendingUnlink: LinkedItem?
     @State private var unlinkError: String?
+    @State private var didCopyRescanResult = false
     /// Leftovers from accounts that are no longer linked (reservoir-xxm); refreshed by
     /// `refreshOrphanedData()`. `pendingOrphanCleanup` holds the summary being confirmed.
     @State private var orphanedData = TransactionImportService.OrphanedDataSummary()
@@ -210,10 +211,25 @@ struct SettingsView: View {
                     .disabled(importService == nil || importService?.isRescanning == true || importService?.isSyncActive == true)
                     .accessibilityIdentifier("settings.rescan")
                     if let result = importService?.rescanResult {
-                        Text(result)
-                            .font(.footnote)
-                            .foregroundStyle(Color("ReservoirTextSecondary"))
-                            .accessibilityIdentifier("settings.rescanResult")
+                        // Tap to copy, so the result can be pasted into a message.
+                        Button {
+                            UIPasteboard.general.string = result
+                            didCopyRescanResult = true
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(result)
+                                    .font(.footnote)
+                                    .foregroundStyle(Color("ReservoirTextSecondary"))
+                                    .multilineTextAlignment(.leading)
+                                Text(didCopyRescanResult ? "Copied" : "Tap to copy")
+                                    .font(.caption)
+                                    .foregroundStyle(Color("ReservoirTextMuted"))
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("settings.rescanResult")
+                        .accessibilityHint("Copies the result")
+                        .onChange(of: result) { didCopyRescanResult = false }
                     }
                 } footer: {
                     Text("The sync log shows when each sync ran and what Plaid returned. Re-scan asks Plaid for your full history and compares it with the app without changing anything. Counts only, no merchants or amounts.")
