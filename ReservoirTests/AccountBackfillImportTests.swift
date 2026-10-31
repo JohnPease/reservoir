@@ -270,6 +270,41 @@ final class AccountBackfillImportTests: XCTestCase {
         XCTAssertNil(sut.lastSuccessfulSync)
     }
 
+    func test_diagnosticRescan_readsFromNilCursorAndWritesNothing() async throws {
+        ScriptedProtocol.script = [
+            page(added: [tx("t1"), tx("t2")], next: "r1", hasMore: true),
+            page(added: [tx("t3")], next: "r2", hasMore: false),
+        ]
+        let h = makeHarness(storedCursor: "c0", backfillDone: true)
+        await h.sut.runDiagnosticRescan()
+        XCTAssertEqual(ScriptedProtocol.requestCursors.count, 2)
+        XCTAssertNil(ScriptedProtocol.requestCursors.first ?? nil, "re-scan must start from a nil cursor")
+        XCTAssertEqual(h.cursors.cursor(for: .sandbox, itemID: Self.itemID), "c0", "re-scan must not move the stored cursor")
+        XCTAssertTrue(try allTransactions().isEmpty, "re-scan must not save transactions")
+        XCTAssertTrue(h.sut.rescanResult?.contains("Plaid has 3 transactions") == true)
+        XCTAssertTrue(h.sut.rescanResult?.contains("3 are not in the app") == true)
+        XCTAssertFalse(h.sut.rescanResult?.contains("Coffee Shop") == true)
+        XCTAssertFalse(h.sut.isRescanning)
+        XCTAssertTrue(h.log.messages.contains { $0.hasPrefix("rescan item") })
+    }
+
+    func test_diagnosticRescan_countsOnlyRowsMissingLocally() async throws {
+        ScriptedProtocol.script = [page(added: [tx("t1"), tx("t2")], next: "r1")]
+        let h = makeHarness(storedCursor: "c0", backfillDone: true)
+        context.insert(SpendTransaction(amount: 5, date: matchingDate, merchantName: "x", type: .variable, entryMethod: .imported, plaidTransactionID: "t1"))
+        try context.save()
+        await h.sut.runDiagnosticRescan()
+        XCTAssertTrue(h.sut.rescanResult?.contains("1 are not in the app") == true)
+        XCTAssertEqual(try allTransactions().count, 1)
+    }
+
+    func test_diagnosticRescan_reportsFailure() async {
+        ScriptedProtocol.script = [(500, "{}")]
+        let h = makeHarness(storedCursor: "c0", backfillDone: true)
+        await h.sut.runDiagnosticRescan()
+        XCTAssertTrue(h.sut.rescanResult?.contains("failed after 0 pages") == true)
+    }
+
     func test_decode_pendingFlagIsOptional() throws {
         let with = try JSONDecoder().decode(PlaidTransaction.self, from: Data(#"{"transaction_id":"t","amount":1,"date":"2026-07-16","merchant_name":null,"name":"n","pending":true}"#.utf8))
         XCTAssertEqual(with.pending, true)
