@@ -123,7 +123,7 @@ final class WidgetSnapshotTests: XCTestCase {
     func testRefreshNowBuildsFromStoreAndSkipsUnchanged() throws {
         let url = tempURL()
         defer { try? FileManager.default.removeItem(at: url) }
-        let schema = Schema(versionedSchema: SchemaV9.self)
+        let schema = Schema(versionedSchema: SchemaV10.self)
         let container = try ModelContainer(
             for: schema, migrationPlan: ReservoirMigrationPlan.self,
             configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)]
@@ -148,7 +148,7 @@ final class WidgetSnapshotTests: XCTestCase {
     func testRequestRefreshDebouncesBurstIntoOneWrite() async throws {
         let url = tempURL()
         defer { try? FileManager.default.removeItem(at: url) }
-        let schema = Schema(versionedSchema: SchemaV9.self)
+        let schema = Schema(versionedSchema: SchemaV10.self)
         let container = try ModelContainer(
             for: schema, migrationPlan: ReservoirMigrationPlan.self,
             configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)]
@@ -167,7 +167,7 @@ final class WidgetSnapshotTests: XCTestCase {
 
     @MainActor
     func testNoOpPublisherNeverWrites() async throws {
-        let context = ModelContext(try ModelContainer(for: Schema(versionedSchema: SchemaV9.self), migrationPlan: ReservoirMigrationPlan.self, configurations: [ModelConfiguration(schema: Schema(versionedSchema: SchemaV9.self), isStoredInMemoryOnly: true)]))
+        let context = ModelContext(try ModelContainer(for: Schema(versionedSchema: SchemaV10.self), migrationPlan: ReservoirMigrationPlan.self, configurations: [ModelConfiguration(schema: Schema(versionedSchema: SchemaV10.self), isStoredInMemoryOnly: true)]))
         // Must be inert: no store, no reload, nothing to observe but also no crash.
         NoOpWidgetSnapshotPublisher().requestRefresh(modelContext: context, isAccountBackfillComplete: true)
     }
@@ -271,7 +271,7 @@ final class WidgetSnapshotTests: XCTestCase {
     }
 
     func testBuilderBudgetStatesAndFigures() throws {
-        let schema = Schema(versionedSchema: SchemaV9.self)
+        let schema = Schema(versionedSchema: SchemaV10.self)
         let container = try ModelContainer(
             for: schema, migrationPlan: ReservoirMigrationPlan.self,
             configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)]

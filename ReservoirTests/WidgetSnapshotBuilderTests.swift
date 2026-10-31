@@ -31,7 +31,7 @@ final class WidgetSnapshotBuilderTests: XCTestCase {
     }
 
     private func makeContext() throws -> ModelContext {
-        let schema = Schema(versionedSchema: SchemaV9.self)
+        let schema = Schema(versionedSchema: SchemaV10.self)
         let container = try ModelContainer(
             for: schema, migrationPlan: ReservoirMigrationPlan.self,
             configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)]
