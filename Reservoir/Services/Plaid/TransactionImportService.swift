@@ -155,6 +155,10 @@ final class TransactionImportService {
     /// by `initialImportItemID` so it can never starve or no-op an ordinary sync (code
     /// review finding on reservoir-xle). Backs the Refresh/Retry buttons' disabled state.
     private(set) var isImporting = false
+
+    /// Read-only diagnostic state (reservoir-kuc): see `runDiagnosticRescan()`.
+    private(set) var isRescanning = false
+    private(set) var rescanResult: String?
     /// True for the whole duration of a post-link import (`runImportAfterLink(itemID:)`),
     /// including its not-ready retry waits (reservoir-xle). Drives the Transactions tab's
     /// "Importing your transactions…" state; an ordinary foreground/pull-to-refresh import
@@ -450,6 +454,60 @@ final class TransactionImportService {
         await performImport(onlyItemID: nil, pollsUntilReady: false, trigger: trigger)
         startQueuedPostLinkDrainIfNeeded()
     }
+
+    /// Read-only diagnostic (reservoir-kuc): pulls every linked item's full `/transactions/sync`
+    /// history from a nil cursor and reports what Plaid holds versus what the app has, to tell
+    /// "the stored cursor skips data" apart from "Plaid has nothing newer". Writes nothing:
+    /// no transactions, accounts, cursor or backfill flag. The result is counts and dates only.
+    func runDiagnosticRescan() async {
+        guard !isImporting, !isRescanning else { return }
+        isRescanning = true
+        rescanResult = nil
+        defer { isRescanning = false }
+        syncLog.append("rescan start")
+        let environment = environmentStore.current
+        let localIDs = Set(fetchImportedIndex().keys)
+        var lines: [String] = []
+        for item in linkedItemStore.loadAll() {
+            let tag = Self.tag(item.itemID)
+            guard let accessToken = try? await keychain.read(for: PlaidKeychainKey.accessToken(itemID: item.itemID)) else {
+                lines.append("\(item.institutionName): token unreadable")
+                continue
+            }
+            var cursor: String?
+            var pages = 0, total = 0, pending = 0, missing = 0
+            var newest = "-", newestMissing = "-"
+            var failure: String?
+            while pages < Self.maxRescanPages {
+                do {
+                    let response = try await syncPage(accessToken: accessToken, cursor: cursor, environment: environment)
+                    pages += 1
+                    for transaction in response.added {
+                        total += 1
+                        if transaction.pending == true { pending += 1 }
+                        newest = max(newest, transaction.date)
+                        if !localIDs.contains(transaction.transaction_id) {
+                            missing += 1
+                            newestMissing = max(newestMissing, transaction.date)
+                        }
+                    }
+                    guard response.has_more, let next = response.next_cursor, !next.isEmpty else { break }
+                    cursor = next
+                } catch {
+                    failure = Self.describe(error)
+                    break
+                }
+            }
+            let summary = failure.map { "failed after \(pages) pages (\($0))" }
+                ?? "Plaid has \(total) transactions (newest \(newest), \(pending) pending). \(missing) are not in the app (newest \(newestMissing)); some may be ones you deleted."
+            syncLog.append("rescan item \(tag) pages=\(pages) total=\(total) pending=\(pending) newest=\(newest) missingLocally=\(missing) newestMissing=\(newestMissing) failure=\(failure ?? "none")")
+            lines.append("\(item.institutionName): \(summary)")
+        }
+        rescanResult = lines.isEmpty ? "No linked accounts." : lines.joined(separator: "\n")
+        syncLog.append("rescan end")
+    }
+
+    static let maxRescanPages = 100
 
     /// Post-link entry point (reservoir-xle): imports `itemID` right after a successful
     /// Link, re-polling `/transactions/sync` with backoff while Plaid reports the item
