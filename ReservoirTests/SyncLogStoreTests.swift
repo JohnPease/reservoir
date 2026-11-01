@@ -55,6 +55,25 @@ final class SyncLogStoreTests: XCTestCase {
         XCTAssertEqual(store.entries().map(\.message), ["fresh"])
     }
 
+    func test_append_createsMissingDirectory() {
+        let nested = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sync-log-dir-\(UUID().uuidString)")
+            .appendingPathComponent("sync-log.json")
+        defer { try? FileManager.default.removeItem(at: nested.deletingLastPathComponent()) }
+        let store = SyncLogStore(url: nested)
+        store.append("hello")
+        XCTAssertEqual(store.entries().map(\.message), ["hello"])
+    }
+
+    func test_lastSyncStore_roundTrips() {
+        let defaults = UserDefaults(suiteName: "last-sync-\(UUID().uuidString)")!
+        let store = LastSyncStore(defaults: defaults)
+        XCTAssertNil(store.lastSuccessfulSync)
+        let date = Date(timeIntervalSince1970: 1_000_000)
+        store.setLastSuccessfulSync(date)
+        XCTAssertEqual(LastSyncStore(defaults: defaults).lastSuccessfulSync, date)
+    }
+
     func test_formatter_oneLinePerEntry() {
         let entries = [SyncLogEntry(date: Date(timeIntervalSince1970: 0), message: "a"), SyncLogEntry(date: Date(timeIntervalSince1970: 60), message: "b")]
         let lines = SyncLogFormatter.text(entries).split(separator: "\n")
@@ -62,4 +81,9 @@ final class SyncLogStoreTests: XCTestCase {
         XCTAssertTrue(lines[0].hasSuffix(" a"))
         XCTAssertTrue(lines[1].hasSuffix(" b"))
     }
+}
+
+final class InMemoryLastSync: LastSyncStoring, @unchecked Sendable {
+    private(set) var lastSuccessfulSync: Date?
+    func setLastSuccessfulSync(_ date: Date) { lastSuccessfulSync = date }
 }

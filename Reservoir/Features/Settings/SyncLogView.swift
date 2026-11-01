@@ -39,6 +39,7 @@ struct SyncLogView: View {
                 ShareLink(item: SyncLogFormatter.text(entries)) {
                     Image(systemName: "square.and.arrow.up")
                 }
+                .disabled(entries.isEmpty)
                 .accessibilityLabel("Share sync log")
                 .accessibilityIdentifier("syncLog.share")
                 Button(role: .destructive) { confirmingClear = true } label: {

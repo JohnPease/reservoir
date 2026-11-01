@@ -195,6 +195,10 @@ final class TransactionImportService {
     /// `presentedError` is `nil`.
     private(set) var presentedErrorDetail: String?
     private(set) var lastImportSummary: ImportSummary?
+
+    /// When a run last finished with a clean pass and no error (reservoir-3oe); drives the
+    /// "Synced …" caption. Persisted so it survives relaunch.
+    private(set) var lastSuccessfulSync: Date?
     /// In-memory mirror of the `PendingTransactionMerge` rows in `modelContext` —
     /// durable persistence (see `SchemaV5`'s doc comment) is what actually survives app
     /// relaunch; this array is re-hydrated from that store at `init` and at the start of
@@ -234,6 +238,8 @@ final class TransactionImportService {
     private let backfillStore: PlaidAccountBackfillStoring
     private let logger: Logger
     private let syncLog: SyncLogStoring
+    private let lastSyncStore: LastSyncStoring
+    private let now: () -> Date
     private let sleep: @MainActor (Duration) async throws -> Void
     private let postLinkBackoff: [Duration]
     /// Items whose post-link import was requested while another post-link poll was
@@ -256,6 +262,8 @@ final class TransactionImportService {
         backfillStore: PlaidAccountBackfillStoring = PlaidAccountBackfillStore(),
         logger: Logger = Logger(subsystem: "com.reservoir.app", category: "TransactionImportService"),
         syncLog: SyncLogStoring = SyncLogStore(),
+        lastSyncStore: LastSyncStoring = LastSyncStore(),
+        now: @escaping () -> Date = { Date() },
         postLinkBackoff: [Duration] = TransactionImportService.defaultPostLinkBackoff,
         sleep: @escaping @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
@@ -271,6 +279,9 @@ final class TransactionImportService {
         self.backfillStore = backfillStore
         self.logger = logger
         self.syncLog = syncLog
+        self.lastSyncStore = lastSyncStore
+        self.now = now
+        self.lastSuccessfulSync = lastSyncStore.lastSuccessfulSync
         // OR across every linked item (reservoir-loc.2) — see the property's doc comment
         // for why a single-item `.first?.needsAttention` read would silently mask a
         // non-first item's login-required state once more than one item is linked.
@@ -507,6 +518,7 @@ final class TransactionImportService {
 
         let items = linkedItemStore.loadAll().filter { onlyItemID == nil || $0.itemID == onlyItemID }
         guard !items.isEmpty else {
+            syncLog.append("run end: no linked items")
             // No linked item yet — nothing to import, not an error surfaced to the user
             // (background operation). Still resync needsAttention before returning (code
             // review finding, reservoir-adq.6.5): an environment switch clears both the
@@ -541,14 +553,21 @@ final class TransactionImportService {
         var sawAnyAccessToken = false
         var anyItemStillNotReady = false
         var sawError = false
+        var cleanItemIDs: Set<String> = []
 
         for item in items {
             let itemID = item.itemID
             // Skip an item another run owns right now: the post-link poll's item (for an
             // ordinary run; checked at this item's turn so a poll starting mid-run is
             // respected) or any item already mid-sync. Keeps cursor writes per item serial.
-            if !pollsUntilReady, initialImportItemID == itemID { continue }
-            guard inFlightItemIDs.insert(itemID).inserted else { continue }
+            if !pollsUntilReady, initialImportItemID == itemID {
+                syncLog.append("item \(Self.tag(itemID)) skipped: initial import in progress")
+                continue
+            }
+            guard inFlightItemIDs.insert(itemID).inserted else {
+                syncLog.append("item \(Self.tag(itemID)) skipped: already syncing")
+                continue
+            }
             defer { inFlightItemIDs.remove(itemID) }
             guard let accessToken = try? await keychain.read(for: PlaidKeychainKey.accessToken(itemID: itemID)) else {
                 syncLog.append("item \(Self.tag(itemID)) skipped: access token unreadable from Keychain")
@@ -576,7 +595,7 @@ final class TransactionImportService {
 
             for pass in passes {
                 let isReplay = pass == .stampOnlyReplay
-                syncLog.append("item \(Self.tag(itemID)) pass=\(isReplay ? "replay" : "incremental") start cursor=\(isReplay || storedCursor == nil ? "none" : "stored")")
+                syncLog.append("item \(Self.tag(itemID)) pass=\(Self.passName(isReplay)) start cursor=\(isReplay || storedCursor == nil ? "none" : "stored")")
                 var requestCursor = isReplay ? nil : storedCursor
                 var paginationStartCursor = requestCursor
                 var pagesFetched = 0
@@ -594,10 +613,10 @@ final class TransactionImportService {
                     do {
                         response = try await syncPage(accessToken: accessToken, cursor: requestCursor, environment: environment)
                     } catch {
-                        syncLog.append("item \(Self.tag(itemID)) request failed: \(Self.describe(error))")
                         // Cancellation (task cancelled, or URLSession reporting `.cancelled`) is
                         // not a failure: stop this item quietly, no banner, no pending change.
                         if Self.isCancellation(error) {
+                            syncLog.append("item \(Self.tag(itemID)) cancelled")
                             lastResponseNotReady = false
                             break
                         }
@@ -610,6 +629,7 @@ final class TransactionImportService {
                            PlaidErrorClassifier.isSyncMutationDuringPagination(errorCode: apiError.errorCode),
                            mutationRestarts < Self.maxPaginationMutationRestarts {
                             mutationRestarts += 1
+                            syncLog.append("item \(Self.tag(itemID)) data changed mid-pagination, restarting (\(mutationRestarts))")
                             requestCursor = paginationStartCursor
                             passCompletedCleanly = false
                             continue
@@ -623,6 +643,7 @@ final class TransactionImportService {
                         if let apiError = error as? PlaidAPIError,
                            PlaidErrorClassifier.isSyncMutationDuringPagination(errorCode: apiError.errorCode),
                            !isReplay, pagesFetched == 0, paginationStartCursor != nil {
+                            syncLog.append("item \(Self.tag(itemID)) stored cursor rejected, retrying from the start")
                             logger.error("stored sync cursor rejected with mutation-during-pagination; resetting item cursor")
                             cursorStore.clearCursor(for: environment, itemID: itemID)
                             droppedStoredCursor = paginationStartCursor
@@ -658,6 +679,7 @@ final class TransactionImportService {
                             cursorStore.setCursor(dropped, for: environment, itemID: itemID)
                         }
                         presentedErrorDetail = String(describing: error)
+                        syncLog.append("item \(Self.tag(itemID)) request failed: \(Self.describe(error))")
                         logger.error("sync page failed pass=\(isReplay ? "replay" : "incremental", privacy: .public): \(String(describing: error), privacy: .public)")
                         sawError = true
                         failedBackfillItemIDs.insert(itemID)
@@ -688,7 +710,7 @@ final class TransactionImportService {
                     summary.modified += pageResult.summary.modified
                     summary.removed += pageResult.summary.removed
                     summary.queuedForMerge += pageResult.summary.queuedForMerge
-                    syncLog.append("item \(Self.tag(itemID)) page \(pagesFetched) pass=\(isReplay ? "replay" : "incremental") \(Self.describe(response)) handled=\(pageResult.allHandled)")
+                    syncLog.append("item \(Self.tag(itemID)) page \(pagesFetched) pass=\(Self.passName(isReplay)) \(Self.describe(response)) handled=\(pageResult.allHandled)")
                     logger.info("sync page item=\(itemID, privacy: .private) pass=\(isReplay ? "replay" : "incremental", privacy: .public) added=\(response.added.count) modified=\(response.modified.count) removed=\(response.removed.count) accounts=\(response.accounts?.count ?? -1) hasMore=\(response.has_more) allHandled=\(pageResult.allHandled)")
 
                     if pageResult.allHandled {
@@ -719,8 +741,9 @@ final class TransactionImportService {
                     }
                 }
                 if lastResponseNotReady { anyItemStillNotReady = true }
+                if passCompletedCleanly, isStillLinked(itemID) { cleanItemIDs.insert(itemID) }
 
-                syncLog.append("item \(Self.tag(itemID)) pass=\(isReplay ? "replay" : "incremental") end clean=\(passCompletedCleanly) pages=\(pagesFetched)")
+                syncLog.append("item \(Self.tag(itemID)) pass=\(Self.passName(isReplay)) end clean=\(passCompletedCleanly) pages=\(pagesFetched)")
                 logger.info("sync pass ended pass=\(isReplay ? "replay" : "incremental", privacy: .public) clean=\(passCompletedCleanly) notReady=\(lastResponseNotReady) stillLinked=\(self.isStillLinked(itemID))")
                 // Only a pass that finished (`has_more == false`, every page handled, not a
                 // not-ready empty page) for an item that is still linked counts; anything
@@ -739,6 +762,13 @@ final class TransactionImportService {
         defer {
             syncLog.append("run end added=\(summary.added) modified=\(summary.modified) removed=\(summary.removed) error=\(sawError)")
         }
+        // Only when every item in scope finished a clean pass: a skipped, unlinked, failed or
+        // not-ready item means some data is stale, so the caption must not claim a sync.
+        if !sawError, cleanItemIDs.count == items.count {
+            let finished = now()
+            lastSyncStore.setLastSuccessfulSync(finished)
+            lastSuccessfulSync = finished
+        }
         guard sawAnyAccessToken else {
             // Every linked item's keychain read failed — nothing was actually imported
             // this run. `needsAttention` was already resynced by `refreshNeedsAttention()`
@@ -755,6 +785,8 @@ final class TransactionImportService {
 
     /// Last four characters of an item ID: enough to tell items apart in the log without
     /// writing the full identifier.
+    private static func passName(_ isReplay: Bool) -> String { isReplay ? "replay" : "incremental" }
+
     private static func tag(_ itemID: String) -> String { "…" + itemID.suffix(4) }
 
     /// Counts, pending counts and the newest `added` date for one page. No names or amounts.

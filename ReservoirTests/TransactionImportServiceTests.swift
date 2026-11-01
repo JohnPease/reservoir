@@ -232,6 +232,8 @@ final class TransactionImportServiceTests: XCTestCase {
             linkedItemStore: linkedItemStore,
             linkedAccountStore: linkedAccountStore,
             backfillStore: backfillStore,
+            syncLog: InMemorySyncLog(),
+            lastSyncStore: InMemoryLastSync(),
             postLinkBackoff: postLinkBackoff,
             sleep: sleep
         )
@@ -315,7 +317,9 @@ final class TransactionImportServiceTests: XCTestCase {
             cursorStore: StubCursorStore(),
             linkedItemStore: StubLinkedItemStore(initial: LinkedItem(itemID: "item-1", institutionName: "B", linkedAt: .now)),
             linkedAccountStore: StubLinkedAccountStore(),
-            backfillStore: StubAccountBackfillStore(defaultComplete: true)
+            backfillStore: StubAccountBackfillStore(defaultComplete: true),
+            syncLog: InMemorySyncLog(),
+            lastSyncStore: InMemoryLastSync()
         )
 
         let failure = sut.removeLocalData(forItemID: "item-1", deleteTransactions: true)
@@ -421,7 +425,9 @@ final class TransactionImportServiceTests: XCTestCase {
             cursorStore: cursors,
             linkedItemStore: StubLinkedItemStore(),
             linkedAccountStore: StubLinkedAccountStore(),
-            backfillStore: StubAccountBackfillStore(defaultComplete: true)
+            backfillStore: StubAccountBackfillStore(defaultComplete: true),
+            syncLog: InMemorySyncLog(),
+            lastSyncStore: InMemoryLastSync()
         )
 
         XCTAssertNotNil(sut.removeOrphanedLocalData())
@@ -1193,7 +1199,9 @@ final class TransactionImportServiceTests: XCTestCase {
                 initial: LinkedItem(itemID: Self.defaultItemID, institutionName: "Test Bank", linkedAt: .now)
             ),
             linkedAccountStore: StubLinkedAccountStore(),
-            backfillStore: StubAccountBackfillStore(defaultComplete: true)
+            backfillStore: StubAccountBackfillStore(defaultComplete: true),
+            syncLog: InMemorySyncLog(),
+            lastSyncStore: InMemoryLastSync()
         )
 
         await sut.runImport()
@@ -1320,7 +1328,9 @@ final class TransactionImportServiceTests: XCTestCase {
                 initial: LinkedItem(itemID: Self.defaultItemID, institutionName: "Test Bank", linkedAt: .now)
             ),
             linkedAccountStore: StubLinkedAccountStore(),
-            backfillStore: StubAccountBackfillStore(defaultComplete: true)
+            backfillStore: StubAccountBackfillStore(defaultComplete: true),
+            syncLog: InMemorySyncLog(),
+            lastSyncStore: InMemoryLastSync()
         )
 
         // Simulate an already-in-flight import (e.g. pull-to-refresh) blocked on the network.
