@@ -537,6 +537,13 @@ appears anywhere in the app. It owns two responsibilities:
   Plaid's update status, or the error code. It never records merchants, amounts,
   full item IDs or tokens.
 
+  **Re-scan (reservoir-kuc)**: Settings > Re-scan Plaid (read-only) pulls each
+  item's full history from a nil cursor (`runDiagnosticRescan()`) and reports how
+  many transactions Plaid holds, the newest date, and how many are missing from the
+  app. It writes no transactions, accounts, cursor or backfill flag, and the result
+  is counts and dates only. Use it to tell a stale cursor from data Plaid has not
+  received yet.
+
   **Data freshness (reservoir-3oe)**: Chase data reaches Plaid about a day late,
   so Today and Transactions show a caption like "Synced 3:12 PM · latest imported
   charge yesterday" (`DataFreshnessCalculator`, `DataFreshnessLabel`). The sync

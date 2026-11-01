@@ -196,8 +196,27 @@ struct SettingsView: View {
                 Section {
                     NavigationLink("Sync log") { SyncLogView() }
                         .accessibilityIdentifier("settings.syncLog")
+                    Button {
+                        Task { await importService?.runDiagnosticRescan() }
+                    } label: {
+                        HStack {
+                            Text("Re-scan Plaid (read-only)")
+                            if importService?.isRescanning == true {
+                                Spacer()
+                                ProgressView()
+                            }
+                        }
+                    }
+                    .disabled(importService == nil || importService?.isRescanning == true || importService?.isSyncActive == true)
+                    .accessibilityIdentifier("settings.rescan")
+                    if let result = importService?.rescanResult {
+                        Text(result)
+                            .font(.footnote)
+                            .foregroundStyle(Color("ReservoirTextSecondary"))
+                            .accessibilityIdentifier("settings.rescanResult")
+                    }
                 } footer: {
-                    Text("When each sync ran and what Plaid returned. Counts only, no merchants or amounts.")
+                    Text("The sync log shows when each sync ran and what Plaid returned. Re-scan asks Plaid for your full history and compares it with the app without changing anything. Counts only, no merchants or amounts.")
                         .foregroundStyle(Color("ReservoirTextSecondary"))
                 }
 
