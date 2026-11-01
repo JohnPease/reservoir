@@ -11,7 +11,7 @@ final class AccountBackfillImportTests: XCTestCase {
     private static let itemID = "item-1"
 
     override func setUpWithError() throws {
-        let schema = Schema(versionedSchema: SchemaV9.self)
+        let schema = Schema(versionedSchema: SchemaV10.self)
         container = try ModelContainer(
             for: schema, migrationPlan: ReservoirMigrationPlan.self,
             configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)]
@@ -179,6 +179,128 @@ final class AccountBackfillImportTests: XCTestCase {
         XCTAssertEqual(PlaidTransactionMapper.map(dto)?.accountID, "acc-9")
         let bare = try JSONDecoder().decode(PlaidTransaction.self, from: Data(tx("t2", account: nil).utf8))
         XCTAssertNil(PlaidTransactionMapper.map(bare)?.accountID)
+    }
+
+    // MARK: - Pending transactions (reservoir-z4p)
+
+    private func pendingTx(_ id: String, amount: Double = 1.19, pending: Bool = true, replaces pendingID: String? = nil) -> String {
+        let replaces = pendingID.map { #","pending_transaction_id":"\#($0)""# } ?? ""
+        return #"{"transaction_id":"\#(id)","amount":\#(amount),"date":"\#(dateString)","merchant_name":"Cafe","name":"Cafe","account_id":"acc-1","pending":\#(pending)\#(replaces)}"#
+    }
+
+    private func removedEntry(_ id: String) -> String { #"{"transaction_id":"\#(id)","account_id":"acc-1"}"# }
+
+    func test_pending_addedRowIsMarkedPending() async throws {
+        ScriptedProtocol.script = [page(added: [pendingTx("p1"), tx("t2")])]
+        let h = makeHarness(storedCursor: "c0", backfillDone: true)
+        await h.sut.runImport()
+        let rows = try allTransactions()
+        XCTAssertEqual(rows.first { $0.plaidTransactionID == "p1" }?.isPending, true)
+        XCTAssertEqual(rows.first { $0.plaidTransactionID == "t2" }?.isPending, false)
+    }
+
+    func test_pending_postedVersionUpdatesRowInPlaceKeepingEdits() async throws {
+        ScriptedProtocol.script = [page(added: [pendingTx("p1")], next: "c1")]
+        let h = makeHarness(storedCursor: "c0", backfillDone: true)
+        await h.sut.runImport()
+        let row = try XCTUnwrap(try allTransactions().first)
+        row.type = .fixed
+        row.isManualOverride = true
+        let goal = SavingsGoal(targetAmount: 100, targetDate: .now.addingTimeInterval(86400 * 30), startDate: .now, startingBalance: 0, dailyBase: 5)
+        context.insert(goal)
+        row.savingsGoal = goal
+        try context.save()
+
+        ScriptedProtocol.reset()
+        ScriptedProtocol.script = [page(added: [pendingTx("t9", amount: 1.25, pending: false, replaces: "p1")], removed: [removedEntry("p1")], next: "c2")]
+        await h.sut.runImport()
+
+        let rows = try allTransactions()
+        XCTAssertEqual(rows.count, 1, "the posted version must update the pending row, not add a second one")
+        let swapped = try XCTUnwrap(rows.first)
+        XCTAssertEqual(swapped.plaidTransactionID, "t9")
+        XCTAssertEqual(swapped.amount, 1.25)
+        XCTAssertFalse(swapped.isPending)
+        XCTAssertEqual(swapped.type, .fixed)
+        XCTAssertTrue(swapped.isManualOverride)
+        XCTAssertNotNil(swapped.savingsGoal)
+    }
+
+    func test_pending_postedVersionKeepsMergedFromManualState() async throws {
+        ScriptedProtocol.script = [page(added: [pendingTx("p1")], next: "c1")]
+        let h = makeHarness(storedCursor: "c0", backfillDone: true)
+        await h.sut.runImport()
+        let row = try XCTUnwrap(try allTransactions().first)
+        row.wasMergedFromManual = true
+        try context.save()
+
+        ScriptedProtocol.reset()
+        ScriptedProtocol.script = [page(added: [pendingTx("t9", pending: false, replaces: "p1")], removed: [removedEntry("p1")], next: "c2")]
+        await h.sut.runImport()
+
+        let rows = try allTransactions()
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.entryMethod, .imported, "a removed pending ID must not revert the swapped row to manual")
+        XCTAssertEqual(rows.first?.wasMergedFromManual, true)
+    }
+
+    func test_pending_unmatchedPendingTransactionIDInsertsNewRow() async throws {
+        ScriptedProtocol.script = [page(added: [pendingTx("t9", pending: false, replaces: "unknown")])]
+        let h = makeHarness(storedCursor: "c0", backfillDone: true)
+        await h.sut.runImport()
+        let rows = try allTransactions()
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.plaidTransactionID, "t9")
+        XCTAssertEqual(rows.first?.isPending, false)
+    }
+
+    func test_pending_removedWithoutPostDeletesRow() async throws {
+        ScriptedProtocol.script = [page(added: [pendingTx("p1")], next: "c1")]
+        let h = makeHarness(storedCursor: "c0", backfillDone: true)
+        await h.sut.runImport()
+        XCTAssertEqual(try allTransactions().count, 1)
+
+        ScriptedProtocol.reset()
+        ScriptedProtocol.script = [page(removed: [removedEntry("p1")], next: "c2")]
+        await h.sut.runImport()
+        XCTAssertTrue(try allTransactions().isEmpty, "an authorization hold that vanishes must disappear")
+    }
+
+    func test_pending_modifiedWhilePendingUpdatesAmountAndStaysPending() async throws {
+        ScriptedProtocol.script = [page(added: [pendingTx("p1", amount: 10)], next: "c1")]
+        let h = makeHarness(storedCursor: "c0", backfillDone: true)
+        await h.sut.runImport()
+
+        ScriptedProtocol.reset()
+        ScriptedProtocol.script = [page(modified: [pendingTx("p1", amount: 12)], next: "c2")]
+        await h.sut.runImport()
+        let row = try XCTUnwrap(try allTransactions().first)
+        XCTAssertEqual(row.amount, 12)
+        XCTAssertTrue(row.isPending)
+    }
+
+    func test_pending_replayRefreshesFlagOnRowsImportedBeforeTheFlagExisted() async throws {
+        let h = makeHarness(storedCursor: "c0", backfillDone: false)
+        context.insert(SpendTransaction(amount: 1.19, date: matchingDate, merchantName: "Cafe", type: .variable, entryMethod: .imported, plaidTransactionID: "p1"))
+        try context.save()
+        ScriptedProtocol.script = [page(next: "c1"), page(added: [pendingTx("p1")], next: "c2")]
+        await h.sut.runImport()
+        XCTAssertEqual(try allTransactions().first?.isPending, true)
+    }
+
+    func test_pending_replayedPostedPageDoesNotDuplicate() async throws {
+        ScriptedProtocol.script = [page(added: [pendingTx("p1")], next: "c1")]
+        let h = makeHarness(storedCursor: "c0", backfillDone: true)
+        await h.sut.runImport()
+        let posted = page(added: [pendingTx("t9", pending: false, replaces: "p1")], removed: [removedEntry("p1")], next: "c2")
+        ScriptedProtocol.reset()
+        ScriptedProtocol.script = [posted]
+        await h.sut.runImport()
+        // Replay the same page (pagination restart): the row now holds t9, so it is skipped.
+        ScriptedProtocol.reset()
+        ScriptedProtocol.script = [posted]
+        await h.sut.runImport()
+        XCTAssertEqual(try allTransactions().count, 1)
     }
 
     // MARK: - Sync log (reservoir-bz5)
@@ -956,7 +1078,7 @@ final class AccountBackfillImportTests: XCTestCase {
     /// `save()` the importer attempts throws. Returns the read-only context and the file URL
     /// (to read back what is really on disk).
     private func makeReadOnlyContext(seed: (ModelContext) throws -> Void) throws -> (context: ModelContext, url: URL) {
-        let schema = Schema(versionedSchema: SchemaV9.self)
+        let schema = Schema(versionedSchema: SchemaV10.self)
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("AccountBackfillImportTests-\(UUID().uuidString)")
             .appendingPathExtension("store")
@@ -977,7 +1099,7 @@ final class AccountBackfillImportTests: XCTestCase {
     }
 
     private func onDisk<T: PersistentModel>(_ type: T.Type, at url: URL) throws -> [T] {
-        let schema = Schema(versionedSchema: SchemaV9.self)
+        let schema = Schema(versionedSchema: SchemaV10.self)
         let container = try ModelContainer(
             for: schema, migrationPlan: ReservoirMigrationPlan.self,
             configurations: [ModelConfiguration(schema: schema, url: url)]
