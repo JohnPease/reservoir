@@ -323,7 +323,8 @@ Accessibility ids: `budget.pastMonths.row` (on the card), `.sheet`, `.done`, `.s
 `AppTab.goals`/`GoalsView`/`goals.*` accessibility ids unchanged). It shows a
 "Monthly budget" section (budget card with Edit/Delete via `BudgetFormView`, or
 a quiet "Set a monthly budget" row) above "Savings goals" (the existing goals
-content). On Today, the budget hero renders above the savings hero (titled
+content). On Today, the budget hero (titled "Daily budget"; the Plans section keeps
+"Monthly budget") renders above the savings hero (titled
 "Savings limit" only when both show) using the shared
 `Shared/HeroSection.swift`; a budget with no goal shows no goal prompt, and
 the no-goal-no-budget empty state adds an "Or set a monthly budget instead."
