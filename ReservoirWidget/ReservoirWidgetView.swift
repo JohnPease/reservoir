@@ -300,6 +300,16 @@ private struct MonthProgressView: View {
                 .minimumScaleFactor(0.8)
                 .padding(.top, 4)
                 .privacySensitive()
+            if let top = month.topCategory {
+                Text("Top: \(top.name) \(CurrencyFormatting.usd(top.amount))")
+                    .font(.system(size: 12))
+                    .monospacedDigit()
+                    .foregroundStyle(Color("ReservoirTextSecondary"))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .padding(.top, 2)
+                    .privacySensitive()
+            }
         }
     }
 }

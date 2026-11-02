@@ -1,12 +1,6 @@
 import SwiftData
 import SwiftUI
 
-extension CategorySpendCalculator.Entry {
-    init(_ transaction: SpendTransaction) {
-        self.init(date: transaction.date, amount: transaction.amount, category: transaction.category)
-    }
-}
-
 /// Read-only "Spending by category" screen (reservoir-27a, reservoir-hnt): one month at a
 /// time, using Plaid's categories as imported, each row compared with the month before.
 /// Presentation only; the grouping is `CategorySpendCalculator`.
@@ -39,6 +33,17 @@ struct CategoryBreakdownView: View {
                         .accessibilityLabel("Next month")
                 }
                 .buttonStyle(.borderless)
+            }
+            let callouts = CategorySpendCalculator.callouts(
+                month: month, entries: entries, now: todayClock.referenceDate, calendar: calendar
+            )
+            if !callouts.isEmpty {
+                Section("Higher than usual") {
+                    ForEach(callouts, id: \.category) { callout in
+                        CalloutRowView(callout: callout)
+                    }
+                }
+                .accessibilityIdentifier("categories.callouts")
             }
             if summary.rows.isEmpty {
                 Section { Text("No spending this month").foregroundStyle(.secondary) }
@@ -114,5 +119,21 @@ private struct CategoryRowView: View {
             )
             .foregroundStyle(change > 0 ? Color("ReservoirDeficit") : Color("ReservoirTextSecondary"))
         }
+    }
+}
+
+/// One "higher than usual" line (reservoir-qj2): the headline and the dollar comparison.
+struct CalloutRowView: View {
+    let callout: CategorySpendCalculator.Callout
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Label(callout.text, systemImage: "exclamationmark.circle")
+                .foregroundStyle(Color("ReservoirDeficit"))
+            Text(callout.detailText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
     }
 }

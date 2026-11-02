@@ -561,7 +561,18 @@ appears anywhere in the app. It owns two responsibilities:
   shows its change against the month before (reservoir-hnt); for the month in progress
   that is the same days of last month, not all of it. Tapping a row opens
   `CategoryTrendView`, six monthly bars for that category plus the earlier-months
-  average. Read-only: there is no way to change a category yet.
+  average, a "See [month] charges" link to that month's charges
+  (`CategoryChargesView`), and (reservoir-e1y) a "Within [category]" split by Plaid's
+  detailed label (Restaurant, Coffee, Groceries...), each row linking to its charges.
+  Rows on Today and Transactions show the category after the time, and the
+  Transactions tab has a category menu (reservoir-473) that appears once any charge is
+  categorized. "Higher than usual" callouts (reservoir-qj2, `CategorySpendCalculator.callouts`)
+  flag a category at least 1.5x and $25 above its average for up to five earlier months
+  (at least two, none before the first month with data, usual at least $20); they show
+  on the breakdown, the category's trend screen and, for the top one, Today's card. The
+  medium widget's month panel adds a "Top: [category] $X" line (reservoir-x19, optional
+  `topCategory` in `WidgetSnapshot.MonthProgress`). Read-only: there is no way to
+  change a category yet.
 
   **Re-scan (reservoir-kuc)**: Settings > Re-scan Plaid (read-only) pulls each
   item's full history from a nil cursor (`runDiagnosticRescan()`) and reports how
