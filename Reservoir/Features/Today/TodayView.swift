@@ -175,6 +175,8 @@ struct TodayView: View {
                         SpentTodayOnlyCard(amount: spentTodayWithoutActiveGoal)
                     }
 
+                    CategorySummaryCard(transactions: transactions, referenceDate: todayClock.referenceDate)
+
                     RecentTransactionsSection(transactions: recentTransactions)
 
                     Button {

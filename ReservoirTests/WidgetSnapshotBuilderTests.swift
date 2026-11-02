@@ -31,7 +31,7 @@ final class WidgetSnapshotBuilderTests: XCTestCase {
     }
 
     private func makeContext() throws -> ModelContext {
-        let schema = Schema(versionedSchema: SchemaV10.self)
+        let schema = Schema(versionedSchema: SchemaV11.self)
         let container = try ModelContainer(
             for: schema, migrationPlan: ReservoirMigrationPlan.self,
             configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)]
@@ -244,5 +244,35 @@ final class WidgetSnapshotBuilderTests: XCTestCase {
         let json = String(decoding: data, as: UTF8.self)
         XCTAssertFalse(json.contains("Secret Merchant"))
         XCTAssertFalse(json.contains("secret-acct"))
+    }
+
+    // MARK: - Top category (reservoir-x19)
+
+    func testTopCategoryIsTheMonthsBiggestCategorizedSpend() {
+        let now = date(10, 20)
+        let rows = [
+            SpendTransaction(amount: 40, date: date(10, 2), merchantName: "A", type: .variable, entryMethod: .imported, category: "FOOD_AND_DRINK"),
+            SpendTransaction(amount: 25, date: date(10, 3), merchantName: "B", type: .variable, entryMethod: .imported, category: "FOOD_AND_DRINK"),
+            SpendTransaction(amount: 60, date: date(10, 4), merchantName: "C", type: .variable, entryMethod: .imported, category: "TRAVEL"),
+            SpendTransaction(amount: 500, date: date(10, 5), merchantName: "D", type: .variable, entryMethod: .manual),
+            SpendTransaction(amount: 900, date: date(9, 5), merchantName: "E", type: .variable, entryMethod: .imported, category: "TRAVEL"),
+        ]
+        let top = WidgetSnapshotBuilder.topCategory(transactions: rows, referenceDate: now, calendar: calendar)
+        XCTAssertEqual(top?.name, "Food and drink")
+        XCTAssertEqual(top?.amount, 65)
+    }
+
+    func testTopCategoryIsNilWhenNothingIsCategorized() {
+        let rows = [SpendTransaction(amount: 5, date: date(10, 2), merchantName: "A", type: .variable, entryMethod: .manual)]
+        XCTAssertNil(WidgetSnapshotBuilder.topCategory(transactions: rows, referenceDate: date(10, 20), calendar: calendar))
+    }
+
+    func testSnapshotWithoutTopCategoryStillDecodes() throws {
+        let month = WidgetSnapshot.MonthProgress(monthName: "October", sentence: "x", spent: 1, monthlyAmount: 2)
+        var data = try JSONEncoder().encode(month)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        json.removeValue(forKey: "topCategory")
+        data = try JSONSerialization.data(withJSONObject: json)
+        XCTAssertNil(try JSONDecoder().decode(WidgetSnapshot.MonthProgress.self, from: data).topCategory)
     }
 }

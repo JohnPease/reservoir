@@ -323,7 +323,8 @@ Accessibility ids: `budget.pastMonths.row` (on the card), `.sheet`, `.done`, `.s
 `AppTab.goals`/`GoalsView`/`goals.*` accessibility ids unchanged). It shows a
 "Monthly budget" section (budget card with Edit/Delete via `BudgetFormView`, or
 a quiet "Set a monthly budget" row) above "Savings goals" (the existing goals
-content). On Today, the budget hero renders above the savings hero (titled
+content). On Today, the budget hero (titled "Daily budget"; the Plans section keeps
+"Monthly budget") renders above the savings hero (titled
 "Savings limit" only when both show) using the shared
 `Shared/HeroSection.swift`; a budget with no goal shows no goal prompt, and
 the no-goal-no-budget empty state adds an "Or set a monthly budget instead."
@@ -547,6 +548,31 @@ appears anywhere in the app. It owns two responsibilities:
   page than the posted `added`, the edits on that row are lost. The account-backfill
   flag key was bumped to `v2` so every item replays once and refreshes `isPending` on
   rows imported before the field existed.
+
+  **Categories (reservoir-27a)**: `SchemaV11` adds `SpendTransaction.category` and
+  `categoryDetailed` (lightweight migration), Plaid's `personal_finance_category`
+  primary and detailed labels stored raw (for example `FOOD_AND_DRINK`). New and
+  modified imports fill them in. The account-backfill flag key was bumped to `v3` so
+  every item replays once and fills them on existing rows. A card above Recent
+  transactions on Today (`CategorySummaryCard`: the month's top category and total)
+  opens "Spending by category" (`CategoryBreakdownView`, grouping in
+  `CategorySpendCalculator`): one month at a time, largest first, with an
+  "Uncategorized" row for manual entries and anything Plaid did not label. Each row
+  shows its change against the month before (reservoir-hnt); for the month in progress
+  that is the same days of last month, not all of it. Tapping a row opens
+  `CategoryTrendView`, six monthly bars for that category plus the earlier-months
+  average, a "See [month] charges" link to that month's charges
+  (`CategoryChargesView`), and (reservoir-e1y) a "Within [category]" split by Plaid's
+  detailed label (Restaurant, Coffee, Groceries...), each row linking to its charges.
+  Rows on Today and Transactions show the category after the time, and the
+  Transactions tab has a category menu (reservoir-473) that appears once any charge is
+  categorized. "Higher than usual" callouts (reservoir-qj2, `CategorySpendCalculator.callouts`)
+  flag a category at least 1.5x and $25 above its average for up to five earlier months
+  (at least two, none before the first month with data, usual at least $20); they show
+  on the breakdown, the category's trend screen and, for the top one, Today's card. The
+  medium widget's month panel adds a "Top: [category] $X" line (reservoir-x19, optional
+  `topCategory` in `WidgetSnapshot.MonthProgress`). Read-only: there is no way to
+  change a category yet.
 
   **Re-scan (reservoir-kuc)**: Settings > Re-scan Plaid (read-only) pulls each
   item's full history from a nil cursor (`runDiagnosticRescan()`) and reports how

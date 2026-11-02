@@ -1,11 +1,11 @@
 import SwiftUI
 
-/// Today's monthly-budget hero (reservoir-j8t): the same hero + stats as the savings
+/// Today's budget hero, titled "Daily budget" on the Home screen (reservoir-j8t): the same hero + stats as the savings
 /// card when the budget is active, or a status card ("Syncing account data..." /
 /// "Choose accounts") when it can't show numbers yet. Which state applies is decided by
 /// `BudgetCalculator.cardState`, not here.
 struct BudgetHeroCardView: View {
-    static let title = "Monthly budget"
+    static let title = "Daily budget"
 
     let state: BudgetCalculator.CardState
     let summary: TodayScreenCalculator.Summary?

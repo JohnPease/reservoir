@@ -14,10 +14,14 @@ struct MappedPlaidTransaction: Equatable {
     let isPending: Bool
     /// The pending transaction this posted one replaces, if Plaid says so.
     let pendingTransactionID: String?
+    /// Plaid's primary and detailed category labels (reservoir-27a); nil when Plaid sent none.
+    let category: String?
+    let categoryDetailed: String?
 
     init(
         plaidTransactionID: String, amount: Decimal, date: Date, merchantName: String, accountID: String? = nil,
-        isPending: Bool = false, pendingTransactionID: String? = nil
+        isPending: Bool = false, pendingTransactionID: String? = nil,
+        category: String? = nil, categoryDetailed: String? = nil
     ) {
         self.plaidTransactionID = plaidTransactionID
         self.amount = amount
@@ -26,6 +30,8 @@ struct MappedPlaidTransaction: Equatable {
         self.accountID = accountID
         self.isPending = isPending
         self.pendingTransactionID = pendingTransactionID
+        self.category = category
+        self.categoryDetailed = categoryDetailed
     }
 }
 
@@ -68,8 +74,15 @@ enum PlaidTransactionMapper {
             merchantName: resolvedName,
             accountID: transaction.account_id,
             isPending: transaction.pending == true,
-            pendingTransactionID: transaction.pending_transaction_id
+            pendingTransactionID: transaction.pending_transaction_id,
+            category: Self.nonEmpty(transaction.personal_finance_category?.primary),
+            categoryDetailed: Self.nonEmpty(transaction.personal_finance_category?.detailed)
         )
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
+        return trimmed
     }
 
     /// Parses Plaid's `yyyy-MM-dd` string into `calendar`'s local midnight for that

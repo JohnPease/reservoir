@@ -42,6 +42,65 @@ enum TransactionsScreenCalculator {
         }
     }
 
+    /// The category menu's selection (reservoir-473): every charge, one Plaid primary category,
+    /// or charges with no category (manual entries and anything Plaid did not label).
+    enum CategoryFilter: Hashable {
+        case all
+        case category(String)
+        case uncategorized
+
+        var title: String {
+            switch self {
+            case .all: return "All categories"
+            case .category(let category): return CategorySpendCalculator.displayName(for: category)
+            case .uncategorized: return CategorySpendCalculator.uncategorizedName
+            }
+        }
+    }
+
+    static func filtered(_ transactions: [SpendTransaction], by filter: Filter, category: CategoryFilter) -> [SpendTransaction] {
+        let byType = filtered(transactions, by: filter)
+        switch category {
+        case .all: return byType
+        case .category(let name): return byType.filter { $0.category == name }
+        case .uncategorized: return byType.filter { $0.category == nil }
+        }
+    }
+
+    /// The choices for the category menu: only categories that exist in `transactions`, by name,
+    /// with "Uncategorized" last and only when some charge has none. Empty when nothing is
+    /// categorized, so manual-only users never see the menu.
+    static func categoryChoices(_ transactions: [SpendTransaction]) -> [CategoryFilter] {
+        let names = Set(transactions.compactMap(\.category))
+        guard !names.isEmpty else { return [] }
+        var choices: [CategoryFilter] = [.all]
+        choices += names
+            .sorted { CategorySpendCalculator.displayName(for: $0) < CategorySpendCalculator.displayName(for: $1) }
+            .map(CategoryFilter.category)
+        if transactions.contains(where: { $0.category == nil }) { choices.append(.uncategorized) }
+        return choices
+    }
+
+    /// The charges behind one category row (reservoir-473): `category` (nil = uncategorized),
+    /// optionally narrowed to one detailed label, inside `interval`; newest first.
+    static func charges(
+        _ transactions: [SpendTransaction],
+        category: String?,
+        detailed: String?? = nil,
+        in interval: DateInterval
+    ) -> [SpendTransaction] {
+        transactions
+            .filter { transaction in
+                guard transaction.category == category, transaction.date >= interval.start, transaction.date < interval.end
+                else { return false }
+                if let detailed { return transaction.categoryDetailed == detailed }
+                return true
+            }
+            .sorted {
+                $0.date != $1.date ? $0.date > $1.date : $0.createdAt > $1.createdAt
+            }
+    }
+
     /// One day's worth of transactions for the day-grouped list. `day` is the calendar
     /// start-of-day, used both as the section identity and as `sectionTitle`'s input.
     struct DaySection: Identifiable, Equatable {

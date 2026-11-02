@@ -25,6 +25,15 @@ struct PlaidTransaction: Decodable {
     /// For a posted transaction that replaces a pending one: the pending transaction's ID
     /// (reservoir-z4p). The importer updates that row in place instead of deleting and re-adding.
     var pending_transaction_id: String? = nil
+    /// Plaid's `personal_finance_category` (reservoir-27a); absent on older fixtures and for
+    /// transactions Plaid hasn't categorized.
+    var personal_finance_category: PlaidPersonalFinanceCategory? = nil
+}
+
+/// Plaid's `personal_finance_category` object. Only the primary and detailed labels are kept.
+struct PlaidPersonalFinanceCategory: Decodable, Equatable {
+    var primary: String? = nil
+    var detailed: String? = nil
 }
 
 /// One entry of `/transactions/sync`'s top-level `accounts` array (reservoir-j8t). Each
@@ -929,7 +938,7 @@ final class TransactionImportService {
         }
 
         var rowStamps: [(row: SpendTransaction, accountID: String)] = []
-        var pendingFixes: [(row: SpendTransaction, isPending: Bool)] = []
+        var pendingFixes: [RowRefresh] = []
         var queuedStamps: [(plaidTransactionID: String, accountID: String)] = []
 
         for raw in response.added {
@@ -948,8 +957,10 @@ final class TransactionImportService {
                 }
                 // Rows imported before `isPending` existed read as not pending; the one-time
                 // replay (and any redelivered page) refreshes the flag from Plaid (reservoir-z4p).
-                if existing.isPending != mapped.isPending {
-                    pendingFixes.append((existing, mapped.isPending))
+                // Same for the Plaid category (reservoir-27a).
+                if existing.isPending != mapped.isPending
+                    || existing.category != mapped.category || existing.categoryDetailed != mapped.categoryDetailed {
+                    pendingFixes.append(RowRefresh(row: existing, mapped: mapped))
                 }
                 continue
             }
@@ -1162,9 +1173,9 @@ final class TransactionImportService {
     private func applyAccountStamps(
         _ rowStamps: [(row: SpendTransaction, accountID: String)],
         _ queuedStamps: [(plaidTransactionID: String, accountID: String)],
-        _ pendingFixes: [(row: SpendTransaction, isPending: Bool)] = []
+        _ pendingFixes: [RowRefresh] = []
     ) -> Bool {
-        let originalPending = pendingFixes.map { $0.row.isPending }
+        let originalRefresh = pendingFixes.map { RowRefresh.Original($0.row) }
         let records: [(record: PendingTransactionMerge, accountID: String)] = queuedStamps.compactMap { stamp in
             fetchPendingMerge(plaidTransactionID: stamp.plaidTransactionID).map { ($0, stamp.accountID) }
         }
@@ -1172,12 +1183,12 @@ final class TransactionImportService {
             modelContext: modelContext,
             mutate: {
                 for stamp in rowStamps where stamp.row.plaidAccountID == nil { stamp.row.plaidAccountID = stamp.accountID }
-                for fix in pendingFixes { fix.row.isPending = fix.isPending }
+                for fix in pendingFixes { fix.apply() }
                 for stamp in records where stamp.record.plaidAccountID == nil { stamp.record.plaidAccountID = stamp.accountID }
             },
             rollback: {
                 for stamp in rowStamps where stamp.row.plaidAccountID == stamp.accountID { stamp.row.plaidAccountID = nil }
-                for (fix, original) in zip(pendingFixes, originalPending) { fix.row.isPending = original }
+                for (fix, original) in zip(pendingFixes, originalRefresh) { original.restore(to: fix.row) }
                 for stamp in records where stamp.record.plaidAccountID == stamp.accountID { stamp.record.plaidAccountID = nil }
             },
             logger: logger
@@ -1303,6 +1314,8 @@ final class TransactionImportService {
         let plaidAccountID: String?
         let wasMergedFromManual: Bool
         let isPending: Bool
+        let category: String?
+        let categoryDetailed: String?
 
         init(_ transaction: SpendTransaction) {
             amount = transaction.amount
@@ -1314,6 +1327,8 @@ final class TransactionImportService {
             plaidAccountID = transaction.plaidAccountID
             wasMergedFromManual = transaction.wasMergedFromManual
             isPending = transaction.isPending
+            category = transaction.category
+            categoryDetailed = transaction.categoryDetailed
         }
 
         func restore(to transaction: SpendTransaction) {
@@ -1326,6 +1341,48 @@ final class TransactionImportService {
             transaction.plaidAccountID = plaidAccountID
             transaction.wasMergedFromManual = wasMergedFromManual
             transaction.isPending = isPending
+            transaction.category = category
+            transaction.categoryDetailed = categoryDetailed
+        }
+    }
+
+    /// A replayed row's refresh from Plaid: the fields Plaid owns that older rows lack
+    /// (`isPending`, reservoir-z4p; the category pair, reservoir-27a).
+    private struct RowRefresh {
+        let row: SpendTransaction
+        let isPending: Bool
+        let category: String?
+        let categoryDetailed: String?
+
+        init(row: SpendTransaction, mapped: MappedPlaidTransaction) {
+            self.row = row
+            isPending = mapped.isPending
+            category = mapped.category
+            categoryDetailed = mapped.categoryDetailed
+        }
+
+        func apply() {
+            row.isPending = isPending
+            row.category = category
+            row.categoryDetailed = categoryDetailed
+        }
+
+        struct Original {
+            let isPending: Bool
+            let category: String?
+            let categoryDetailed: String?
+
+            init(_ row: SpendTransaction) {
+                isPending = row.isPending
+                category = row.category
+                categoryDetailed = row.categoryDetailed
+            }
+
+            func restore(to row: SpendTransaction) {
+                row.isPending = isPending
+                row.category = category
+                row.categoryDetailed = categoryDetailed
+            }
         }
     }
 
@@ -1344,6 +1401,8 @@ final class TransactionImportService {
         existing.date = mapped.date
         existing.merchantName = mapped.merchantName
         existing.isPending = mapped.isPending
+        existing.category = mapped.category
+        existing.categoryDetailed = mapped.categoryDetailed
         // Stamp (or refresh) the account when Plaid supplies one (reservoir-j8t).
         if let accountID = mapped.accountID { existing.plaidAccountID = accountID }
         if !existing.isManualOverride {
@@ -1456,7 +1515,9 @@ final class TransactionImportService {
             plaidAccountID: sourceAccountID ?? mapped.accountID,
             isManualOverride: false,
             savingsGoal: goal,
-            isPending: mapped.isPending
+            isPending: mapped.isPending,
+            category: mapped.category,
+            categoryDetailed: mapped.categoryDetailed
         )
     }
 

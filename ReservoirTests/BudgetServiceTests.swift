@@ -7,7 +7,7 @@ final class BudgetServiceTests: XCTestCase {
     private var context: ModelContext!
 
     override func setUpWithError() throws {
-        let schema = Schema(versionedSchema: SchemaV10.self)
+        let schema = Schema(versionedSchema: SchemaV11.self)
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         container = try ModelContainer(for: schema, migrationPlan: ReservoirMigrationPlan.self, configurations: [configuration])
         context = ModelContext(container)
@@ -62,7 +62,7 @@ final class BudgetServiceTests: XCTestCase {
 
     /// A store seeded with one budget, then reopened read-only so every `save()` throws.
     private func makeReadOnlyContext(seedBudget: Bool) throws -> (context: ModelContext, storeURL: URL) {
-        let schema = Schema(versionedSchema: SchemaV10.self)
+        let schema = Schema(versionedSchema: SchemaV11.self)
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("BudgetServiceTests-\(UUID().uuidString)")
             .appendingPathExtension("store")
@@ -86,7 +86,7 @@ final class BudgetServiceTests: XCTestCase {
     /// (a rolled-back insert/delete pair inside the failing read-only context is not a
     /// reliable signal on its own; see `TransactionImportServiceTests`' same approach).
     private func budgetsOnDisk(_ storeURL: URL) throws -> [Budget] {
-        let schema = Schema(versionedSchema: SchemaV10.self)
+        let schema = Schema(versionedSchema: SchemaV11.self)
         let container = try ModelContainer(
             for: schema, migrationPlan: ReservoirMigrationPlan.self,
             configurations: [ModelConfiguration(schema: schema, url: storeURL)]
