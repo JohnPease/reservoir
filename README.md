@@ -552,7 +552,8 @@ appears anywhere in the app. It owns two responsibilities:
   `categoryDetailed` (lightweight migration), Plaid's `personal_finance_category`
   primary and detailed labels stored raw (for example `FOOD_AND_DRINK`). New and
   modified imports fill them in. The account-backfill flag key was bumped to `v3` so
-  every item replays once and fills them on existing rows. The chart icon on Today
+  every item replays once and fills them on existing rows. A card above Recent
+  transactions on Today (`CategorySummaryCard`: the month's top category and total)
   opens "Spending by category" (`CategoryBreakdownView`, grouping in
   `CategorySpendCalculator`): one month at a time, largest first, with an
   "Uncategorized" row for manual entries and anything Plaid did not label. Each row
