@@ -11,7 +11,7 @@ final class AccountBackfillImportTests: XCTestCase {
     private static let itemID = "item-1"
 
     override func setUpWithError() throws {
-        let schema = Schema(versionedSchema: SchemaV10.self)
+        let schema = Schema(versionedSchema: SchemaV11.self)
         container = try ModelContainer(
             for: schema, migrationPlan: ReservoirMigrationPlan.self,
             configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)]
@@ -300,6 +300,59 @@ final class AccountBackfillImportTests: XCTestCase {
         ScriptedProtocol.reset()
         ScriptedProtocol.script = [posted]
         await h.sut.runImport()
+        XCTAssertEqual(try allTransactions().count, 1)
+    }
+
+    // MARK: - Categories (reservoir-27a)
+
+    private func categorizedTx(_ id: String, primary: String? = "FOOD_AND_DRINK", detailed: String? = "FOOD_AND_DRINK_RESTAURANT") -> String {
+        let fields = [primary.map { #""primary":"\#($0)""# }, detailed.map { #""detailed":"\#($0)""# }].compactMap { $0 }.joined(separator: ",")
+        return #"{"transaction_id":"\#(id)","amount":9.5,"date":"\#(dateString)","merchant_name":"Cafe","name":"Cafe","account_id":"acc-1","pending":false,"personal_finance_category":{\#(fields)}}"#
+    }
+
+    func test_category_mapperCarriesPrimaryAndDetailed() throws {
+        let dto = try JSONDecoder().decode(PlaidTransaction.self, from: Data(categorizedTx("t1").utf8))
+        let mapped = try XCTUnwrap(PlaidTransactionMapper.map(dto))
+        XCTAssertEqual(mapped.category, "FOOD_AND_DRINK")
+        XCTAssertEqual(mapped.categoryDetailed, "FOOD_AND_DRINK_RESTAURANT")
+    }
+
+    func test_category_missingOrBlankMapsToNil() throws {
+        let none = try JSONDecoder().decode(PlaidTransaction.self, from: Data(tx("t1").utf8))
+        XCTAssertNil(PlaidTransactionMapper.map(none)?.category)
+        let blank = try JSONDecoder().decode(PlaidTransaction.self, from: Data(categorizedTx("t2", primary: "  ", detailed: nil).utf8))
+        XCTAssertNil(PlaidTransactionMapper.map(blank)?.category)
+        XCTAssertNil(PlaidTransactionMapper.map(blank)?.categoryDetailed)
+    }
+
+    func test_category_addedRowStoresCategory() async throws {
+        ScriptedProtocol.script = [page(added: [categorizedTx("t1"), tx("t2")])]
+        let h = makeHarness(storedCursor: "c0", backfillDone: true)
+        await h.sut.runImport()
+        let rows = try allTransactions()
+        XCTAssertEqual(rows.first { $0.plaidTransactionID == "t1" }?.category, "FOOD_AND_DRINK")
+        XCTAssertEqual(rows.first { $0.plaidTransactionID == "t1" }?.categoryDetailed, "FOOD_AND_DRINK_RESTAURANT")
+        XCTAssertNil(rows.first { $0.plaidTransactionID == "t2" }?.category)
+    }
+
+    func test_category_modifiedUpdatesCategory() async throws {
+        ScriptedProtocol.script = [page(added: [categorizedTx("t1")], next: "c1")]
+        let h = makeHarness(storedCursor: "c0", backfillDone: true)
+        await h.sut.runImport()
+        ScriptedProtocol.reset()
+        ScriptedProtocol.script = [page(modified: [categorizedTx("t1", primary: "GENERAL_MERCHANDISE", detailed: "GENERAL_MERCHANDISE_OTHER")], next: "c2")]
+        await h.sut.runImport()
+        XCTAssertEqual(try allTransactions().first?.category, "GENERAL_MERCHANDISE")
+    }
+
+    func test_category_replayFillsRowsImportedBeforeCategoriesWereStored() async throws {
+        let h = makeHarness(storedCursor: "c0", backfillDone: false)
+        context.insert(SpendTransaction(amount: 9.5, date: matchingDate, merchantName: "Cafe", type: .variable, entryMethod: .imported, plaidTransactionID: "t1"))
+        try context.save()
+        ScriptedProtocol.script = [page(next: "c1"), page(added: [categorizedTx("t1")], next: "c2")]
+        await h.sut.runImport()
+        let row = try XCTUnwrap(try allTransactions().first)
+        XCTAssertEqual(row.category, "FOOD_AND_DRINK")
         XCTAssertEqual(try allTransactions().count, 1)
     }
 
@@ -1078,7 +1131,7 @@ final class AccountBackfillImportTests: XCTestCase {
     /// `save()` the importer attempts throws. Returns the read-only context and the file URL
     /// (to read back what is really on disk).
     private func makeReadOnlyContext(seed: (ModelContext) throws -> Void) throws -> (context: ModelContext, url: URL) {
-        let schema = Schema(versionedSchema: SchemaV10.self)
+        let schema = Schema(versionedSchema: SchemaV11.self)
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("AccountBackfillImportTests-\(UUID().uuidString)")
             .appendingPathExtension("store")
@@ -1099,7 +1152,7 @@ final class AccountBackfillImportTests: XCTestCase {
     }
 
     private func onDisk<T: PersistentModel>(_ type: T.Type, at url: URL) throws -> [T] {
-        let schema = Schema(versionedSchema: SchemaV10.self)
+        let schema = Schema(versionedSchema: SchemaV11.self)
         let container = try ModelContainer(
             for: schema, migrationPlan: ReservoirMigrationPlan.self,
             configurations: [ModelConfiguration(schema: schema, url: url)]

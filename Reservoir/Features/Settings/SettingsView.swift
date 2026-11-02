@@ -195,6 +195,8 @@ struct SettingsView: View {
                 .saveErrorAlert($unlinkError)
 
                 Section {
+                    NavigationLink("Spending by category") { CategoryBreakdownView() }
+                        .accessibilityIdentifier("settings.spendingByCategory")
                     NavigationLink("Sync log") { SyncLogView() }
                         .accessibilityIdentifier("settings.syncLog")
                     Button {

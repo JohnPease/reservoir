@@ -548,6 +548,15 @@ appears anywhere in the app. It owns two responsibilities:
   flag key was bumped to `v2` so every item replays once and refreshes `isPending` on
   rows imported before the field existed.
 
+  **Categories (reservoir-27a)**: `SchemaV11` adds `SpendTransaction.category` and
+  `categoryDetailed` (lightweight migration), Plaid's `personal_finance_category`
+  primary and detailed labels stored raw (for example `FOOD_AND_DRINK`). New and
+  modified imports fill them in. The account-backfill flag key was bumped to `v3` so
+  every item replays once and fills them on existing rows. Settings > Spending by
+  category (`CategoryBreakdownView`, grouping in `CategorySpendCalculator`) shows one
+  month at a time, largest first, with an "Uncategorized" row for manual entries and
+  anything Plaid did not label. Read-only: there is no way to change a category yet.
+
   **Re-scan (reservoir-kuc)**: Settings > Re-scan Plaid (read-only) pulls each
   item's full history from a nil cursor (`runDiagnosticRescan()`) and reports how
   many transactions Plaid holds, the newest date, and how many are missing from the
