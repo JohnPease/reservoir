@@ -49,4 +49,66 @@ final class CategorySpendCalculatorTests: XCTestCase {
         XCTAssertEqual(CategorySpendCalculator.displayName(for: nil), "Uncategorized")
         XCTAssertEqual(CategorySpendCalculator.displayName(for: ""), "Uncategorized")
     }
+
+    // MARK: - Comparison and history (reservoir-hnt)
+
+    func test_completedMonthComparesWithWholePriorMonth() {
+        let entries = [
+            entry(date(2026, 9, 29), 30, "FOOD_AND_DRINK"),
+            entry(date(2026, 10, 2), 50, "FOOD_AND_DRINK"),
+        ]
+        let month = CategorySpendCalculator.month(
+            containing: date(2026, 10, 15), entries: entries, now: date(2026, 11, 3), calendar: calendar
+        )
+        XCTAssertFalse(month.comparesPartialMonth)
+        XCTAssertEqual(month.rows.first?.previousAmount, 30)
+        XCTAssertEqual(month.rows.first?.change, 20)
+        XCTAssertEqual(month.previousTotal, 30)
+    }
+
+    func test_currentMonthComparesWithSameDaysOfPriorMonth() {
+        let entries = [
+            entry(date(2026, 9, 3), 10, "FOOD_AND_DRINK"),
+            entry(date(2026, 9, 20), 100, "FOOD_AND_DRINK"),
+            entry(date(2026, 10, 4), 25, "FOOD_AND_DRINK"),
+        ]
+        let month = CategorySpendCalculator.month(
+            containing: date(2026, 10, 10), entries: entries, now: date(2026, 10, 5), calendar: calendar
+        )
+        XCTAssertTrue(month.comparesPartialMonth)
+        XCTAssertEqual(month.rows.first?.previousAmount, 10, "only Sept 1-5 counts")
+        XCTAssertEqual(month.rows.first?.change, 15)
+    }
+
+    func test_categoryOnlyInPriorMonthStillGetsARow() {
+        let entries = [entry(date(2026, 9, 10), 40, "TRAVEL"), entry(date(2026, 10, 2), 5, "FOOD_AND_DRINK")]
+        let month = CategorySpendCalculator.month(containing: date(2026, 10, 15), entries: entries, calendar: calendar)
+        let travel = month.rows.first { $0.category == "TRAVEL" }
+        XCTAssertEqual(travel?.amount, 0)
+        XCTAssertEqual(travel?.count, 0)
+        XCTAssertEqual(travel?.change, -40)
+        XCTAssertEqual(month.rows.first?.category, "FOOD_AND_DRINK")
+    }
+
+    func test_historyListsSixMonthsOldestFirstWithZeros() {
+        let entries = [
+            entry(date(2026, 10, 2), 5, "FOOD_AND_DRINK"),
+            entry(date(2026, 10, 9), 7, "FOOD_AND_DRINK"),
+            entry(date(2026, 7, 9), 20, "FOOD_AND_DRINK"),
+            entry(date(2026, 10, 9), 99, "TRAVEL"),
+            entry(date(2026, 4, 30), 99, "FOOD_AND_DRINK"),
+        ]
+        let history = CategorySpendCalculator.history(
+            for: "FOOD_AND_DRINK", months: 6, endingAt: date(2026, 10, 15), entries: entries, calendar: calendar
+        )
+        XCTAssertEqual(history.map(\.amount), [0, 0, 20, 0, 0, 12])
+        XCTAssertEqual(history.first?.monthStart, date(2026, 5, 1))
+        XCTAssertEqual(history.last?.monthStart, date(2026, 10, 1))
+    }
+
+    func test_historyForUncategorizedUsesNilCategory() {
+        let entries = [entry(date(2026, 10, 2), 5, nil), entry(date(2026, 10, 3), 8, "TRAVEL")]
+        let history = CategorySpendCalculator.history(for: nil, months: 1, endingAt: date(2026, 10, 15), entries: entries, calendar: calendar)
+        XCTAssertEqual(history.map(\.amount), [5])
+    }
 }

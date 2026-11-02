@@ -205,6 +205,17 @@ struct TodayView: View {
                 .background(Color("ReservoirBackground"))
             }
             .navigationTitle(dateHeaderText)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink {
+                        CategoryBreakdownView()
+                    } label: {
+                        Image(systemName: "chart.pie")
+                    }
+                    .accessibilityLabel("Spending by category")
+                    .accessibilityIdentifier("today.spendingByCategory")
+                }
+            }
         }
         .sheet(isPresented: $isShowingAddTransaction) {
             TransactionEntryView(mode: .create, accessibilityIdentifier: "today.addTransactionSheet")
