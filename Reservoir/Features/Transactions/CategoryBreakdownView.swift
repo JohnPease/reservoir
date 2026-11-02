@@ -34,6 +34,23 @@ struct CategoryBreakdownView: View {
                 }
                 .buttonStyle(.borderless)
             }
+            let recurring = RecurringChargeCalculator.detect(entries: entries, now: todayClock.referenceDate, calendar: calendar)
+            if !recurring.isEmpty {
+                Section {
+                    NavigationLink {
+                        RecurringChargesView()
+                    } label: {
+                        HStack {
+                            Text("Recurring charges")
+                            Spacer()
+                            Text("\(recurring.count) · about \(RecurringChargeCalculator.monthlyTotal(recurring).formatted(.currency(code: "USD").precision(.fractionLength(0)))) a month")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .accessibilityIdentifier("categories.recurringLink")
+                }
+            }
             let callouts = CategorySpendCalculator.callouts(
                 month: month, entries: entries, now: todayClock.referenceDate, calendar: calendar
             )

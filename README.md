@@ -571,8 +571,25 @@ appears anywhere in the app. It owns two responsibilities:
   (at least two, none before the first month with data, usual at least $20); they show
   on the breakdown, the category's trend screen and, for the top one, Today's card. The
   medium widget's month panel adds a "Top: [category] $X" line (reservoir-x19, optional
-  `topCategory` in `WidgetSnapshot.MonthProgress`). Read-only: there is no way to
-  change a category yet.
+  `topCategory` in `WidgetSnapshot.MonthProgress`).
+
+  **More on categories**: the category screen also has a 6/12-month toggle (reservoir-35r)
+  and, when the history reaches back a year, a "last year" line; a "Top merchants" list
+  (reservoir-9n1, five largest, each linking to its charges); and a day-of-week chart
+  (reservoir-me1, needs at least 8 charges in the range). The breakdown links to
+  "Recurring charges" (reservoir-o0a, `RecurringChargeCalculator`): merchants with one
+  charge in each of at least three months, about a month apart, similar amounts (60%
+  within 15% of the median), charged again in the last 45 days; flagged "New" (first seen
+  within 100 days) or with the previous amount when the price moved by at least 5% and
+  $1. A best guess from stored history. Past months in the budget review list each
+  month's top three categories among the counted spend (reservoir-d5m). Active goal
+  cards add a line (reservoir-11z, `GoalImpactCalculator`) estimating how many days
+  sooner the goal would finish if the biggest discretionary category (food and drink,
+  entertainment, general merchandise, personal care or travel, averaged over the last
+  up-to-three full months, at least two) were cut by a quarter; it uses the Simulation
+  segment's model, so days sooner = extra per day x days remaining / daily base. Hidden
+  when under a week remains or the result rounds to under a day. Read-only: there is no
+  way to change a category yet.
 
   **Re-scan (reservoir-kuc)**: Settings > Re-scan Plaid (read-only) pulls each
   item's full history from a nil cursor (`runDiagnosticRescan()`) and reports how

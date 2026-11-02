@@ -39,6 +39,7 @@ enum CategorySpendCalculator {
         var amount: Decimal
         var category: String?
         var categoryDetailed: String? = nil
+        var merchant: String = ""
     }
 
     /// Rows for the month containing `month`, largest first (ties by name); uncategorized
@@ -182,6 +183,135 @@ enum CategorySpendCalculator {
             trimmed = String(detailed.dropFirst(category.count + 1))
         }
         return displayName(for: trimmed)
+    }
+
+    // MARK: - Merchants (reservoir-9n1)
+
+    struct MerchantRow: Equatable {
+        var name: String
+        var amount: Decimal
+        var count: Int
+        var previousAmount: Decimal = 0
+        var change: Decimal { amount - previousAmount }
+    }
+
+    /// The month's spend inside `category` by merchant, largest first, with the comparison window
+    /// of `month(containing:)`. Merchants are matched case-insensitively and shown as last
+    /// seen; a merchant with spend only in the comparison window still gets a row.
+    static func merchants(
+        for category: String?,
+        month: Date,
+        entries: [Entry],
+        now: Date? = nil,
+        calendar: Calendar = .current
+    ) -> [MerchantRow] {
+        guard let windows = windows(for: month, now: now, calendar: calendar) else { return [] }
+        let inCategory = entries.filter { $0.category == category && !$0.merchant.isEmpty }
+        var display: [String: (name: String, date: Date)] = [:]
+        for entry in inCategory {
+            let key = merchantKey(entry.merchant)
+            if display[key].map({ entry.date >= $0.date }) ?? true { display[key] = (entry.merchant, entry.date) }
+        }
+        func grouped(_ range: Range<Date>) -> [String: (amount: Decimal, count: Int)] {
+            var result: [String: (amount: Decimal, count: Int)] = [:]
+            for entry in inCategory where range.contains(entry.date) {
+                let key = merchantKey(entry.merchant)
+                result[key, default: (0, 0)].amount += entry.amount
+                result[key, default: (0, 0)].count += 1
+            }
+            return result
+        }
+        let current = grouped(windows.current)
+        let previous = windows.previous.map(grouped) ?? [:]
+        return Set(current.keys).union(previous.keys)
+            .map {
+                MerchantRow(
+                    name: display[$0]?.name ?? $0,
+                    amount: current[$0]?.amount ?? 0, count: current[$0]?.count ?? 0,
+                    previousAmount: previous[$0]?.amount ?? 0
+                )
+            }
+            .sorted {
+                if $0.amount != $1.amount { return $0.amount > $1.amount }
+                if $0.previousAmount != $1.previousAmount { return $0.previousAmount > $1.previousAmount }
+                return $0.name < $1.name
+            }
+    }
+
+    static func merchantKey(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    // MARK: - Day of week (reservoir-me1)
+
+    struct WeekdayTotal: Equatable {
+        /// `Calendar` weekday number (1 = Sunday in the Gregorian calendar).
+        var weekday: Int
+        var amount: Decimal
+        var count: Int
+    }
+
+    struct WeekdayPattern: Equatable {
+        /// Seven entries, starting at the calendar's first weekday.
+        var days: [WeekdayTotal]
+        var chargeCount: Int
+        var total: Decimal
+        /// The weekday with the most spend, and its share of the total.
+        var busiest: WeekdayTotal?
+        var busiestShare: Double
+    }
+
+    static let weekdayMinimumCharges = 8
+
+    /// Spend by weekday inside `category` over the `months` months ending with `month`.
+    /// Nil when there are too few charges (`weekdayMinimumCharges`) for a pattern to mean anything.
+    static func weekdayPattern(
+        for category: String?,
+        months: Int,
+        endingAt month: Date,
+        entries: [Entry],
+        calendar: Calendar = .current
+    ) -> WeekdayPattern? {
+        guard months > 0, let last = calendar.dateInterval(of: .month, for: month),
+              let first = calendar.date(byAdding: .month, value: -(months - 1), to: last.start)
+        else { return nil }
+        var byWeekday: [Int: (amount: Decimal, count: Int)] = [:]
+        for entry in entries where entry.category == category && entry.date >= first && entry.date < last.end {
+            let weekday = calendar.component(.weekday, from: entry.date)
+            byWeekday[weekday, default: (0, 0)].amount += entry.amount
+            byWeekday[weekday, default: (0, 0)].count += 1
+        }
+        let chargeCount = byWeekday.values.reduce(0) { $0 + $1.count }
+        guard chargeCount >= weekdayMinimumCharges else { return nil }
+        let days = (0..<7).map { offset -> WeekdayTotal in
+            let weekday = (calendar.firstWeekday - 1 + offset) % 7 + 1
+            return WeekdayTotal(weekday: weekday, amount: byWeekday[weekday]?.amount ?? 0, count: byWeekday[weekday]?.count ?? 0)
+        }
+        let total = days.reduce(Decimal(0)) { $0 + $1.amount }
+        let busiest = days.max { $0.amount < $1.amount }
+        let share = total > 0 ? busiest.map { NSDecimalNumber(decimal: $0.amount / total).doubleValue } ?? 0 : 0
+        return WeekdayPattern(days: days, chargeCount: chargeCount, total: total, busiest: busiest, busiestShare: share)
+    }
+
+    // MARK: - Same month last year (reservoir-35r)
+
+    /// The category's spend in the same month a year earlier, or nil when the data does not reach
+    /// back that far (the first entry is more than a week into that month).
+    static func sameMonthLastYear(
+        for category: String?,
+        month: Date,
+        entries: [Entry],
+        calendar: Calendar = .current
+    ) -> Decimal? {
+        guard let yearAgo = calendar.date(byAdding: .year, value: -1, to: month),
+              let interval = calendar.dateInterval(of: .month, for: yearAgo),
+              let firstEntry = entries.map(\.date).min(),
+              let tolerance = calendar.date(byAdding: .day, value: 7, to: interval.start),
+              firstEntry < tolerance
+        else { return nil }
+        return entries
+            .filter { $0.category == category && $0.date >= interval.start && $0.date < interval.end }
+            .reduce(Decimal(0)) { $0 + $1.amount }
     }
 
     // MARK: - Unusual months (reservoir-qj2)

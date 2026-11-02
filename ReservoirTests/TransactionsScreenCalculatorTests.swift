@@ -166,4 +166,12 @@ final class TransactionsScreenCalculatorTests: XCTestCase {
         let labeled = categorized("Coffee", "FOOD_AND_DRINK", detailed: "FOOD_AND_DRINK_COFFEE")
         XCTAssertEqual(TransactionsScreenCalculator.charges([unlabeled, labeled], category: "FOOD_AND_DRINK", detailed: .some(nil), in: interval), [unlabeled])
     }
+
+    func testChargesCanBeNarrowedToOneMerchantCaseInsensitively() {
+        let interval = calendar.dateInterval(of: .month, for: today)!
+        let a = categorized("Blue Bottle", "FOOD_AND_DRINK")
+        let b = categorized("BLUE BOTTLE ", "FOOD_AND_DRINK", offset: 1)
+        let c = categorized("Trader Joe's", "FOOD_AND_DRINK")
+        XCTAssertEqual(TransactionsScreenCalculator.charges([a, b, c], category: "FOOD_AND_DRINK", merchant: "blue bottle", in: interval).count, 2)
+    }
 }

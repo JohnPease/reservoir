@@ -221,4 +221,72 @@ final class CategorySpendCalculatorTests: XCTestCase {
         entries.append(entry(date(2026, 10, 5), 500, nil))
         XCTAssertTrue(CategorySpendCalculator.callouts(month: date(2026, 10, 15), entries: entries, calendar: calendar).isEmpty)
     }
+
+    // MARK: - Merchants (reservoir-9n1)
+
+    private func shop(_ d: Date, _ amount: Decimal, _ merchant: String, category: String = "FOOD_AND_DRINK") -> CategorySpendCalculator.Entry {
+        .init(date: d, amount: amount, category: category, merchant: merchant)
+    }
+
+    func test_merchantsRankedWithComparisonAndCaseInsensitiveMatching() {
+        let entries = [
+            shop(date(2026, 10, 2), 10, "Blue Bottle"),
+            shop(date(2026, 10, 9), 12, "BLUE BOTTLE"),
+            shop(date(2026, 10, 3), 40, "Trader Joe's"),
+            shop(date(2026, 9, 3), 5, "blue bottle"),
+            shop(date(2026, 9, 4), 30, "Old Place"),
+            shop(date(2026, 10, 4), 99, "Hotel", category: "TRAVEL"),
+        ]
+        let rows = CategorySpendCalculator.merchants(for: "FOOD_AND_DRINK", month: date(2026, 10, 15), entries: entries, calendar: calendar)
+        XCTAssertEqual(rows.map(\.amount), [40, 22, 0])
+        XCTAssertEqual(rows[1].count, 2)
+        XCTAssertEqual(rows[1].name, "BLUE BOTTLE", "shown as last seen")
+        XCTAssertEqual(rows[1].change, 17)
+        XCTAssertEqual(rows[2].name, "Old Place")
+        XCTAssertEqual(rows[2].change, -30)
+    }
+
+    // MARK: - Day of week (reservoir-me1)
+
+    func test_weekdayPatternNeedsEnoughCharges() {
+        let entries = (1...7).map { shop(date(2026, 10, $0), 5, "Cafe") }
+        XCTAssertNil(CategorySpendCalculator.weekdayPattern(for: "FOOD_AND_DRINK", months: 6, endingAt: date(2026, 10, 15), entries: entries, calendar: calendar))
+    }
+
+    func test_weekdayPatternFindsBusiestDay() {
+        // Oct 3, 10, 17, 24, 31 2026 are Saturdays; add four weekday charges.
+        var entries = [3, 10, 17, 24, 31].map { shop(date(2026, 10, $0), 20, "Brunch") }
+        entries += [5, 6, 7, 8].map { shop(date(2026, 10, $0), 5, "Cafe") }
+        entries.append(shop(date(2026, 3, 3), 500, "Too old"))
+        let pattern = CategorySpendCalculator.weekdayPattern(for: "FOOD_AND_DRINK", months: 6, endingAt: date(2026, 10, 15), entries: entries, calendar: calendar)
+        XCTAssertEqual(pattern?.chargeCount, 9)
+        XCTAssertEqual(pattern?.busiest?.weekday, 7, "Saturday")
+        XCTAssertEqual(pattern?.busiest?.amount, 100)
+        XCTAssertEqual(pattern?.total, 120)
+        XCTAssertEqual(try XCTUnwrap(pattern).busiestShare, 100.0 / 120.0, accuracy: 0.001)
+        XCTAssertEqual(pattern?.days.count, 7)
+        XCTAssertEqual(pattern?.days.first?.weekday, calendar.firstWeekday)
+    }
+
+    // MARK: - Same month last year (reservoir-35r)
+
+    func test_sameMonthLastYearReturnsAmountWhenHistoryReachesBack() {
+        let entries = [
+            shop(date(2025, 10, 2), 30, "Cafe"),
+            shop(date(2025, 10, 20), 15, "Cafe"),
+            shop(date(2025, 10, 5), 99, "Hotel", category: "TRAVEL"),
+            shop(date(2026, 10, 2), 60, "Cafe"),
+        ]
+        XCTAssertEqual(CategorySpendCalculator.sameMonthLastYear(for: "FOOD_AND_DRINK", month: date(2026, 10, 15), entries: entries, calendar: calendar), 45)
+    }
+
+    func test_sameMonthLastYearIsNilWhenHistoryStartsLater() {
+        let entries = [shop(date(2025, 12, 2), 30, "Cafe"), shop(date(2026, 10, 2), 60, "Cafe")]
+        XCTAssertNil(CategorySpendCalculator.sameMonthLastYear(for: "FOOD_AND_DRINK", month: date(2026, 10, 15), entries: entries, calendar: calendar))
+    }
+
+    func test_sameMonthLastYearIsZeroWhenHistoryCoversItButCategoryHadNoSpend() {
+        let entries = [shop(date(2025, 10, 2), 30, "Hotel", category: "TRAVEL"), shop(date(2026, 10, 2), 60, "Cafe")]
+        XCTAssertEqual(CategorySpendCalculator.sameMonthLastYear(for: "FOOD_AND_DRINK", month: date(2026, 10, 15), entries: entries, calendar: calendar), 0)
+    }
 }

@@ -109,6 +109,13 @@ struct BudgetMonthReviewRowView: View {
                 .font(.caption)
                 .foregroundStyle(Color("ReservoirTextSecondary"))
                 .accessibilityIdentifier("budget.pastMonths.carry.\(id)")
+            if !review.topCategories.isEmpty {
+                // reservoir-d5m: where the month's spend went.
+                Text(review.topCategories.map { "\($0.name) \(BudgetSummaryCalculator.whole($0.amount))" }.joined(separator: " · "))
+                    .font(.caption)
+                    .foregroundStyle(Color("ReservoirTextSecondary"))
+                    .accessibilityIdentifier("budget.pastMonths.categories.\(id)")
+            }
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)

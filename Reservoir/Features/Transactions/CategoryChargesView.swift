@@ -7,6 +7,7 @@ struct CategoryChargesView: View {
     let title: String
     let category: String?
     var detailed: String?? = nil
+    var merchant: String? = nil
     let month: Date
 
     @Query private var transactions: [SpendTransaction]
@@ -14,7 +15,7 @@ struct CategoryChargesView: View {
     var body: some View {
         let interval = Calendar.current.dateInterval(of: .month, for: month)
             ?? DateInterval(start: month, duration: 0)
-        let charges = TransactionsScreenCalculator.charges(transactions, category: category, detailed: detailed, in: interval)
+        let charges = TransactionsScreenCalculator.charges(transactions, category: category, detailed: detailed, merchant: merchant, in: interval)
         List {
             if charges.isEmpty {
                 Text("No charges").foregroundStyle(.secondary)

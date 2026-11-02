@@ -109,6 +109,20 @@ struct ActiveGoalCardView: View {
             }
             .font(.subheadline)
             .accessibilityIdentifier("goals.card.paceContent")
+
+            if let impact = GoalImpactCalculator.impact(
+                entries: goal.transactions.map(CategorySpendCalculator.Entry.init),
+                dailyBase: goal.dailyBase,
+                targetDate: goal.targetDate,
+                referenceDate: referenceDate,
+                calendar: calendar
+            ) {
+                // reservoir-11z: what trimming the biggest discretionary category would do.
+                Text(impact.text)
+                    .font(.caption)
+                    .foregroundStyle(Color("ReservoirTextSecondary"))
+                    .accessibilityIdentifier("goals.card.impact")
+            }
         }
         .padding()
         .reservoirCardBackground()

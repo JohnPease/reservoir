@@ -82,17 +82,21 @@ enum TransactionsScreenCalculator {
     }
 
     /// The charges behind one category row (reservoir-473): `category` (nil = uncategorized),
-    /// optionally narrowed to one detailed label, inside `interval`; newest first.
+    /// optionally narrowed to one detailed label and/or merchant, inside `interval`; newest first.
     static func charges(
         _ transactions: [SpendTransaction],
         category: String?,
         detailed: String?? = nil,
+        merchant: String? = nil,
         in interval: DateInterval
     ) -> [SpendTransaction] {
         transactions
             .filter { transaction in
                 guard transaction.category == category, transaction.date >= interval.start, transaction.date < interval.end
                 else { return false }
+                if let merchant, CategorySpendCalculator.merchantKey(transaction.merchantName) != CategorySpendCalculator.merchantKey(merchant) {
+                    return false
+                }
                 if let detailed { return transaction.categoryDetailed == detailed }
                 return true
             }

@@ -439,4 +439,39 @@ final class BudgetMonthReviewCalculatorTests: XCTestCase {
         XCTAssertEqual(try screen(budget, asOf: date(2026, 3, 5)), .months(expected))
         XCTAssertEqual(expected.count, 2)
     }
+
+    // MARK: - Top categories (reservoir-d5m)
+
+    private func categorized(_ amount: Decimal, _ category: String?, at when: Date, account: String? = "acct-1") {
+        let transaction = SpendTransaction(
+            amount: amount, date: when, merchantName: "M", type: .variable, entryMethod: .imported,
+            plaidAccountID: account, category: category
+        )
+        context.insert(transaction)
+    }
+
+    func testReviewListsTopThreeCategoriesPerMonthLargestFirst() throws {
+        let budget = makeBudget(start: date(2026, 8, 1))
+        categorized(50, "FOOD_AND_DRINK", at: date(2026, 8, 3))
+        categorized(70, "FOOD_AND_DRINK", at: date(2026, 8, 9))
+        categorized(100, "TRAVEL", at: date(2026, 8, 4))
+        categorized(30, "ENTERTAINMENT", at: date(2026, 8, 5))
+        categorized(10, "PERSONAL_CARE", at: date(2026, 8, 6))
+        categorized(500, nil, at: date(2026, 8, 7))
+        categorized(900, "TRAVEL", at: date(2026, 8, 8), account: "other-account")
+        categorized(20, "TRAVEL", at: date(2026, 9, 2))
+        let result = Calc.reviews(budget: budget, transactions: try all(), referenceDate: date(2026, 10, 15), calendar: calendar)
+        let august = try XCTUnwrap(result.first { $0.monthStart == date(2026, 8, 1) })
+        XCTAssertEqual(august.topCategories.map(\.name), ["Food and drink", "Travel", "Entertainment"])
+        XCTAssertEqual(august.topCategories.map(\.amount), [120, 100, 30])
+        let september = try XCTUnwrap(result.first { $0.monthStart == date(2026, 9, 1) })
+        XCTAssertEqual(september.topCategories.map(\.name), ["Travel"])
+    }
+
+    func testReviewHasNoCategoriesWhenNothingIsCategorized() throws {
+        let budget = makeBudget(start: date(2026, 9, 1))
+        txn(40, at: date(2026, 9, 3))
+        let result = Calc.reviews(budget: budget, transactions: try all(), referenceDate: date(2026, 10, 15), calendar: calendar)
+        XCTAssertTrue(result.first?.topCategories.isEmpty ?? false)
+    }
 }

@@ -2,8 +2,10 @@ import Charts
 import SwiftData
 import SwiftUI
 
-/// One category's last six months as bars (reservoir-hnt). Presentation only; the numbers
-/// come from `CategorySpendCalculator.history`.
+/// One category's trend (reservoir-hnt): monthly bars over 6 or 12 months, the same month a year
+/// earlier when the history reaches it, a higher-than-usual note, the month's charges, top
+/// merchants, the Plaid detailed-label split and a day-of-week pattern. Presentation only; the
+/// numbers come from `CategorySpendCalculator`.
 struct CategoryTrendView: View {
     let category: String?
     /// The month the user was looking at; the chart ends here.
@@ -11,18 +13,23 @@ struct CategoryTrendView: View {
 
     @Query private var transactions: [SpendTransaction]
     @Environment(TodayClock.self) private var todayClock
+    @State private var range: Span = .sixMonths
 
     private let calendar = Calendar.current
-    private static let monthCount = 6
+    private static let topMerchantCount = 5
+
+    enum Span: Int, CaseIterable, Identifiable {
+        case sixMonths = 6
+        case twelveMonths = 12
+        var id: Int { rawValue }
+        var label: String { self == .sixMonths ? "6 months" : "12 months" }
+    }
 
     var body: some View {
         let entries = transactions.map(CategorySpendCalculator.Entry.init)
+        let name = CategorySpendCalculator.displayName(for: category)
         let history = CategorySpendCalculator.history(
-            for: category,
-            months: Self.monthCount,
-            endingAt: month,
-            entries: entries,
-            calendar: calendar
+            for: category, months: range.rawValue, endingAt: month, entries: entries, calendar: calendar
         )
         let callout = CategorySpendCalculator.callouts(
             month: month, entries: entries, now: todayClock.referenceDate, calendar: calendar
@@ -30,13 +37,25 @@ struct CategoryTrendView: View {
         let detail = CategorySpendCalculator.detail(
             for: category, month: month, entries: entries, now: todayClock.referenceDate, calendar: calendar
         )
-        let earlier = history.dropLast()
-        let average = earlier.isEmpty ? 0 : earlier.reduce(Decimal(0)) { $0 + $1.amount } / Decimal(earlier.count)
+        let merchants = CategorySpendCalculator.merchants(
+            for: category, month: month, entries: entries, now: todayClock.referenceDate, calendar: calendar
+        ).filter { $0.amount > 0 }.prefix(Self.topMerchantCount)
+        let weekdays = CategorySpendCalculator.weekdayPattern(
+            for: category, months: range.rawValue, endingAt: month, entries: entries, calendar: calendar
+        )
+        let lastYear = CategorySpendCalculator.sameMonthLastYear(for: category, month: month, entries: entries, calendar: calendar)
+        let thisMonthAmount = history.last?.amount ?? 0
+
         List {
             if let callout {
                 Section { CalloutRowView(callout: callout) }
             }
             Section {
+                Picker("Range", selection: $range) {
+                    ForEach(Span.allCases) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("categories.range")
                 Chart(history, id: \.monthStart) { item in
                     BarMark(
                         x: .value("Month", item.monthStart, unit: .month),
@@ -46,26 +65,36 @@ struct CategoryTrendView: View {
                 }
                 .chartXAxis {
                     AxisMarks(values: .stride(by: .month)) { _ in
-                        AxisValueLabel(format: .dateTime.month(.abbreviated))
+                        AxisValueLabel(format: .dateTime.month(.narrow))
                     }
                 }
                 .frame(height: 200)
                 .accessibilityIdentifier("categories.trendChart")
             } footer: {
-                if !earlier.isEmpty {
-                    Text("Average of the earlier \(earlier.count) months: \(average.formatted(.currency(code: "USD").precision(.fractionLength(0)))).")
-                }
+                footer(history: history, lastYear: lastYear, thisMonth: thisMonthAmount)
             }
             Section {
                 NavigationLink {
-                    CategoryChargesView(title: CategorySpendCalculator.displayName(for: category), category: category, month: month)
+                    CategoryChargesView(title: name, category: category, month: month)
                 } label: {
                     Text("See \(month.formatted(.dateTime.month(.wide))) charges")
                 }
                 .accessibilityIdentifier("categories.seeCharges")
             }
+            if !merchants.isEmpty {
+                Section("Top merchants") {
+                    ForEach(Array(merchants), id: \.name) { row in
+                        NavigationLink {
+                            CategoryChargesView(title: row.name, category: category, merchant: row.name, month: month)
+                        } label: {
+                            MerchantRowView(row: row)
+                        }
+                    }
+                }
+                .accessibilityIdentifier("categories.merchants")
+            }
             if detail.count > 1 || detail.first?.detailed != nil {
-                Section("Within \(CategorySpendCalculator.displayName(for: category))") {
+                Section("Within \(name)") {
                     ForEach(detail, id: \.detailed) { row in
                         NavigationLink {
                             CategoryChargesView(title: row.name, category: category, detailed: .some(row.detailed), month: month)
@@ -75,6 +104,16 @@ struct CategoryTrendView: View {
                     }
                 }
                 .accessibilityIdentifier("categories.detail")
+            }
+            if let weekdays {
+                Section {
+                    WeekdayChartView(pattern: weekdays, calendar: calendar)
+                } header: {
+                    Text("Day of week")
+                } footer: {
+                    Text(weekdayInsight(weekdays))
+                }
+                .accessibilityIdentifier("categories.weekdays")
             }
             Section {
                 ForEach(history.reversed(), id: \.monthStart) { item in
@@ -87,8 +126,64 @@ struct CategoryTrendView: View {
                 }
             }
         }
-        .navigationTitle(CategorySpendCalculator.displayName(for: category))
+        .navigationTitle(name)
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    @ViewBuilder
+    private func footer(history: [CategorySpendCalculator.MonthTotal], lastYear: Decimal?, thisMonth: Decimal) -> some View {
+        let earlier = history.dropLast()
+        VStack(alignment: .leading, spacing: 4) {
+            if !earlier.isEmpty {
+                let average = earlier.reduce(Decimal(0)) { $0 + $1.amount } / Decimal(earlier.count)
+                Text("Average of the earlier \(earlier.count) months: \(average.formatted(.currency(code: "USD").precision(.fractionLength(0)))).")
+            }
+            if let lastYear {
+                Text(lastYearText(lastYear: lastYear, thisMonth: thisMonth))
+                    .accessibilityIdentifier("categories.lastYear")
+            }
+        }
+    }
+
+    private func lastYearText(lastYear: Decimal, thisMonth: Decimal) -> String {
+        let monthName = month.formatted(.dateTime.month(.wide))
+        let money = { (value: Decimal) in value.formatted(.currency(code: "USD").precision(.fractionLength(0))) }
+        let change = thisMonth - lastYear
+        let direction = change == 0 ? "the same" : (change > 0 ? "up \(money(change))" : "down \(money(-change))")
+        return "\(monthName) last year: \(money(lastYear)), so this year is \(direction)."
+    }
+
+    private func weekdayInsight(_ pattern: CategorySpendCalculator.WeekdayPattern) -> String {
+        guard let busiest = pattern.busiest else { return "" }
+        let day = calendar.weekdaySymbols[busiest.weekday - 1]
+        let percent = Int((pattern.busiestShare * 100).rounded())
+        return "Most on \(day)s: \(percent)% of spend over \(range.rawValue) months (\(pattern.chargeCount) charges)."
+    }
+}
+
+private struct MerchantRowView: View {
+    let row: CategorySpendCalculator.MerchantRow
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(row.name)
+                Spacer()
+                Text(row.amount.formatted(.currency(code: "USD")))
+                    .monospacedDigit()
+            }
+            HStack {
+                Text("\(row.count) \(row.count == 1 ? "charge" : "charges")")
+                Spacer()
+                if row.change != 0 {
+                    let amount = abs(row.change).formatted(.currency(code: "USD").precision(.fractionLength(0)))
+                    Text(row.change > 0 ? "up \(amount)" : "down \(amount)")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -115,5 +210,31 @@ private struct DetailRowView: View {
             .foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .combine)
+    }
+}
+
+private struct WeekdayChartView: View {
+    let pattern: CategorySpendCalculator.WeekdayPattern
+    let calendar: Calendar
+
+    var body: some View {
+        Chart(pattern.days, id: \.weekday) { day in
+            BarMark(
+                x: .value("Day", String(day.weekday)),
+                y: .value("Spent", NSDecimalNumber(decimal: day.amount).doubleValue)
+            )
+            .foregroundStyle(day.weekday == pattern.busiest?.weekday ? Color("ReservoirAccent") : Color("ReservoirTextMuted"))
+        }
+        .chartXAxis {
+            AxisMarks { value in
+                AxisValueLabel {
+                    if let tag = value.as(String.self), let weekday = Int(tag) {
+                        Text(calendar.veryShortWeekdaySymbols[weekday - 1])
+                    }
+                }
+            }
+        }
+        .frame(height: 140)
+        .accessibilityIdentifier("categories.weekdayChart")
     }
 }

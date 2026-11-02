@@ -7,7 +7,8 @@ extension CategorySpendCalculator.Entry {
     init(_ transaction: SpendTransaction) {
         self.init(
             date: transaction.date, amount: transaction.amount,
-            category: transaction.category, categoryDetailed: transaction.categoryDetailed
+            category: transaction.category, categoryDetailed: transaction.categoryDetailed,
+            merchant: transaction.merchantName
         )
     }
 }
