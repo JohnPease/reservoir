@@ -180,14 +180,14 @@ struct TodayView: View {
                         SpentTodayOnlyCard(amount: spentTodayWithoutActiveGoal)
                     }
 
-                    UpcomingBillsCard(recurring: recurring, referenceDate: todayClock.referenceDate, calendar: calendar)
-
                     CategorySummaryCard(transactions: transactions, referenceDate: todayClock.referenceDate)
 
                     RecentTransactionsSection(
                         transactions: recentTransactions,
                         outliers: CategorySpendCalculator.outliers(entries: entries, recurring: recurring, calendar: calendar)
                     )
+
+                    UpcomingBillsCard(recurring: recurring, referenceDate: todayClock.referenceDate, calendar: calendar)
 
                     Button {
                         isShowingAddTransaction = true

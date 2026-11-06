@@ -591,7 +591,7 @@ appears anywhere in the app. It owns two responsibilities:
   when under a week remains or the result rounds to under a day. Read-only: there is no
   way to change a category yet.
 
-  **Looking ahead (reservoir-nm8, 2zf, 1cm, cn4)**: Today shows a "Coming up" card
+  **Looking ahead (reservoir-nm8, 2zf, 1cm, cn4)**: Today shows a "Coming up" card (below Recent transactions)
   (`UpcomingBillsCard`) listing recurring charges expected from two days ago through the
   next seven days, with a combined total, linking to the recurring list. The expected date
   is the charge's usual day of the month in the month after its last charge (clamped to
