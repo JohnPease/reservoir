@@ -289,4 +289,92 @@ final class CategorySpendCalculatorTests: XCTestCase {
         let entries = [shop(date(2025, 10, 2), 30, "Hotel", category: "TRAVEL"), shop(date(2026, 10, 2), 60, "Cafe")]
         XCTAssertEqual(CategorySpendCalculator.sameMonthLastYear(for: "FOOD_AND_DRINK", month: date(2026, 10, 15), entries: entries, calendar: calendar), 0)
     }
+
+    // MARK: - Month-end pace (reservoir-2zf)
+
+    /// Food and drink: $150 in each of three earlier months.
+    private func paceEntries(thisMonth: [(Int, Decimal)]) -> [CategorySpendCalculator.Entry] {
+        let earlier = [(7, 15), (8, 15), (9, 15)].flatMap { month, day in
+            [entry(date(2026, month, day), 150, "FOOD_AND_DRINK")]
+        }
+        return earlier + thisMonth.map { entry(date(2026, 10, $0.0), $0.1, "FOOD_AND_DRINK") }
+    }
+
+    func test_projectionFlagsCategoryOnPaceToRunHigh() {
+        // $100 in the first 10 days of a 31-day month is a $310 pace against a usual $150, but it
+        // is only 0.67x usual so far, so it is a projection and not a callout.
+        let entries = paceEntries(thisMonth: [(3, 50), (8, 50)])
+        let found = CategorySpendCalculator.projections(month: date(2026, 10, 1), entries: entries, now: date(2026, 10, 10), calendar: calendar)
+        XCTAssertEqual(found.map(\.category), ["FOOD_AND_DRINK"])
+        XCTAssertEqual(found.first?.spent, 100)
+        XCTAssertEqual(found.first?.usual, 150)
+        XCTAssertEqual(NSDecimalNumber(decimal: found.first!.projected).doubleValue, 310, accuracy: 0.001)
+        XCTAssertEqual(found.first?.detailText, "$100 so far, usually about $150")
+    }
+
+    func test_projectionWaitsForAWeekOfData() {
+        let entries = paceEntries(thisMonth: [(2, 100)])
+        XCTAssertTrue(CategorySpendCalculator.projections(month: date(2026, 10, 1), entries: entries, now: date(2026, 10, 6), calendar: calendar).isEmpty)
+    }
+
+    func test_projectionLeavesOutCategoriesAlreadyCalledOut() {
+        // $240 so far is already 1.6x usual: a callout, not a projection.
+        let entries = paceEntries(thisMonth: [(3, 240)])
+        XCTAssertTrue(CategorySpendCalculator.projections(month: date(2026, 10, 1), entries: entries, now: date(2026, 10, 10), calendar: calendar).isEmpty)
+    }
+
+    func test_projectionIgnoresOnPaceAndFinishedMonths() {
+        let steady = paceEntries(thisMonth: [(5, 50)])  // 31/10 x 50 = $155, near usual
+        XCTAssertTrue(CategorySpendCalculator.projections(month: date(2026, 10, 1), entries: steady, now: date(2026, 10, 10), calendar: calendar).isEmpty)
+        let heavy = paceEntries(thisMonth: [(3, 50), (8, 50)])
+        XCTAssertTrue(CategorySpendCalculator.projections(month: date(2026, 10, 1), entries: heavy, now: date(2026, 11, 3), calendar: calendar).isEmpty)
+    }
+
+    func test_projectionNeedsTwoEarlierMonths() {
+        let entries = [entry(date(2026, 9, 15), 150, "FOOD_AND_DRINK"), entry(date(2026, 10, 3), 100, "FOOD_AND_DRINK")]
+        XCTAssertTrue(CategorySpendCalculator.projections(month: date(2026, 10, 1), entries: entries, now: date(2026, 10, 10), calendar: calendar).isEmpty)
+    }
+
+    // MARK: - Unusually large charges (reservoir-cn4)
+
+    private func shop(_ d: Date, _ amount: Decimal, _ merchant: String = "Corner Market", id: Int) -> CategorySpendCalculator.Entry {
+        .init(date: d, amount: amount, category: "FOOD_AND_DRINK", merchant: merchant, id: id)
+    }
+
+    func test_outlierFlagsChargeFarAboveMerchantUsual() {
+        let entries = [
+            shop(date(2026, 8, 1), 70, id: 1), shop(date(2026, 8, 20), 80, id: 2),
+            shop(date(2026, 9, 10), 90, id: 3), shop(date(2026, 10, 5), 240, id: 4),
+        ]
+        let found = CategorySpendCalculator.outliers(entries: entries, calendar: calendar)
+        XCTAssertEqual(found.count, 1)
+        XCTAssertEqual(found[4], 80)
+    }
+
+    func test_outlierNeedsRatioAndDollarExcess() {
+        let entries = [
+            shop(date(2026, 8, 1), 70, id: 1), shop(date(2026, 8, 20), 80, id: 2),
+            shop(date(2026, 9, 10), 90, id: 3), shop(date(2026, 10, 5), 150, id: 4),  // 1.9x
+            shop(date(2026, 8, 2), 5, "Kiosk", id: 5), shop(date(2026, 8, 9), 5, "Kiosk", id: 6),
+            shop(date(2026, 8, 16), 5, "Kiosk", id: 7), shop(date(2026, 8, 23), 20, "Kiosk", id: 8),  // 4x but only $15 over
+        ]
+        XCTAssertTrue(CategorySpendCalculator.outliers(entries: entries, calendar: calendar).isEmpty)
+    }
+
+    func test_outlierNeedsThreeEarlierChargesAndSkipsSubscriptions() {
+        let two = [shop(date(2026, 8, 1), 70, id: 1), shop(date(2026, 9, 10), 90, id: 2), shop(date(2026, 10, 5), 400, id: 3)]
+        XCTAssertTrue(CategorySpendCalculator.outliers(entries: two, calendar: calendar).isEmpty)
+
+        let four = two + [shop(date(2026, 7, 1), 80, id: 4)]
+        XCTAssertEqual(CategorySpendCalculator.outliers(entries: four, calendar: calendar).keys.count, 1)
+        XCTAssertTrue(CategorySpendCalculator.outliers(entries: four, excluding: ["corner market"], calendar: calendar).isEmpty)
+    }
+
+    func test_outlierOnlyComparesWithTheLastYear() {
+        let entries = [
+            shop(date(2024, 1, 1), 10, id: 1), shop(date(2024, 2, 1), 10, id: 2), shop(date(2024, 3, 1), 10, id: 3),
+            shop(date(2026, 10, 5), 400, id: 4),
+        ]
+        XCTAssertTrue(CategorySpendCalculator.outliers(entries: entries, calendar: calendar).isEmpty)
+    }
 }

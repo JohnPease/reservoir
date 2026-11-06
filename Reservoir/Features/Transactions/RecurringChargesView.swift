@@ -20,7 +20,7 @@ struct RecurringChargesView: View {
                         RecurringRowView(item: item)
                     }
                 } header: {
-                    Text("About \(RecurringChargeCalculator.monthlyTotal(recurring).formatted(.currency(code: "USD").precision(.fractionLength(0)))) a month")
+                    Text(Self.headerText(for: recurring))
                 } footer: {
                     Text("Merchants that charged about the same amount in at least three separate months and charged again within the last 45 days. A best guess.")
                 }
@@ -29,6 +29,19 @@ struct RecurringChargesView: View {
         .navigationTitle("Recurring charges")
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("categories.recurring")
+    }
+}
+
+extension RecurringChargesView {
+    /// "About $212 a month, $2,544 a year", plus the net price rise when any price changed.
+    static func headerText(for recurring: [RecurringChargeCalculator.Recurring]) -> String {
+        let money = { (value: Decimal) in value.formatted(.currency(code: "USD").precision(.fractionLength(0))) }
+        var text = "About \(money(RecurringChargeCalculator.monthlyTotal(recurring))) a month, \(money(RecurringChargeCalculator.yearlyTotal(recurring))) a year"
+        let change = RecurringChargeCalculator.monthlyPriceChange(recurring)
+        if change != 0 {
+            text += " · prices \(change > 0 ? "up" : "down") \(money(abs(change))) a month"
+        }
+        return text
     }
 }
 

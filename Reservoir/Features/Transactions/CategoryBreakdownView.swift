@@ -62,6 +62,27 @@ struct CategoryBreakdownView: View {
                 }
                 .accessibilityIdentifier("categories.callouts")
             }
+            let projections = CategorySpendCalculator.projections(
+                month: month, entries: entries, now: todayClock.referenceDate, calendar: calendar
+            )
+            if !projections.isEmpty {
+                Section {
+                    ForEach(projections, id: \.category) { projection in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(projection.text)
+                            Text(projection.detailText)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
+                } header: {
+                    Text("On pace to run high")
+                } footer: {
+                    Text("This month's spend so far, spread over the whole month.")
+                }
+                .accessibilityIdentifier("categories.projections")
+            }
             if summary.rows.isEmpty {
                 Section { Text("No spending this month").foregroundStyle(.secondary) }
             } else {

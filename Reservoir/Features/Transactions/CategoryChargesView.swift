@@ -11,18 +11,20 @@ struct CategoryChargesView: View {
     let month: Date
 
     @Query private var transactions: [SpendTransaction]
+    @Environment(TodayClock.self) private var todayClock
 
     var body: some View {
         let interval = Calendar.current.dateInterval(of: .month, for: month)
             ?? DateInterval(start: month, duration: 0)
         let charges = TransactionsScreenCalculator.charges(transactions, category: category, detailed: detailed, merchant: merchant, in: interval)
+        let outliers = CategorySpendCalculator.outliers(in: transactions, now: todayClock.referenceDate)
         List {
             if charges.isEmpty {
                 Text("No charges").foregroundStyle(.secondary)
             } else {
                 Section {
                     ForEach(charges, id: \.persistentModelID) { transaction in
-                        TransactionRowView(transaction: transaction, showDate: true)
+                        TransactionRowView(transaction: transaction, showDate: true, usualAmount: outliers[transaction.persistentModelID])
                             .listRowBackground(Color("ReservoirBackground"))
                     }
                 } header: {

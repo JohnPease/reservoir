@@ -175,9 +175,14 @@ struct TodayView: View {
                         SpentTodayOnlyCard(amount: spentTodayWithoutActiveGoal)
                     }
 
+                    UpcomingBillsCard(transactions: transactions, referenceDate: todayClock.referenceDate)
+
                     CategorySummaryCard(transactions: transactions, referenceDate: todayClock.referenceDate)
 
-                    RecentTransactionsSection(transactions: recentTransactions)
+                    RecentTransactionsSection(
+                        transactions: recentTransactions,
+                        outliers: CategorySpendCalculator.outliers(in: transactions, now: todayClock.referenceDate, calendar: calendar)
+                    )
 
                     Button {
                         isShowingAddTransaction = true
@@ -270,6 +275,7 @@ private struct SpentTodayOnlyCard: View {
 
 private struct RecentTransactionsSection: View {
     let transactions: [SpendTransaction]
+    var outliers: [PersistentIdentifier: Decimal] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -283,7 +289,7 @@ private struct RecentTransactionsSection: View {
                     .accessibilityIdentifier("today.emptyTransactions")
             } else {
                 ForEach(transactions, id: \.persistentModelID) { transaction in
-                    TransactionRowView(transaction: transaction, showDate: true)
+                    TransactionRowView(transaction: transaction, showDate: true, usualAmount: outliers[transaction.persistentModelID])
                 }
             }
         }

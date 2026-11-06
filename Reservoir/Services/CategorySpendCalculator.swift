@@ -40,6 +40,9 @@ enum CategorySpendCalculator {
         var category: String?
         var categoryDetailed: String? = nil
         var merchant: String = ""
+        /// Identifies the stored transaction this came from, so per-charge results (outliers) can
+        /// be matched back to rows. Nil for entries built without one.
+        var id: AnyHashable? = nil
     }
 
     /// Rows for the month containing `month`, largest first (ties by name); uncategorized
@@ -359,28 +362,16 @@ enum CategorySpendCalculator {
         calendar: Calendar = .current
     ) -> [Callout] {
         guard let interval = calendar.dateInterval(of: .month, for: month),
-              let firstEntry = entries.map(\.date).min(),
-              let firstMonth = calendar.dateInterval(of: .month, for: firstEntry)?.start
+              let prior = priorMonthTotals(before: interval.start, entries: entries, calendar: calendar)
         else { return [] }
-
-        var priorMonths: [Range<Date>] = []
-        for back in 1...calloutLookbackMonths {
-            guard let start = calendar.date(byAdding: .month, value: -back, to: interval.start),
-                  let prior = calendar.dateInterval(of: .month, for: start),
-                  prior.start >= firstMonth
-            else { break }
-            priorMonths.append(prior.start..<prior.end)
-        }
-        guard priorMonths.count >= calloutMinimumPriorMonths else { return [] }
 
         let current = totals(in: interval.start..<interval.end, entries: entries)
         let inProgress = now.map { $0 >= interval.start && $0 < interval.end } ?? false
-        let priorTotals = priorMonths.map { totals(in: $0, entries: entries) }
 
         var result: [Callout] = []
         for (category, spend) in current {
             guard let category else { continue }
-            let usual = priorTotals.reduce(Decimal(0)) { $0 + ($1[category]?.amount ?? 0) } / Decimal(priorTotals.count)
+            let usual = prior.reduce(Decimal(0)) { $0 + ($1[category]?.amount ?? 0) } / Decimal(prior.count)
             guard usual >= calloutMinimumUsual,
                   spend.amount >= usual * calloutRatio,
                   spend.amount - usual >= calloutMinimumExcess
@@ -391,6 +382,126 @@ enum CategorySpendCalculator {
             let lhs = $0.amount - $0.usual, rhs = $1.amount - $1.usual
             return lhs != rhs ? lhs > rhs : $0.name < $1.name
         }
+    }
+
+    /// Per-category totals for up to five whole months before `monthStart`, none before the first
+    /// month with any data; nil when fewer than `calloutMinimumPriorMonths` qualify.
+    private static func priorMonthTotals(
+        before monthStart: Date, entries: [Entry], calendar: Calendar
+    ) -> [[String?: (amount: Decimal, count: Int)]]? {
+        guard let firstEntry = entries.map(\.date).min(),
+              let firstMonth = calendar.dateInterval(of: .month, for: firstEntry)?.start
+        else { return nil }
+        var months: [Range<Date>] = []
+        for back in 1...calloutLookbackMonths {
+            guard let start = calendar.date(byAdding: .month, value: -back, to: monthStart),
+                  let prior = calendar.dateInterval(of: .month, for: start),
+                  prior.start >= firstMonth
+            else { break }
+            months.append(prior.start..<prior.end)
+        }
+        guard months.count >= calloutMinimumPriorMonths else { return nil }
+        return months.map { totals(in: $0, entries: entries) }
+    }
+
+    // MARK: - Month-end pace (reservoir-2zf)
+
+    struct Projection: Equatable {
+        var category: String
+        var spent: Decimal
+        /// Spend so far scaled to the whole month.
+        var projected: Decimal
+        var usual: Decimal
+
+        var name: String { CategorySpendCalculator.displayName(for: category) }
+        /// "Food and drink is on pace for $640".
+        var text: String { "\(name) is on pace for \(projected.formatted(.currency(code: "USD").precision(.fractionLength(0))))" }
+        /// "$310 so far, usually about $520".
+        var detailText: String {
+            let money = { (value: Decimal) in value.formatted(.currency(code: "USD").precision(.fractionLength(0))) }
+            return "\(money(spent)) so far, usually about \(money(usual))"
+        }
+    }
+
+    /// A pace is only read after this many days of the month.
+    static let projectionMinimumDays = 7
+    static let projectionRatio: Decimal = 1.25
+
+    /// Categories on course to finish the month well above their usual, by straight-line pace
+    /// (spend so far / days elapsed x days in the month). Same data rules as `callouts`: at least
+    /// two earlier months, a usual of $20+, and at least $25 above it. Categories already past 1.5x
+    /// usual are `callouts`' job and are left out. Empty unless `now` is inside `month` and at
+    /// least `projectionMinimumDays` days in. Biggest excess first.
+    static func projections(
+        month: Date,
+        entries: [Entry],
+        now: Date,
+        calendar: Calendar = .current
+    ) -> [Projection] {
+        guard let interval = calendar.dateInterval(of: .month, for: month),
+              now >= interval.start, now < interval.end,
+              let prior = priorMonthTotals(before: interval.start, entries: entries, calendar: calendar),
+              let daysInMonth = calendar.range(of: .day, in: .month, for: month)?.count
+        else { return [] }
+        let elapsed = (calendar.dateComponents([.day], from: interval.start, to: calendar.startOfDay(for: now)).day ?? 0) + 1
+        guard elapsed >= projectionMinimumDays else { return [] }
+
+        let current = totals(in: interval.start..<interval.end, entries: entries)
+        var result: [Projection] = []
+        for (category, spend) in current {
+            guard let category else { continue }
+            let usual = prior.reduce(Decimal(0)) { $0 + ($1[category]?.amount ?? 0) } / Decimal(prior.count)
+            let projected = spend.amount * Decimal(daysInMonth) / Decimal(elapsed)
+            guard usual >= calloutMinimumUsual,
+                  spend.amount < usual * calloutRatio,
+                  projected >= usual * projectionRatio,
+                  projected - usual >= calloutMinimumExcess
+            else { continue }
+            result.append(Projection(category: category, spent: spend.amount, projected: projected, usual: usual))
+        }
+        return result.sorted {
+            let lhs = $0.projected - $0.usual, rhs = $1.projected - $1.usual
+            return lhs != rhs ? lhs > rhs : $0.name < $1.name
+        }
+    }
+
+    // MARK: - Unusually large charges (reservoir-cn4)
+
+    /// A charge must be at least this many times the merchant's usual, and at least
+    /// `outlierMinimumExcess` above it.
+    static let outlierRatio: Decimal = 2.5
+    static let outlierMinimumExcess: Decimal = 40
+    /// Charges from this merchant needed before there is a usual to compare with.
+    static let outlierMinimumPrior = 3
+    static let outlierLookbackDays = 365
+
+    /// For each charge much larger than the merchant's usual, that usual (median of the
+    /// merchant's earlier charges in the last year), keyed by `Entry.id`. Entries without an id
+    /// or merchant are ignored; merchants in `excluding` (subscriptions, whose price changes are
+    /// reported separately) are skipped.
+    static func outliers(
+        entries: [Entry], excluding recurringMerchants: Set<String> = [], calendar: Calendar = .current
+    ) -> [AnyHashable: Decimal] {
+        var result: [AnyHashable: Decimal] = [:]
+        let groups = Dictionary(grouping: entries.filter { $0.id != nil && !$0.merchant.isEmpty && $0.amount > 0 }) {
+            merchantKey($0.merchant)
+        }
+        for (key, group) in groups where !recurringMerchants.contains(key) {
+            let charges = group.sorted { $0.date < $1.date }
+            for (index, charge) in charges.enumerated() {
+                guard let id = charge.id,
+                      let cutoff = calendar.date(byAdding: .day, value: -outlierLookbackDays, to: charge.date)
+                else { continue }
+                let prior = charges[..<index].filter { $0.date >= cutoff }.map(\.amount).sorted()
+                guard prior.count >= outlierMinimumPrior else { continue }
+                let mid = prior.count / 2
+                let usual = prior.count % 2 == 1 ? prior[mid] : (prior[mid - 1] + prior[mid]) / 2
+                if usual > 0, charge.amount >= usual * outlierRatio, charge.amount - usual >= outlierMinimumExcess {
+                    result[id] = usual
+                }
+            }
+        }
+        return result
     }
 
     private static func totals(in range: Range<Date>, entries: [Entry]) -> [String?: (amount: Decimal, count: Int)] {

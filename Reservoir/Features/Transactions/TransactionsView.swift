@@ -41,6 +41,11 @@ struct TransactionsView: View {
         TransactionsScreenCalculator.groupedByDay(filteredTransactions, calendar: calendar)
     }
 
+    /// Charges much larger than their merchant's usual (reservoir-cn4).
+    private var outliers: [PersistentIdentifier: Decimal] {
+        CategorySpendCalculator.outliers(in: transactions, now: todayClock.referenceDate, calendar: calendar)
+    }
+
     /// Narrows the list to one Plaid category (reservoir-473); hidden until some charge has one.
     @ViewBuilder private var categoryMenu: some View {
         let choices = TransactionsScreenCalculator.categoryChoices(transactions)
@@ -141,7 +146,8 @@ struct TransactionsView: View {
                                             TransactionRowView(
                                                 transaction: transaction,
                                                 showGoalLabel: true,
-                                                accessibilityIdentifier: "transactions.row"
+                                                accessibilityIdentifier: "transactions.row",
+                                                usualAmount: outliers[transaction.persistentModelID]
                                             )
                                         }
                                         .buttonStyle(.plain)

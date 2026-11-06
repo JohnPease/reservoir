@@ -48,6 +48,49 @@ enum RecurringChargeCalculator {
         recurring.reduce(0) { $0 + $1.typicalAmount }
     }
 
+    /// What recurring charges add up to in a year (twelve months of `monthlyTotal`).
+    static func yearlyTotal(_ recurring: [Recurring]) -> Decimal {
+        monthlyTotal(recurring) * 12
+    }
+
+    /// Net monthly change across charges whose latest price differs from the one before
+    /// (reservoir-1cm); positive when subscriptions got dearer. Zero when no price changed.
+    static func monthlyPriceChange(_ recurring: [Recurring]) -> Decimal {
+        recurring.reduce(0) { total, item in
+            guard let previous = item.previousAmount else { return total }
+            return total + (item.lastAmount - previous)
+        }
+    }
+
+    // MARK: - Upcoming (reservoir-nm8)
+
+    /// A recurring charge expected within the next few days.
+    struct Upcoming: Equatable {
+        var merchant: String
+        var category: String?
+        var amount: Decimal
+        var expectedDate: Date
+    }
+
+    static let upcomingWithinDays = 7
+
+    /// Recurring charges whose next one is expected from today through `upcomingWithinDays` days
+    /// ahead, soonest first. The next date is one month after the last charge; a charge that is
+    /// already late (expected before today) is left out rather than guessed at.
+    static func upcoming(
+        _ recurring: [Recurring], now: Date, withinDays: Int = upcomingWithinDays, calendar: Calendar = .current
+    ) -> [Upcoming] {
+        let today = calendar.startOfDay(for: now)
+        guard let end = calendar.date(byAdding: .day, value: withinDays + 1, to: today) else { return [] }
+        return recurring.compactMap { item -> Upcoming? in
+            guard let next = calendar.date(byAdding: .month, value: 1, to: item.lastDate) else { return nil }
+            let day = calendar.startOfDay(for: next)
+            guard day >= today, day < end else { return nil }
+            return Upcoming(merchant: item.merchant, category: item.category, amount: item.typicalAmount, expectedDate: day)
+        }
+        .sorted { $0.expectedDate != $1.expectedDate ? $0.expectedDate < $1.expectedDate : $0.merchant < $1.merchant }
+    }
+
     private static func recurring(from group: [CategorySpendCalculator.Entry], now: Date, calendar: Calendar) -> Recurring? {
         let charges = group.sorted { $0.date < $1.date }
         guard charges.count >= minimumCharges, let first = charges.first, let last = charges.last else { return nil }

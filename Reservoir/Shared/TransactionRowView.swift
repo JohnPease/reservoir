@@ -29,6 +29,9 @@ struct TransactionRowView: View {
     /// `nil` leaves the row's accessibility structure at SwiftUI's default, matching
     /// `TodayView`'s recent-transactions rows, which were never individually identified.
     var accessibilityIdentifier: String?
+    /// Set when this charge is much larger than the merchant's usual (reservoir-cn4); shown in
+    /// the caption as "Usually about $80".
+    var usualAmount: Decimal?
 
     private var isFixed: Bool { transaction.type == .fixed }
 
@@ -59,6 +62,9 @@ struct TransactionRowView: View {
         if let category = transaction.category {
             parts.append(CategorySpendCalculator.displayName(for: category))
         }
+        if let usualAmount {
+            parts.append("Usually about \(usualAmount.formatted(.currency(code: "USD").precision(.fractionLength(0))))")
+        }
         return parts.joined(separator: " · ")
     }
 
@@ -76,7 +82,7 @@ struct TransactionRowView: View {
                 }
                 Text(captionText)
                     .font(.caption)
-                    .foregroundStyle(Color("ReservoirTextSecondary"))
+                    .foregroundStyle(usualAmount == nil ? Color("ReservoirTextSecondary") : Color("ReservoirDeficit"))
                 if showGoalLabel {
                     Text(goalLabel)
                         .font(.caption2)
