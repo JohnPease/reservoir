@@ -592,17 +592,19 @@ appears anywhere in the app. It owns two responsibilities:
   way to change a category yet.
 
   **Looking ahead (reservoir-nm8, 2zf, 1cm, cn4)**: Today shows a "Coming up" card
-  (`UpcomingBillsCard`) listing recurring charges expected in the next seven days (one
-  month after the last charge; a charge already late is left out) with a combined
-  total, linking to the recurring list. It is informational and does not change the daily
-  limit. The recurring list's header gives the monthly and yearly total and, when prices
-  moved, the net monthly change. The breakdown adds "On pace to run high"
-  (`CategorySpendCalculator.projections`): after seven days into the month, categories
-  whose spend so far, spread over the whole month, would end at least 1.25x and $25 above
-  their usual (same data rules as the callouts; categories already 1.5x usual stay in
-  "Higher than usual"). A charge at least 2.5x and $40 above its merchant's median over the
-  last year (at least three earlier charges; subscriptions excluded) shows "Usually about
-  $X" in red on its row (`CategorySpendCalculator.outliers`).
+  (`UpcomingBillsCard`) listing recurring charges expected from two days ago through the
+  next seven days, with a combined total, linking to the recurring list. The expected date
+  is the charge's usual day of the month in the month after its last charge (clamped to
+  the month's length); one more than two days late drops off. Amounts are the current
+  price. It is informational and does not change the daily limit. The recurring list's
+  header gives the monthly and yearly total and, when prices moved, the net monthly
+  change. The breakdown adds "On pace to run high" (`CategorySpendCalculator.projections`):
+  from the seventh day of the month, categories with at least two charges whose spend so
+  far, spread over the whole month, would end at least 1.25x and $25 above their usual
+  (same data rules as the callouts; whatever "Higher than usual" already reports is left
+  out). A charge at least 2.5x and $40 above its merchant's median over the last year (at
+  least three strictly earlier charges; subscriptions excluded) shows "Usually about $X"
+  in red on its row (`CategorySpendCalculator.outliers`).
 
   **Re-scan (reservoir-kuc)**: Settings > Re-scan Plaid (read-only) pulls each
   item's full history from a nil cursor (`runDiagnosticRescan()`) and reports how

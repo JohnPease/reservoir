@@ -70,6 +70,8 @@ struct TransactionsView: View {
     }
 
     var body: some View {
+        // Once per render, not once per row.
+        let outliers = outliers
         NavigationStack {
             VStack(spacing: 0) {
                 if let error = importService?.presentedError {

@@ -4,15 +4,15 @@ import SwiftUI
 /// `RecurringChargeCalculator`. Hidden when none are due. Informational; it does not change the
 /// daily limit. Tapping opens the full recurring list.
 struct UpcomingBillsCard: View {
-    let transactions: [SpendTransaction]
+    /// Detected once per render by the caller, which also needs it for the unusual-charge flags.
+    let recurring: [RecurringChargeCalculator.Recurring]
     let referenceDate: Date
+    var calendar: Calendar = .current
 
     var body: some View {
-        let entries = transactions.map(CategorySpendCalculator.Entry.init)
-        let recurring = RecurringChargeCalculator.detect(entries: entries, now: referenceDate)
-        let upcoming = RecurringChargeCalculator.upcoming(recurring, now: referenceDate)
+        let upcoming = RecurringChargeCalculator.upcoming(recurring, now: referenceDate, calendar: calendar)
         if !upcoming.isEmpty {
-            let total = upcoming.reduce(Decimal(0)) { $0 + $1.amount }
+            let total = RecurringChargeCalculator.total(of: upcoming)
             NavigationLink {
                 RecurringChargesView()
             } label: {
@@ -22,7 +22,7 @@ struct UpcomingBillsCard: View {
                             .font(.caption)
                             .foregroundStyle(Color("ReservoirTextSecondary"))
                         Spacer()
-                        Text("About \(total.formatted(.currency(code: "USD").precision(.fractionLength(0)))) in the next week")
+                        Text("About \(total.wholeDollarText) in the next week")
                             .font(.caption)
                             .foregroundStyle(Color("ReservoirTextSecondary"))
                         Image(systemName: "chevron.right")
@@ -33,7 +33,7 @@ struct UpcomingBillsCard: View {
                         HStack {
                             Text(item.merchant)
                                 .foregroundStyle(Color("ReservoirTextPrimary"))
-                            Text(Self.dayText(item.expectedDate, now: referenceDate))
+                            Text(dayText(item.expectedDate))
                                 .font(.caption)
                                 .foregroundStyle(Color("ReservoirTextSecondary"))
                             Spacer()
@@ -58,10 +58,11 @@ struct UpcomingBillsCard: View {
         }
     }
 
-    /// "today", "tomorrow", or the weekday.
-    private static func dayText(_ date: Date, now: Date, calendar: Calendar = .current) -> String {
-        if calendar.isDate(date, inSameDayAs: now) { return "today" }
-        if let tomorrow = calendar.date(byAdding: .day, value: 1, to: now), calendar.isDate(date, inSameDayAs: tomorrow) {
+    /// "today", "tomorrow", the weekday, or "was due [weekday]" for a charge a day or two late.
+    private func dayText(_ date: Date) -> String {
+        if calendar.isDate(date, inSameDayAs: referenceDate) { return "today" }
+        if date < calendar.startOfDay(for: referenceDate) { return "was due \(date.formatted(.dateTime.weekday(.wide)))" }
+        if let tomorrow = calendar.date(byAdding: .day, value: 1, to: referenceDate), calendar.isDate(date, inSameDayAs: tomorrow) {
             return "tomorrow"
         }
         return date.formatted(.dateTime.weekday(.wide))

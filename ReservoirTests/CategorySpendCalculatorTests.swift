@@ -330,8 +330,24 @@ final class CategorySpendCalculatorTests: XCTestCase {
         XCTAssertTrue(CategorySpendCalculator.projections(month: date(2026, 10, 1), entries: heavy, now: date(2026, 11, 3), calendar: calendar).isEmpty)
     }
 
+    func test_projectionNeedsTwoChargesSoFar() {
+        // One $100 purchase on day 2 projects to $155 x 2, but a single charge is not a pace.
+        let entries = paceEntries(thisMonth: [(2, 100)])
+        XCTAssertTrue(CategorySpendCalculator.projections(month: date(2026, 10, 1), entries: entries, now: date(2026, 10, 10), calendar: calendar).isEmpty)
+    }
+
+    func test_projectionPicksUpWhatCalloutsRejectOnDollarExcess() {
+        // Usual $30, spent $47 (1.57x but only $17 over): not a callout, so it must be able to
+        // appear as a projection ($47 over 10 days is a $146 pace).
+        let earlier = [(7, 15), (8, 15), (9, 15)].map { entry(date(2026, $0.0, $0.1), 30, "ENTERTAINMENT") }
+        let entries = earlier + [entry(date(2026, 10, 3), 20, "ENTERTAINMENT"), entry(date(2026, 10, 8), 27, "ENTERTAINMENT")]
+        XCTAssertTrue(CategorySpendCalculator.callouts(month: date(2026, 10, 1), entries: entries, now: date(2026, 10, 10), calendar: calendar).isEmpty)
+        let found = CategorySpendCalculator.projections(month: date(2026, 10, 1), entries: entries, now: date(2026, 10, 10), calendar: calendar)
+        XCTAssertEqual(found.map(\.category), ["ENTERTAINMENT"])
+    }
+
     func test_projectionNeedsTwoEarlierMonths() {
-        let entries = [entry(date(2026, 9, 15), 150, "FOOD_AND_DRINK"), entry(date(2026, 10, 3), 100, "FOOD_AND_DRINK")]
+        let entries = [entry(date(2026, 9, 15), 150, "FOOD_AND_DRINK"), entry(date(2026, 10, 3), 50, "FOOD_AND_DRINK"), entry(date(2026, 10, 5), 50, "FOOD_AND_DRINK")]
         XCTAssertTrue(CategorySpendCalculator.projections(month: date(2026, 10, 1), entries: entries, now: date(2026, 10, 10), calendar: calendar).isEmpty)
     }
 
@@ -376,5 +392,28 @@ final class CategorySpendCalculatorTests: XCTestCase {
             shop(date(2026, 10, 5), 400, id: 4),
         ]
         XCTAssertTrue(CategorySpendCalculator.outliers(entries: entries, calendar: calendar).isEmpty)
+    }
+
+    func test_outlierIgnoresRefundsAndUsesEvenCountMedian() {
+        let entries = [
+            shop(date(2026, 7, 1), 60, id: 1), shop(date(2026, 8, 1), 100, id: 2),
+            shop(date(2026, 8, 15), 70, id: 3), shop(date(2026, 9, 1), 90, id: 4),  // median of 60, 70, 90, 100 = 80
+            shop(date(2026, 9, 10), -500, id: 5),  // refund: never an outlier, and not a prior charge
+            shop(date(2026, 10, 5), 240, id: 6),
+        ]
+        let found = CategorySpendCalculator.outliers(entries: entries, calendar: calendar)
+        XCTAssertEqual(found.count, 1)
+        XCTAssertEqual(found[6], 80)
+    }
+
+    func test_outlierSameTimestampChargesDoNotCountAsPrior() {
+        let day = date(2026, 10, 5)
+        let entries = [
+            shop(date(2026, 8, 1), 80, id: 1), shop(date(2026, 8, 20), 80, id: 2), shop(date(2026, 9, 10), 80, id: 3),
+            shop(day, 240, id: 4), shop(day, 250, id: 5),
+        ]
+        // Both are measured against the same three earlier charges, whatever the input order.
+        XCTAssertEqual(Set(CategorySpendCalculator.outliers(entries: entries, calendar: calendar).keys), [4, 5])
+        XCTAssertEqual(Set(CategorySpendCalculator.outliers(entries: entries.reversed(), calendar: calendar).keys), [4, 5])
     }
 }

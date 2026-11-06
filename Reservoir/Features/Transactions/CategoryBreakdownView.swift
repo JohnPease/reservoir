@@ -43,7 +43,7 @@ struct CategoryBreakdownView: View {
                         HStack {
                             Text("Recurring charges")
                             Spacer()
-                            Text("\(recurring.count) · about \(RecurringChargeCalculator.monthlyTotal(recurring).formatted(.currency(code: "USD").precision(.fractionLength(0)))) a month")
+                            Text("\(recurring.count) · about \(RecurringChargeCalculator.monthlyTotal(recurring).wholeDollarText) a month")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }

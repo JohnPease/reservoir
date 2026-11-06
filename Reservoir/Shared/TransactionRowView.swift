@@ -63,7 +63,7 @@ struct TransactionRowView: View {
             parts.append(CategorySpendCalculator.displayName(for: category))
         }
         if let usualAmount {
-            parts.append("Usually about \(usualAmount.formatted(.currency(code: "USD").precision(.fractionLength(0))))")
+            parts.append("Usually about \(usualAmount.wholeDollarText)")
         }
         return parts.joined(separator: " · ")
     }

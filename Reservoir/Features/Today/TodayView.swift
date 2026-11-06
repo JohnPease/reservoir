@@ -130,6 +130,11 @@ struct TodayView: View {
             calendar: calendar
         )
 
+        // Subscriptions are detected once per render and shared by the "Coming up" card and the
+        // unusual-charge flags.
+        let entries = transactions.map(CategorySpendCalculator.Entry.init)
+        let recurring = RecurringChargeCalculator.detect(entries: entries, now: todayClock.referenceDate, calendar: calendar)
+
         NavigationStack {
             ScrollView {
                 VStack(spacing: 24) {
@@ -175,13 +180,13 @@ struct TodayView: View {
                         SpentTodayOnlyCard(amount: spentTodayWithoutActiveGoal)
                     }
 
-                    UpcomingBillsCard(transactions: transactions, referenceDate: todayClock.referenceDate)
+                    UpcomingBillsCard(recurring: recurring, referenceDate: todayClock.referenceDate, calendar: calendar)
 
                     CategorySummaryCard(transactions: transactions, referenceDate: todayClock.referenceDate)
 
                     RecentTransactionsSection(
                         transactions: recentTransactions,
-                        outliers: CategorySpendCalculator.outliers(in: transactions, now: todayClock.referenceDate, calendar: calendar)
+                        outliers: CategorySpendCalculator.outliers(entries: entries, recurring: recurring, calendar: calendar)
                     )
 
                     Button {

@@ -18,6 +18,13 @@ enum RecurringChargeCalculator {
         var isNew: Bool
 
         var priceChanged: Bool { previousAmount != nil }
+
+        /// Day of the month the charge usually posts (median across its charges), so a bill that
+        /// posted early in a short month still lands on its usual day the month after.
+        var usualDay: Int = 1
+        /// What the next charge is expected to be: the latest amount once the price has moved,
+        /// otherwise the typical amount.
+        var currentAmount: Decimal { priceChanged ? lastAmount : typicalAmount }
     }
 
     static let minimumCharges = 3
@@ -43,9 +50,9 @@ enum RecurringChargeCalculator {
             }
     }
 
-    /// What recurring charges add up to in a month.
+    /// What recurring charges add up to in a month, at their current prices.
     static func monthlyTotal(_ recurring: [Recurring]) -> Decimal {
-        recurring.reduce(0) { $0 + $1.typicalAmount }
+        recurring.reduce(0) { $0 + $1.currentAmount }
     }
 
     /// What recurring charges add up to in a year (twelve months of `monthlyTotal`).
@@ -53,13 +60,24 @@ enum RecurringChargeCalculator {
         monthlyTotal(recurring) * 12
     }
 
-    /// Net monthly change across charges whose latest price differs from the one before
-    /// (reservoir-1cm); positive when subscriptions got dearer. Zero when no price changed.
+    /// Sum of (latest charge - the one before) over charges whose price moved (reservoir-1cm);
+    /// positive when subscriptions got dearer. A one-off blip counts as a change. Zero when no
+    /// price moved.
     static func monthlyPriceChange(_ recurring: [Recurring]) -> Decimal {
         recurring.reduce(0) { total, item in
             guard let previous = item.previousAmount else { return total }
             return total + (item.lastAmount - previous)
         }
+    }
+
+    /// "About $212 a month, $2,544 a year", plus the net price move when any price changed.
+    static func summaryText(_ recurring: [Recurring]) -> String {
+        var text = "About \(monthlyTotal(recurring).wholeDollarText) a month, \(yearlyTotal(recurring).wholeDollarText) a year"
+        let change = monthlyPriceChange(recurring)
+        if change != 0 {
+            text += " · prices \(change > 0 ? "up" : "down") \(abs(change).wholeDollarText) a month"
+        }
+        return text
     }
 
     // MARK: - Upcoming (reservoir-nm8)
@@ -73,22 +91,42 @@ enum RecurringChargeCalculator {
     }
 
     static let upcomingWithinDays = 7
+    /// A charge expected up to this many days ago and not yet seen is still listed (banks post late).
+    static let upcomingGraceDays = 2
 
-    /// Recurring charges whose next one is expected from today through `upcomingWithinDays` days
-    /// ahead, soonest first. The next date is one month after the last charge; a charge that is
-    /// already late (expected before today) is left out rather than guessed at.
+    /// What the listed upcoming charges add up to.
+    static func total(of upcoming: [Upcoming]) -> Decimal {
+        upcoming.reduce(0) { $0 + $1.amount }
+    }
+
+    /// Recurring charges expected from `upcomingGraceDays` days ago through `upcomingWithinDays`
+    /// days ahead, soonest first. The next date is the charge's usual day of the month in the
+    /// month after the last charge (clamped to that month's length, so a bill that usually posts
+    /// on the 31st is expected on Feb 28 and Mar 31). Anything later than the grace period is
+    /// left out rather than guessed at.
     static func upcoming(
         _ recurring: [Recurring], now: Date, withinDays: Int = upcomingWithinDays, calendar: Calendar = .current
     ) -> [Upcoming] {
         let today = calendar.startOfDay(for: now)
-        guard let end = calendar.date(byAdding: .day, value: withinDays + 1, to: today) else { return [] }
+        guard let start = calendar.date(byAdding: .day, value: -upcomingGraceDays, to: today),
+              let end = calendar.date(byAdding: .day, value: withinDays + 1, to: today)
+        else { return [] }
         return recurring.compactMap { item -> Upcoming? in
-            guard let next = calendar.date(byAdding: .month, value: 1, to: item.lastDate) else { return nil }
-            let day = calendar.startOfDay(for: next)
-            guard day >= today, day < end else { return nil }
-            return Upcoming(merchant: item.merchant, category: item.category, amount: item.typicalAmount, expectedDate: day)
+            guard let day = nextExpectedDay(after: item.lastDate, usualDay: item.usualDay, calendar: calendar),
+                  day >= start, day < end
+            else { return nil }
+            return Upcoming(merchant: item.merchant, category: item.category, amount: item.currentAmount, expectedDate: day)
         }
         .sorted { $0.expectedDate != $1.expectedDate ? $0.expectedDate < $1.expectedDate : $0.merchant < $1.merchant }
+    }
+
+    private static func nextExpectedDay(after last: Date, usualDay: Int, calendar: Calendar) -> Date? {
+        guard let nextMonth = calendar.date(byAdding: .month, value: 1, to: last),
+              let length = calendar.range(of: .day, in: .month, for: nextMonth)?.count
+        else { return nil }
+        var parts = calendar.dateComponents([.year, .month], from: nextMonth)
+        parts.day = min(max(usualDay, 1), length)
+        return calendar.date(from: parts).map { calendar.startOfDay(for: $0) }
     }
 
     private static func recurring(from group: [CategorySpendCalculator.Entry], now: Date, calendar: Calendar) -> Recurring? {
@@ -126,7 +164,8 @@ enum RecurringChargeCalculator {
             firstDate: first.date,
             chargeCount: charges.count,
             previousAmount: changed ? previous : nil,
-            isNew: first.date >= newCutoff
+            isNew: first.date >= newCutoff,
+            usualDay: Int(median(charges.map { Double(calendar.component(.day, from: $0.date)) }).rounded())
         )
     }
 

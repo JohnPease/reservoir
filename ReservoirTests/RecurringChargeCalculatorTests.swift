@@ -115,8 +115,8 @@ final class RecurringChargeCalculatorTests: XCTestCase {
 
     func test_yearlyTotalIsTwelveMonths() {
         let found = RecurringChargeCalculator.detect(entries: twoSubscriptions, now: now, calendar: calendar)
-        XCTAssertEqual(RecurringChargeCalculator.monthlyTotal(found), 25)
-        XCTAssertEqual(RecurringChargeCalculator.yearlyTotal(found), 300)
+        XCTAssertEqual(RecurringChargeCalculator.monthlyTotal(found), 27)
+        XCTAssertEqual(RecurringChargeCalculator.yearlyTotal(found), 324)
     }
 
     func test_monthlyPriceChangeSumsChangedCharges() {
@@ -127,9 +127,9 @@ final class RecurringChargeCalculatorTests: XCTestCase {
 
     func test_headerTextMentionsYearAndPriceRise() {
         let found = RecurringChargeCalculator.detect(entries: twoSubscriptions, now: now, calendar: calendar)
-        let text = RecurringChargesView.headerText(for: found)
-        XCTAssertTrue(text.contains("$25 a month"))
-        XCTAssertTrue(text.contains("$300 a year"))
+        let text = RecurringChargeCalculator.summaryText(found)
+        XCTAssertTrue(text.contains("$27 a month"))
+        XCTAssertTrue(text.contains("$324 a year"))
         XCTAssertTrue(text.contains("prices up $2"))
     }
 
@@ -139,7 +139,7 @@ final class RecurringChargeCalculatorTests: XCTestCase {
         let upcoming = RecurringChargeCalculator.upcoming(found, now: now, calendar: calendar)
         XCTAssertEqual(upcoming.map(\.merchant), ["Streamly"])
         XCTAssertEqual(upcoming.first?.expectedDate, calendar.startOfDay(for: date(2026, 11, 3)))
-        XCTAssertEqual(upcoming.first?.amount, 10)
+        XCTAssertEqual(upcoming.first?.amount, 12)  // the new price, not the median
 
         let later = RecurringChargeCalculator.upcoming(found, now: date(2026, 11, 10), calendar: calendar)
         XCTAssertEqual(later.map(\.merchant), ["Netflix"])
@@ -148,7 +148,46 @@ final class RecurringChargeCalculatorTests: XCTestCase {
     func test_upcomingIncludesTodayAndSkipsLateCharges() {
         let found = RecurringChargeCalculator.detect(entries: twoSubscriptions, now: now, calendar: calendar)
         XCTAssertEqual(RecurringChargeCalculator.upcoming(found, now: date(2026, 11, 3), calendar: calendar).map(\.merchant), ["Streamly"])
-        // Streamly was due Nov 3; by Nov 5 it is late and is not reported as upcoming.
-        XCTAssertTrue(RecurringChargeCalculator.upcoming(found, now: date(2026, 11, 5), calendar: calendar).isEmpty)
+        // Streamly was due Nov 3: still listed two days late, dropped after that.
+        XCTAssertEqual(RecurringChargeCalculator.upcoming(found, now: date(2026, 11, 5), calendar: calendar).map(\.merchant), ["Streamly"])
+        XCTAssertTrue(RecurringChargeCalculator.upcoming(found, now: date(2026, 11, 6), calendar: calendar).isEmpty)
+    }
+
+    func test_upcomingWindowEdgeIsSevenDaysAhead() {
+        let found = RecurringChargeCalculator.detect(entries: twoSubscriptions, now: now, calendar: calendar)
+        // Netflix is next due Nov 14: in on Nov 7 (7 days ahead), out on Nov 6 (8 days ahead).
+        XCTAssertEqual(RecurringChargeCalculator.upcoming(found, now: date(2026, 11, 7), calendar: calendar).map(\.merchant), ["Netflix"])
+        XCTAssertTrue(RecurringChargeCalculator.upcoming(found, now: date(2026, 11, 6), calendar: calendar).isEmpty)
+    }
+
+    func test_upcomingKeepsTheUsualDayAfterAShortMonth() {
+        // Bills on the 31st (30th in 30-day months) posted on Feb 28 in a short month.
+        let entries = [
+            charge(date(2025, 12, 31), 50, "Gym"), charge(date(2026, 1, 31), 50, "Gym"),
+            charge(date(2026, 2, 28), 50, "Gym"),
+        ]
+        let found = RecurringChargeCalculator.detect(entries: entries, now: date(2026, 3, 10), calendar: calendar)
+        XCTAssertEqual(found.first?.usualDay, 31)
+        let upcoming = RecurringChargeCalculator.upcoming(found, now: date(2026, 3, 29), calendar: calendar)
+        XCTAssertEqual(upcoming.first?.expectedDate, calendar.startOfDay(for: date(2026, 3, 31)))
+        // And the month after that is clamped to 30 days, not skipped.
+        let april = RecurringChargeCalculator.upcoming(found.map { var f = $0; f.lastDate = date(2026, 3, 31); return f }, now: date(2026, 4, 28), calendar: calendar)
+        XCTAssertEqual(april.first?.expectedDate, calendar.startOfDay(for: date(2026, 4, 30)))
+    }
+
+    func test_priceDropShowsInSummary() {
+        let entries = [
+            charge(date(2026, 8, 3), 20, "Streamly"), charge(date(2026, 9, 3), 20, "Streamly"),
+            charge(date(2026, 10, 3), 15, "Streamly"),
+        ]
+        let found = RecurringChargeCalculator.detect(entries: entries, now: now, calendar: calendar)
+        XCTAssertEqual(RecurringChargeCalculator.monthlyPriceChange(found), -5)
+        XCTAssertTrue(RecurringChargeCalculator.summaryText(found).contains("prices down $5 a month"))
+    }
+
+    func test_totalOfUpcoming() {
+        let found = RecurringChargeCalculator.detect(entries: twoSubscriptions, now: now, calendar: calendar)
+        let upcoming = RecurringChargeCalculator.upcoming(found, now: date(2026, 11, 3), calendar: calendar)
+        XCTAssertEqual(RecurringChargeCalculator.total(of: upcoming), 12)
     }
 }
