@@ -139,4 +139,17 @@ final class TodayScreenUITests: XCTestCase {
         XCTAssertTrue(app.otherElements["today.emptyGoalState"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.otherElements["today.completionBanner"].exists)
     }
+
+    /// reservoir-qj2, reservoir-nm8: categorized history shows the category card with its
+    /// "higher than usual" line, and a monthly charge due soon shows the "Coming up" card.
+    /// Reachable by identifier, so neither card is merged into a single accessibility element.
+    func testCategorizedSpendShowsCategoryCardCalloutAndComingUp() {
+        let app = launchedApp(scenario: "categorizedSpend")
+
+        XCTAssertTrue(app.descendants(matching: .any)["today.categoryCard"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["today.categoryCallout"].exists)
+        let upcoming = app.descendants(matching: .any)["today.upcomingBills"]
+        XCTAssertTrue(upcoming.exists)
+        XCTAssertTrue(upcoming.label.contains("Streaming Co"))
+    }
 }
