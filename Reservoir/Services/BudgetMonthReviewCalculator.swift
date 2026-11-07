@@ -28,6 +28,14 @@ enum BudgetMonthReviewCalculator {
         var daysOver: Int
         /// Carry into the next month; always 0 in "Start fresh" mode.
         var endingCarry: Decimal
+        /// The month's biggest Plaid categories among the counted spend (reservoir-d5m), up to
+        /// `topCategoryCount`, largest first; empty when nothing counted has a category.
+        var topCategories: [CategoryAmount] = []
+
+        struct CategoryAmount: Codable, Equatable {
+            var name: String
+            var amount: Decimal
+        }
 
         enum Verdict: Equatable { case under, over, rightOn }
 
@@ -48,6 +56,8 @@ enum BudgetMonthReviewCalculator {
 
         var daysOverText: String { "\(daysOver) \(daysOver == 1 ? "day" : "days") over" }
     }
+
+    static let topCategoryCount = 3
 
     // MARK: - Reviews
 
@@ -71,6 +81,14 @@ enum BudgetMonthReviewCalculator {
             spentByDay[calendar.startOfDay(for: transaction.date), default: 0] += transaction.amount
         }
 
+        var categorySpendByMonth: [Date: [String: Decimal]] = [:]
+        for transaction in counting {
+            guard let category = transaction.category,
+                  let monthStart = calendar.dateInterval(of: .month, for: transaction.date)?.start
+            else { continue }
+            categorySpendByMonth[monthStart, default: [:]][category, default: 0] += transaction.amount
+        }
+
         let schedule = BaseSchedule.monthly(budget.monthlyAmount)
         let resetsOnFirst = !budget.carriesAcrossMonths
 
@@ -81,7 +99,7 @@ enum BudgetMonthReviewCalculator {
         while day < currentMonthStart {
             let monthStart = calendar.dateInterval(of: .month, for: day)?.start ?? day
             if current?.monthStart != monthStart {
-                if let finished = current { results.append(finish(finished, carry: carry, resets: resetsOnFirst)) }
+                if let finished = current { results.append(finish(finished, carry: carry, resets: resetsOnFirst, categories: categorySpendByMonth[finished.monthStart] ?? [:])) }
                 current = MonthReview(
                     monthStart: monthStart, isPartialStart: day > monthStart, windowStart: day,
                     budgeted: 0, spent: 0, delta: 0, daysOver: 0, endingCarry: 0
@@ -104,12 +122,18 @@ enum BudgetMonthReviewCalculator {
             guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
             day = calendar.startOfDay(for: next)
         }
-        if let finished = current { results.append(finish(finished, carry: carry, resets: resetsOnFirst)) }
+        if let finished = current { results.append(finish(finished, carry: carry, resets: resetsOnFirst, categories: categorySpendByMonth[finished.monthStart] ?? [:])) }
         return results.reversed()
     }
 
-    private static func finish(_ review: MonthReview, carry: Decimal, resets: Bool) -> MonthReview {
+    private static func finish(
+        _ review: MonthReview, carry: Decimal, resets: Bool, categories: [String: Decimal]
+    ) -> MonthReview {
         var done = review
+        done.topCategories = categories
+            .sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+            .prefix(topCategoryCount)
+            .map { MonthReview.CategoryAmount(name: CategorySpendCalculator.displayName(for: $0.key), amount: $0.value) }
         done.delta = done.budgeted - done.spent
         done.endingCarry = resets ? 0 : carry
         return done

@@ -240,8 +240,9 @@ on every 1st). The budget has no revision history — `BudgetCalculator`
 recomputes the whole window from `startDate` with the budget's *current* fields,
 so editing a setting recalculates everything as if it had always applied.
 `BudgetValidator` (pure) owns form validation and the start-date floor
-(`max(today - 730 days, earliest imported transaction among the selected
-accounts)`); `BudgetService` enforces "only one budget" and wraps saves in
+(`today - 730 days`; deliberately not tied to the earliest imported transaction, so a new
+budget can start on the 1st of the month even right after relinking, with quiet days
+accruing their full base); `BudgetService` enforces "only one budget" and wraps saves in
 `PersistenceSaveHelper`; `BudgetAccountService` shapes the account picker
 (grouped by institution, "Name ••mask", "Closed account" rows for selected
 accounts that are no longer linked) and prunes a budget's selection when an
@@ -323,7 +324,8 @@ Accessibility ids: `budget.pastMonths.row` (on the card), `.sheet`, `.done`, `.s
 `AppTab.goals`/`GoalsView`/`goals.*` accessibility ids unchanged). It shows a
 "Monthly budget" section (budget card with Edit/Delete via `BudgetFormView`, or
 a quiet "Set a monthly budget" row) above "Savings goals" (the existing goals
-content). On Today, the budget hero renders above the savings hero (titled
+content). On Today, the budget hero (titled "Daily budget"; the Plans section keeps
+"Monthly budget") renders above the savings hero (titled
 "Savings limit" only when both show) using the shared
 `Shared/HeroSection.swift`; a budget with no goal shows no goal prompt, and
 the no-goal-no-budget empty state adds an "Or set a monthly budget instead."
@@ -547,6 +549,70 @@ appears anywhere in the app. It owns two responsibilities:
   page than the posted `added`, the edits on that row are lost. The account-backfill
   flag key was bumped to `v2` so every item replays once and refreshes `isPending` on
   rows imported before the field existed.
+
+  **Categories (reservoir-27a)**: `SchemaV11` adds `SpendTransaction.category` and
+  `categoryDetailed` (lightweight migration), Plaid's `personal_finance_category`
+  primary and detailed labels stored raw (for example `FOOD_AND_DRINK`). New and
+  modified imports fill them in. The account-backfill flag key was bumped to `v3` so
+  every item replays once and fills them on existing rows. A card above Recent
+  transactions on Today (`CategorySummaryCard`: the month's top category and total)
+  opens "Spending by category" (`CategoryBreakdownView`, grouping in
+  `CategorySpendCalculator`): one month at a time, largest first, with an
+  "Uncategorized" row for manual entries and anything Plaid did not label. Each row
+  shows its change against the month before (reservoir-hnt); for the month in progress
+  that is the same days of last month, not all of it. Tapping a row opens
+  `CategoryTrendView`, six monthly bars for that category plus the earlier-months
+  average, a "See [month] charges" link to that month's charges
+  (`CategoryChargesView`), and (reservoir-e1y) a "Within [category]" split by Plaid's
+  detailed label (Restaurant, Coffee, Groceries...), each row linking to its charges.
+  Rows on Today and Transactions show the category after the time, and the
+  Transactions tab has a category menu (reservoir-473) that appears once any charge is
+  categorized. "Higher than usual" callouts (reservoir-qj2, `CategorySpendCalculator.callouts`)
+  flag a category at least 1.5x and $25 above its average for up to five earlier months
+  (at least two, none before the first month with data, usual at least $20); they show
+  on the breakdown, the category's trend screen and, for the top one, Today's card. The
+  medium widget's month panel adds a "Top: [category] $X" line (reservoir-x19, optional
+  `topCategory` in `WidgetSnapshot.MonthProgress`).
+
+  **More on categories**: the category screen also has a 6/12-month toggle (reservoir-35r)
+  and, when the history reaches back a year, a "last year" line; a "Top merchants" list
+  (reservoir-9n1, five largest, each linking to its charges); and a day-of-week chart
+  (reservoir-me1, needs at least 8 charges in the range). The breakdown links to
+  "Recurring charges" (reservoir-o0a, `RecurringChargeCalculator`): merchants with one
+  charge in each of at least three months, about a month apart, similar amounts (60%
+  within 15% of the median), charged again in the last 45 days; flagged "New" (first seen
+  within 100 days, and only when the data reaches back at least 60 days before that first charge) or with the previous amount when the price moved by at least 5% and
+  $1. A best guess from stored history. Past months in the budget review list each
+  month's top three categories among the counted spend (reservoir-d5m). Active goal
+  cards add a line (reservoir-11z, `GoalImpactCalculator`) estimating how many days
+  sooner the goal would finish if the biggest discretionary category (food and drink,
+  entertainment, general merchandise, personal care or travel, averaged over the last
+  up-to-three full months, at least two) were cut by a quarter; it uses the Simulation
+  segment's model, so days sooner = extra per day x days remaining / daily base. Hidden
+  when under a week remains or the result rounds to under a day. Read-only: there is no
+  way to change a category yet.
+
+  **Looking ahead (reservoir-nm8, 2zf, 1cm, cn4)**: Today shows a "Coming up" card (below Recent transactions)
+  (`UpcomingBillsCard`) listing recurring charges expected from two days ago through the
+  next seven days, with a combined total, linking to the recurring list. The expected date
+  is the charge's usual day of the month in the month after its last charge (clamped to
+  the month's length; a date within 15 days of the last charge, as when a bill posted early,
+  moves a month on); one more than two days late drops off. Amounts are the current
+  price. It is informational and does not change the daily limit. The recurring list's
+  header gives the monthly and yearly total and, when prices moved, the net monthly
+  change. The breakdown adds "On pace to run high" (`CategorySpendCalculator.projections`):
+  from the seventh day of the month, categories with at least two charges whose spend so
+  far, spread over the whole month, would end at least 1.25x and $25 above their usual
+  (same data rules as the callouts; whatever "Higher than usual" already reports is left
+  out). A charge at least 2.5x and $40 above its merchant's median over the last year (at
+  least three strictly earlier charges; subscriptions excluded) shows "Usually about $X"
+  in red on its row (`CategorySpendCalculator.outliers`).
+
+  A manual entry merged with its Plaid match takes Plaid's category, and a queued merge
+  decision remembers the incoming category (`PendingTransactionMerge`, `SchemaV12`) so
+  "Merge" or "Keep both" after a relaunch categorizes the row too. The category trend
+  screen's "Average of the earlier N months" uses the same rule as the callouts (up to five
+  months, none before the data begins, at least two).
 
   **Re-scan (reservoir-kuc)**: Settings > Re-scan Plaid (read-only) pulls each
   item's full history from a nil cursor (`runDiagnosticRescan()`) and reports how

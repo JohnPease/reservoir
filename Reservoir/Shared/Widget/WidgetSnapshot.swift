@@ -59,6 +59,14 @@ struct WidgetSnapshot: Codable, Equatable, Sendable {
         var sentence: String
         var spent: Decimal
         var monthlyAmount: Decimal
+        /// The month's biggest Plaid category so far (reservoir-x19); nil until a charge in the
+        /// month has a category. Older snapshots written before this field decode as nil.
+        var topCategory: TopCategory?
+    }
+
+    struct TopCategory: Codable, Equatable, Sendable {
+        var name: String
+        var amount: Decimal
     }
 
     /// Equality ignoring `generatedAt`: "did the numbers change".

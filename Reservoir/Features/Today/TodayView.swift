@@ -130,6 +130,11 @@ struct TodayView: View {
             calendar: calendar
         )
 
+        // Subscriptions are detected once per render and shared by the "Coming up" card and the
+        // unusual-charge flags.
+        let entries = transactions.map(CategorySpendCalculator.Entry.init)
+        let recurring = RecurringChargeCalculator.detect(entries: entries, now: todayClock.referenceDate, calendar: calendar)
+
         NavigationStack {
             ScrollView {
                 VStack(spacing: 24) {
@@ -175,7 +180,14 @@ struct TodayView: View {
                         SpentTodayOnlyCard(amount: spentTodayWithoutActiveGoal)
                     }
 
-                    RecentTransactionsSection(transactions: recentTransactions)
+                    CategorySummaryCard(transactions: transactions, referenceDate: todayClock.referenceDate)
+
+                    RecentTransactionsSection(
+                        transactions: recentTransactions,
+                        outliers: CategorySpendCalculator.outliers(entries: entries, recurring: recurring, calendar: calendar)
+                    )
+
+                    UpcomingBillsCard(recurring: recurring, referenceDate: todayClock.referenceDate, calendar: calendar)
 
                     Button {
                         isShowingAddTransaction = true
@@ -268,6 +280,7 @@ private struct SpentTodayOnlyCard: View {
 
 private struct RecentTransactionsSection: View {
     let transactions: [SpendTransaction]
+    var outliers: [PersistentIdentifier: Decimal] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -281,7 +294,7 @@ private struct RecentTransactionsSection: View {
                     .accessibilityIdentifier("today.emptyTransactions")
             } else {
                 ForEach(transactions, id: \.persistentModelID) { transaction in
-                    TransactionRowView(transaction: transaction, showDate: true)
+                    TransactionRowView(transaction: transaction, showDate: true, usualAmount: outliers[transaction.persistentModelID])
                 }
             }
         }

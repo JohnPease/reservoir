@@ -123,8 +123,20 @@ enum WidgetSnapshotBuilder {
             monthName: monthName(for: referenceDate, calendar: calendar),
             sentence: insights.sentence.text,
             spent: insights.spent,
-            monthlyAmount: budget.monthlyAmount
+            monthlyAmount: budget.monthlyAmount,
+            topCategory: topCategory(transactions: transactions, referenceDate: referenceDate, calendar: calendar)
         )
+    }
+
+    /// The month's biggest categorized spend, the same pick as Today's category card.
+    static func topCategory(transactions: [SpendTransaction], referenceDate: Date, calendar: Calendar) -> WidgetSnapshot.TopCategory? {
+        let month = CategorySpendCalculator.month(
+            containing: referenceDate,
+            entries: transactions.map(CategorySpendCalculator.Entry.init),
+            calendar: calendar
+        )
+        guard let top = month.rows.first(where: { $0.category != nil && $0.amount > 0 }) else { return nil }
+        return WidgetSnapshot.TopCategory(name: top.name, amount: top.amount)
     }
 
     static func monthName(for date: Date, calendar: Calendar) -> String {

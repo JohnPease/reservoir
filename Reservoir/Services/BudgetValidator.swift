@@ -25,37 +25,18 @@ enum BudgetValidator {
         return calendar.date(from: components) ?? calendar.startOfDay(for: referenceDate)
     }
 
-    /// Earliest imported transaction among the *selected* accounts, or `nil` if there are
-    /// none yet. Manual rows (no account) never contribute.
-    static func earliestImportedDate(
-        selectedAccountIDs: Set<String>,
-        transactions: [SpendTransaction],
-        calendar: Calendar = .current
-    ) -> Date? {
-        transactions
-            .filter { $0.entryMethod == .imported && ($0.plaidAccountID.map(selectedAccountIDs.contains) ?? false) }
-            .map { calendar.startOfDay(for: $0.date) }
-            .min()
-    }
-
-    /// `max(today - 730 days, earliestImportedDate)`; with no imported history for the
-    /// selected accounts yet, just `today - 730 days`.
-    static func startDateFloor(
-        earliestImportedDate: Date?,
-        referenceDate: Date,
-        calendar: Calendar = .current
-    ) -> Date {
+    /// The earliest allowed start: Plaid's history cap. Deliberately not tied to the earliest
+    /// imported transaction, so a freshly linked phone (or a quiet first few days of a month)
+    /// can still back-date to the 1st; days with no spend simply accrue their full base.
+    static func startDateFloor(referenceDate: Date, calendar: Calendar = .current) -> Date {
         let today = calendar.startOfDay(for: referenceDate)
-        let historyFloor = calendar.date(byAdding: .day, value: -maxHistoryDays, to: today) ?? today
-        guard let earliest = earliestImportedDate else { return historyFloor }
-        return max(historyFloor, calendar.startOfDay(for: earliest))
+        return calendar.date(byAdding: .day, value: -maxHistoryDays, to: today) ?? today
     }
 
     static func validate(
         monthlyAmount: Decimal,
         selectedAccountIDs: Set<String>,
         startDate: Date,
-        earliestImportedDate: Date?,
         referenceDate: Date,
         calendar: Calendar = .current
     ) -> ValidationResult {
@@ -64,7 +45,7 @@ enum BudgetValidator {
             accountsError: selectedAccountIDs.isEmpty ? "Choose at least one account." : nil,
             startDateError: validateStartDate(
                 startDate,
-                floor: startDateFloor(earliestImportedDate: earliestImportedDate, referenceDate: referenceDate, calendar: calendar),
+                floor: startDateFloor(referenceDate: referenceDate, calendar: calendar),
                 referenceDate: referenceDate,
                 calendar: calendar
             )

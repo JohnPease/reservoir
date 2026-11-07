@@ -29,6 +29,9 @@ struct TransactionRowView: View {
     /// `nil` leaves the row's accessibility structure at SwiftUI's default, matching
     /// `TodayView`'s recent-transactions rows, which were never individually identified.
     var accessibilityIdentifier: String?
+    /// Set when this charge is much larger than the merchant's usual (reservoir-cn4); shown in
+    /// the caption as "Usually about $80".
+    var usualAmount: Decimal?
 
     private var isFixed: Bool { transaction.type == .fixed }
 
@@ -45,6 +48,26 @@ struct TransactionRowView: View {
         transaction.savingsGoal?.displayName ?? "Unattributed"
     }
 
+    /// "Excluded from limit" for fixed rows, else the time (or date and time); the Plaid category
+    /// (reservoir-473) follows when the row has one.
+    private var captionText: String {
+        var parts: [String]
+        if isFixed {
+            parts = ["Excluded from limit"]
+        } else if showDate {
+            parts = [transaction.date.formatted(.dateTime.month(.abbreviated).day().hour().minute())]
+        } else {
+            parts = [transaction.date.formatted(date: .omitted, time: .shortened)]
+        }
+        if let category = transaction.category {
+            parts.append(CategorySpendCalculator.displayName(for: category))
+        }
+        if let usualAmount {
+            parts.append("Usually about \(usualAmount.wholeDollarText)")
+        }
+        return parts.joined(separator: " · ")
+    }
+
     var body: some View {
         let row = HStack {
             TransactionDirectionIcon(isDebit: isDebit)
@@ -57,19 +80,9 @@ struct TransactionRowView: View {
                         PendingBadge()
                     }
                 }
-                if isFixed {
-                    Text("Excluded from limit")
-                        .font(.caption)
-                        .foregroundStyle(Color("ReservoirTextSecondary"))
-                } else if showDate {
-                    Text(transaction.date, format: .dateTime.month(.abbreviated).day().hour().minute())
-                        .font(.caption)
-                        .foregroundStyle(Color("ReservoirTextSecondary"))
-                } else {
-                    Text(transaction.date, style: .time)
-                        .font(.caption)
-                        .foregroundStyle(Color("ReservoirTextSecondary"))
-                }
+                Text(captionText)
+                    .font(.caption)
+                    .foregroundStyle(usualAmount == nil ? Color("ReservoirTextSecondary") : Color("ReservoirDeficit"))
                 if showGoalLabel {
                     Text(goalLabel)
                         .font(.caption2)

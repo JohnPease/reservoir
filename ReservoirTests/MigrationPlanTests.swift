@@ -588,4 +588,72 @@ final class MigrationPlanTests: XCTestCase {
         try context.save()
         XCTAssertEqual(try context.fetch(FetchDescriptor<SchemaV10.SpendTransaction>()).first?.isPending, true)
     }
+
+    /// reservoir-27a: a store created under `SchemaV10` opens under `SchemaV11` with data
+    /// intact and every existing row uncategorized.
+    func testV10StoreMigratesToV11WithRowsUncategorized() throws {
+        let v10Schema = Schema(versionedSchema: SchemaV10.self)
+        do {
+            let container = try ModelContainer(for: v10Schema, configurations: [ModelConfiguration(schema: v10Schema, url: storeURL)])
+            let context = ModelContext(container)
+            context.insert(SchemaV10.SpendTransaction(
+                amount: 12, date: .now, merchantName: "Cafe", type: .variable, entryMethod: .imported,
+                plaidTransactionID: "plaid-1", plaidItemID: "item-1", plaidAccountID: "acct-1", isPending: true
+            ))
+            try context.save()
+        }
+
+        let v11Schema = Schema(versionedSchema: SchemaV11.self)
+        let container = try ModelContainer(
+            for: v11Schema,
+            migrationPlan: ReservoirMigrationPlan.self,
+            configurations: [ModelConfiguration(schema: v11Schema, url: storeURL)]
+        )
+        let context = ModelContext(container)
+        let rows = try context.fetch(FetchDescriptor<SchemaV11.SpendTransaction>())
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.plaidTransactionID, "plaid-1")
+        XCTAssertEqual(rows.first?.isPending, true)
+        XCTAssertNil(rows.first?.category)
+        XCTAssertNil(rows.first?.categoryDetailed)
+
+        rows.first?.category = "FOOD_AND_DRINK"
+        try context.save()
+        XCTAssertEqual(try context.fetch(FetchDescriptor<SchemaV11.SpendTransaction>()).first?.category, "FOOD_AND_DRINK")
+    }
+
+    /// reservoir-27a: a store created under `SchemaV11` opens under `SchemaV12` with a queued
+    /// merge decision intact and its category pair empty.
+    func testV11StoreMigratesToV12WithQueuedMergeUncategorized() throws {
+        let v11Schema = Schema(versionedSchema: SchemaV11.self)
+        do {
+            let container = try ModelContainer(for: v11Schema, configurations: [ModelConfiguration(schema: v11Schema, url: storeURL)])
+            let context = ModelContext(container)
+            let manual = SchemaV11.SpendTransaction(amount: 4, date: .now, merchantName: "Cafe", type: .variable, entryMethod: .manual)
+            context.insert(manual)
+            context.insert(SchemaV11.PendingTransactionMerge(
+                plaidTransactionID: "plaid-9", incomingAmount: 4, incomingDate: .now,
+                incomingMerchantName: "Cafe", manualTransaction: manual, plaidItemID: "item-1", plaidAccountID: "acct-1"
+            ))
+            try context.save()
+        }
+
+        let v12Schema = Schema(versionedSchema: SchemaV12.self)
+        let container = try ModelContainer(
+            for: v12Schema,
+            migrationPlan: ReservoirMigrationPlan.self,
+            configurations: [ModelConfiguration(schema: v12Schema, url: storeURL)]
+        )
+        let context = ModelContext(container)
+        let records = try context.fetch(FetchDescriptor<SchemaV12.PendingTransactionMerge>())
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records.first?.plaidTransactionID, "plaid-9")
+        XCTAssertEqual(records.first?.plaidAccountID, "acct-1")
+        XCTAssertNil(records.first?.incomingCategory)
+        XCTAssertNil(records.first?.incomingCategoryDetailed)
+
+        records.first?.incomingCategory = "FOOD_AND_DRINK"
+        try context.save()
+        XCTAssertEqual(try context.fetch(FetchDescriptor<SchemaV12.PendingTransactionMerge>()).first?.incomingCategory, "FOOD_AND_DRINK")
+    }
 }

@@ -48,6 +48,9 @@ enum TransactionDedupMatcher {
         manualTransaction.entryMethod = .imported
         manualTransaction.plaidTransactionID = incoming.plaidTransactionID
         manualTransaction.wasMergedFromManual = true
+        // Plaid's category rides along with the merge (reservoir-27a).
+        manualTransaction.category = incoming.category
+        manualTransaction.categoryDetailed = incoming.categoryDetailed
         // Stamp the account only when Plaid supplied one and never clobber an existing
         // value (reservoir-j8t).
         if manualTransaction.plaidAccountID == nil {

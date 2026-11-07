@@ -13,7 +13,7 @@ final class TransactionImportServiceTests: XCTestCase {
     private var context: ModelContext!
 
     override func setUpWithError() throws {
-        let schema = Schema(versionedSchema: SchemaV10.self)
+        let schema = Schema(versionedSchema: SchemaV12.self)
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         container = try ModelContainer(for: schema, migrationPlan: ReservoirMigrationPlan.self, configurations: [configuration])
         context = ModelContext(container)
@@ -463,9 +463,13 @@ final class TransactionImportServiceTests: XCTestCase {
 
     // MARK: - JSON fixtures
 
-    private func transactionJSON(id: String, amount: Decimal, date: String = "2026-07-10", merchantName: String? = "Coffee Shop", name: String = "COFFEE SHOP") -> String {
+    private func transactionJSON(
+        id: String, amount: Decimal, date: String = "2026-07-10", merchantName: String? = "Coffee Shop",
+        name: String = "COFFEE SHOP", category: (primary: String, detailed: String)? = nil
+    ) -> String {
         let merchantField = merchantName.map { "\"\($0)\"" } ?? "null"
-        return #"{"transaction_id": "\#(id)", "amount": \#(amount), "date": "\#(date)", "merchant_name": \#(merchantField), "name": "\#(name)"}"#
+        let categoryField = category.map { #", "personal_finance_category": {"primary": "\#($0.primary)", "detailed": "\#($0.detailed)"}"# } ?? ""
+        return #"{"transaction_id": "\#(id)", "amount": \#(amount), "date": "\#(date)", "merchant_name": \#(merchantField), "name": "\#(name)"\#(categoryField)}"#
     }
 
     private func removedJSON(id: String) -> String {
@@ -679,6 +683,51 @@ final class TransactionImportServiceTests: XCTestCase {
         XCTAssertEqual(merged.type, .fixed, "type must be preserved from the manual entry.")
         XCTAssertTrue(merged.isManualOverride, "isManualOverride must be preserved from the manual entry.")
         XCTAssertTrue(sut.mergeQueue.isEmpty)
+    }
+
+    /// reservoir-27a: the merged row takes Plaid's category, including when the decision is
+    /// resolved by a fresh instance after a relaunch (the queued record carries the category).
+    func testResolveMergeDecision_merge_takesPlaidCategory_evenAfterRelaunch() async throws {
+        let manual = SpendTransaction(amount: 12.50, date: matchingFixtureDate, merchantName: "Coffee Shop", type: .variable, entryMethod: .manual)
+        context.insert(manual)
+        try context.save()
+
+        ScriptedSyncURLProtocol.responses = [
+            syncResponse(
+                added: [transactionJSON(id: "plaid-1", amount: 12.50, category: ("FOOD_AND_DRINK", "FOOD_AND_DRINK_COFFEE"))],
+                nextCursor: "cursor-1"
+            )
+        ]
+        await makeSUT().runImport()
+
+        let relaunched = makeSUT()
+        XCTAssertEqual(relaunched.mergeQueue.first?.incoming.category, "FOOD_AND_DRINK")
+        relaunched.resolveMergeDecision(.merge)
+
+        let merged = try XCTUnwrap(context.fetch(FetchDescriptor<SpendTransaction>()).first)
+        XCTAssertEqual(merged.category, "FOOD_AND_DRINK")
+        XCTAssertEqual(merged.categoryDetailed, "FOOD_AND_DRINK_COFFEE")
+    }
+
+    func testResolveMergeDecision_keepBoth_afterRelaunch_newRowIsCategorized() async throws {
+        let manual = SpendTransaction(amount: 12.50, date: matchingFixtureDate, merchantName: "Coffee Shop", type: .variable, entryMethod: .manual)
+        context.insert(manual)
+        try context.save()
+
+        ScriptedSyncURLProtocol.responses = [
+            syncResponse(
+                added: [transactionJSON(id: "plaid-1", amount: 12.50, category: ("FOOD_AND_DRINK", "FOOD_AND_DRINK_COFFEE"))],
+                nextCursor: "cursor-1"
+            )
+        ]
+        await makeSUT().runImport()
+
+        let relaunched = makeSUT()
+        relaunched.resolveMergeDecision(.keepBoth)
+
+        let fetched = try context.fetch(FetchDescriptor<SpendTransaction>())
+        XCTAssertNil(fetched.first { $0.persistentModelID == manual.persistentModelID }?.category)
+        XCTAssertEqual(fetched.first { $0.plaidTransactionID == "plaid-1" }?.category, "FOOD_AND_DRINK")
     }
 
     // MARK: - resolveMergeDecision(.keepBoth)
@@ -1148,7 +1197,7 @@ final class TransactionImportServiceTests: XCTestCase {
     /// constraint) was tried first but turned out not to throw: SwiftData resolves that
     /// collision as an upsert rather than a `save()` failure.
     private func makeReadOnlyContext() throws -> (context: ModelContext, storeURL: URL) {
-        let schema = Schema(versionedSchema: SchemaV10.self)
+        let schema = Schema(versionedSchema: SchemaV12.self)
         let storeURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("TransactionImportServiceTests-\(UUID().uuidString)")
             .appendingPathExtension("store")
@@ -1215,7 +1264,7 @@ final class TransactionImportServiceTests: XCTestCase {
         // directly (SwiftData's in-memory change tracking around a read-only store has
         // sharp edges independent of what this test cares about), but what actually
         // landed on disk is the real question this test needs answered.
-        let verificationSchema = Schema(versionedSchema: SchemaV10.self)
+        let verificationSchema = Schema(versionedSchema: SchemaV12.self)
         let verificationContainer = try ModelContainer(
             for: verificationSchema,
             migrationPlan: ReservoirMigrationPlan.self,

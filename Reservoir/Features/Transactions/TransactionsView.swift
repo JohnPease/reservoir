@@ -23,6 +23,7 @@ struct TransactionsView: View {
     private var transactions: [SpendTransaction]
 
     @State private var filter: TransactionsScreenCalculator.Filter = .all
+    @State private var categoryFilter: TransactionsScreenCalculator.CategoryFilter = .all
     @State private var isShowingAddTransaction = false
     @State private var transactionPendingEdit: SpendTransaction?
     @State private var transactionPendingDelete: SpendTransaction?
@@ -33,14 +34,44 @@ struct TransactionsView: View {
     private let logger = Logger(subsystem: "com.reservoir.app", category: "TransactionsView")
 
     private var filteredTransactions: [SpendTransaction] {
-        TransactionsScreenCalculator.filtered(transactions, by: filter)
+        TransactionsScreenCalculator.filtered(transactions, by: filter, category: categoryFilter)
     }
 
     private var sections: [TransactionsScreenCalculator.DaySection] {
         TransactionsScreenCalculator.groupedByDay(filteredTransactions, calendar: calendar)
     }
 
+    /// Charges much larger than their merchant's usual (reservoir-cn4).
+    private var outliers: [PersistentIdentifier: Decimal] {
+        CategorySpendCalculator.outliers(in: transactions, now: todayClock.referenceDate, calendar: calendar)
+    }
+
+    /// Narrows the list to one Plaid category (reservoir-473); hidden until some charge has one.
+    @ViewBuilder private var categoryMenu: some View {
+        let choices = TransactionsScreenCalculator.categoryChoices(transactions)
+        if !choices.isEmpty {
+            HStack {
+                Menu {
+                    Picker("Category", selection: $categoryFilter) {
+                        ForEach(choices, id: \.self) { choice in
+                            Text(choice.title).tag(choice)
+                        }
+                    }
+                } label: {
+                    Label(categoryFilter.title, systemImage: "line.3.horizontal.decrease.circle")
+                        .font(.subheadline)
+                }
+                .accessibilityIdentifier("transactions.categoryMenu")
+                Spacer()
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 4)
+        }
+    }
+
     var body: some View {
+        // Once per render, not once per row.
+        let outliers = outliers
         NavigationStack {
             VStack(spacing: 0) {
                 if let error = importService?.presentedError {
@@ -94,6 +125,7 @@ struct TransactionsView: View {
                 )
                 .padding(.horizontal)
                 .padding(.vertical, 4)
+                categoryMenu
                 Group {
                     if transactions.isEmpty {
                         // In a ScrollView so the empty states are pull-to-refreshable too
@@ -116,7 +148,8 @@ struct TransactionsView: View {
                                             TransactionRowView(
                                                 transaction: transaction,
                                                 showGoalLabel: true,
-                                                accessibilityIdentifier: "transactions.row"
+                                                accessibilityIdentifier: "transactions.row",
+                                                usualAmount: outliers[transaction.persistentModelID]
                                             )
                                         }
                                         .buttonStyle(.plain)

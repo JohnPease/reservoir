@@ -36,8 +36,9 @@ final class PlaidAccountBackfillStore: PlaidAccountBackfillStoring, @unchecked S
     }
 
     private func key(for environment: PlaidEnvironment, itemID: String) -> String {
-        // "v2" (reservoir-z4p): bumped so every item replays once more and refreshes
-        // `isPending` on rows imported before that flag existed.
-        "plaid.accountBackfill.v2.\(environment.rawValue).\(itemID)"
+        // "v3" (reservoir-27a): bumped so every item replays once more and fills in the
+        // category on rows imported before it was stored. (v2, reservoir-z4p, did the same
+        // for `isPending`.)
+        "plaid.accountBackfill.v3.\(environment.rawValue).\(itemID)"
     }
 }

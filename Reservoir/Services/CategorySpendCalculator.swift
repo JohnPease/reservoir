@@ -1,0 +1,560 @@
+import Foundation
+
+/// Spend grouped by Plaid category for one calendar month (reservoir-27a). Pure; no SwiftData
+/// or SwiftUI. Takes the inputs it needs as plain values so the view and the tests share it.
+enum CategorySpendCalculator {
+    struct Row: Equatable {
+        /// Plaid's raw primary category, or nil for uncategorized spend.
+        var category: String?
+        var amount: Decimal
+        var count: Int
+        /// Spend in the comparison window of the month before (see `Month.comparesPartialMonth`).
+        var previousAmount: Decimal = 0
+
+        var name: String { CategorySpendCalculator.displayName(for: category) }
+        /// Positive when spending is up on the month before.
+        var change: Decimal { amount - previousAmount }
+    }
+
+    struct Month: Equatable {
+        var rows: [Row]
+        var total: Decimal
+        var previousTotal: Decimal = 0
+        /// True when the month is still in progress, so the comparison covers only the same
+        /// days of the month before (day 1 through today) rather than all of it.
+        var comparesPartialMonth = false
+    }
+
+    /// One bar of a category's history.
+    struct MonthTotal: Equatable {
+        var monthStart: Date
+        var amount: Decimal
+    }
+
+    static let uncategorizedName = "Uncategorized"
+
+    /// One entry per spend transaction: the inputs this calculator reads.
+    struct Entry: Equatable {
+        var date: Date
+        var amount: Decimal
+        var category: String?
+        var categoryDetailed: String? = nil
+        var merchant: String = ""
+        /// Identifies the stored transaction this came from, so per-charge results (outliers) can
+        /// be matched back to rows. Nil for entries built without one.
+        var id: AnyHashable? = nil
+    }
+
+    /// Rows for the month containing `month`, largest first (ties by name); uncategorized
+    /// spend is its own row. Each row carries the month before's spend for comparison: when
+    /// `now` falls inside the month, only the same days (day 1 through today) of the month
+    /// before, so a half-finished month is not compared with a whole one. Categories that
+    /// had spend only in the month before still get a row.
+    static func month(
+        containing month: Date,
+        entries: [Entry],
+        now: Date? = nil,
+        calendar: Calendar = .current
+    ) -> Month {
+        guard let windows = windows(for: month, now: now, calendar: calendar) else { return Month(rows: [], total: 0) }
+        let (current, previous) = totals(entries, in: windows, key: \.category)
+        let partial = windows.comparesPartialMonth
+
+        let rows = Set(current.keys).union(previous.keys)
+            .map { category in
+                Row(
+                    category: category,
+                    amount: current[category]?.amount ?? 0,
+                    count: current[category]?.count ?? 0,
+                    previousAmount: previous[category]?.amount ?? 0
+                )
+            }
+            .sortedLargestFirst()
+        return Month(
+            rows: rows,
+            total: current.values.reduce(0) { $0 + $1.amount },
+            previousTotal: previous.values.reduce(0) { $0 + $1.amount },
+            comparesPartialMonth: partial
+        )
+    }
+
+    /// The category's spend for each of the `months` months ending with the one containing
+    /// `month`, oldest first; months with no spend are present with 0.
+    static func history(
+        for category: String?,
+        months: Int,
+        endingAt month: Date,
+        entries: [Entry],
+        calendar: Calendar = .current
+    ) -> [MonthTotal] {
+        guard months > 0, let last = calendar.dateInterval(of: .month, for: month) else { return [] }
+        return (0..<months).reversed().compactMap { back in
+            guard let start = calendar.date(byAdding: .month, value: -back, to: last.start),
+                  let interval = calendar.dateInterval(of: .month, for: start)
+            else { return nil }
+            let amount = entries
+                .filter { $0.category == category && $0.date >= interval.start && $0.date < interval.end }
+                .reduce(Decimal(0)) { $0 + $1.amount }
+            return MonthTotal(monthStart: interval.start, amount: amount)
+        }
+    }
+
+    /// The month containing `month` and the window it is compared with: the whole month before,
+    /// or, when `now` falls inside `month`, only the same days (day 1 through today) of it.
+    private static func windows(
+        for month: Date, now: Date?, calendar: Calendar
+    ) -> (current: Range<Date>, previous: Range<Date>?, comparesPartialMonth: Bool)? {
+        guard let interval = calendar.dateInterval(of: .month, for: month) else { return nil }
+        let current = interval.start..<interval.end
+        guard let priorDay = calendar.date(byAdding: .day, value: -1, to: interval.start),
+              let prior = calendar.dateInterval(of: .month, for: priorDay)
+        else { return (current, nil, false) }
+        var end = prior.end
+        var partial = false
+        if let now, now >= interval.start, now < interval.end {
+            let elapsed = daysElapsed(since: interval.start, through: now, calendar: calendar)
+            if let sameDays = calendar.date(byAdding: .day, value: elapsed, to: prior.start), sameDays < prior.end {
+                end = sameDays
+                partial = true
+            }
+        }
+        return (current, prior.start..<end, partial)
+    }
+
+    // MARK: - Detailed categories (reservoir-e1y)
+
+    /// One Plaid detailed label inside a primary category, with the same comparison as `Row`.
+    struct DetailRow: Equatable {
+        var detailed: String?
+        /// The primary category this label belongs to; used to shorten the display name.
+        var category: String?
+        var amount: Decimal
+        var count: Int
+        var previousAmount: Decimal = 0
+
+        var name: String { CategorySpendCalculator.displayName(forDetailed: detailed, in: category) }
+        var change: Decimal { amount - previousAmount }
+    }
+
+    /// The month's spend inside `category` split by Plaid's detailed label, largest first.
+    /// Labels with spend only in the comparison window still get a row.
+    static func detail(
+        for category: String?,
+        month: Date,
+        entries: [Entry],
+        now: Date? = nil,
+        calendar: Calendar = .current
+    ) -> [DetailRow] {
+        guard let windows = windows(for: month, now: now, calendar: calendar) else { return [] }
+        let (current, previous) = totals(entries.filter { $0.category == category }, in: windows, key: \.categoryDetailed)
+        return Set(current.keys).union(previous.keys)
+            .map {
+                DetailRow(
+                    detailed: $0, category: category,
+                    amount: current[$0]?.amount ?? 0, count: current[$0]?.count ?? 0,
+                    previousAmount: previous[$0]?.amount ?? 0
+                )
+            }
+            .sortedLargestFirst()
+    }
+
+    /// `FOOD_AND_DRINK_FAST_FOOD` inside `FOOD_AND_DRINK` becomes "Fast food". A label that
+    /// does not start with its category is shown in full; nil becomes "Other".
+    static func displayName(forDetailed detailed: String?, in category: String?) -> String {
+        guard let detailed, !detailed.isEmpty else { return "Other" }
+        var trimmed = detailed
+        if let category, !category.isEmpty, detailed.hasPrefix(category + "_") {
+            trimmed = String(detailed.dropFirst(category.count + 1))
+        }
+        return displayName(for: trimmed)
+    }
+
+    // MARK: - Merchants (reservoir-9n1)
+
+    struct MerchantRow: Equatable {
+        var name: String
+        var amount: Decimal
+        var count: Int
+        var previousAmount: Decimal = 0
+        var change: Decimal { amount - previousAmount }
+    }
+
+    /// The month's spend inside `category` by merchant, largest first, with the comparison window
+    /// of `month(containing:)`. Merchants are matched case-insensitively and shown as last
+    /// seen; a merchant with spend only in the comparison window still gets a row.
+    static func merchants(
+        for category: String?,
+        month: Date,
+        entries: [Entry],
+        now: Date? = nil,
+        calendar: Calendar = .current
+    ) -> [MerchantRow] {
+        guard let windows = windows(for: month, now: now, calendar: calendar) else { return [] }
+        let inCategory = entries.filter { $0.category == category && !$0.merchant.isEmpty }
+        var display: [String: (name: String, date: Date)] = [:]
+        for entry in inCategory {
+            let key = merchantKey(entry.merchant)
+            if display[key].map({ entry.date >= $0.date }) ?? true { display[key] = (entry.merchant, entry.date) }
+        }
+        let (current, previous) = totals(inCategory, in: windows) { merchantKey($0.merchant) }
+        return Set(current.keys).union(previous.keys)
+            .map {
+                MerchantRow(
+                    name: display[$0]?.name ?? $0,
+                    amount: current[$0]?.amount ?? 0, count: current[$0]?.count ?? 0,
+                    previousAmount: previous[$0]?.amount ?? 0
+                )
+            }
+            .sortedLargestFirst()
+    }
+
+    static func merchantKey(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    // MARK: - Day of week (reservoir-me1)
+
+    struct WeekdayTotal: Equatable {
+        /// `Calendar` weekday number (1 = Sunday in the Gregorian calendar).
+        var weekday: Int
+        var amount: Decimal
+        var count: Int
+    }
+
+    struct WeekdayPattern: Equatable {
+        /// Seven entries, starting at the calendar's first weekday.
+        var days: [WeekdayTotal]
+        var chargeCount: Int
+        var total: Decimal
+        /// The weekday with the most spend, and its share of the total.
+        var busiest: WeekdayTotal?
+        var busiestShare: Double
+    }
+
+    static let weekdayMinimumCharges = 8
+
+    /// Spend by weekday inside `category` over the `months` months ending with `month`.
+    /// Nil when there are too few charges (`weekdayMinimumCharges`) for a pattern to mean anything.
+    static func weekdayPattern(
+        for category: String?,
+        months: Int,
+        endingAt month: Date,
+        entries: [Entry],
+        calendar: Calendar = .current
+    ) -> WeekdayPattern? {
+        guard months > 0, let last = calendar.dateInterval(of: .month, for: month),
+              let first = calendar.date(byAdding: .month, value: -(months - 1), to: last.start)
+        else { return nil }
+        var byWeekday: [Int: (amount: Decimal, count: Int)] = [:]
+        for entry in entries where entry.category == category && entry.date >= first && entry.date < last.end {
+            let weekday = calendar.component(.weekday, from: entry.date)
+            byWeekday[weekday, default: (0, 0)].amount += entry.amount
+            byWeekday[weekday, default: (0, 0)].count += 1
+        }
+        let chargeCount = byWeekday.values.reduce(0) { $0 + $1.count }
+        guard chargeCount >= weekdayMinimumCharges else { return nil }
+        let days = (0..<7).map { offset -> WeekdayTotal in
+            let weekday = (calendar.firstWeekday - 1 + offset) % 7 + 1
+            return WeekdayTotal(weekday: weekday, amount: byWeekday[weekday]?.amount ?? 0, count: byWeekday[weekday]?.count ?? 0)
+        }
+        let total = days.reduce(Decimal(0)) { $0 + $1.amount }
+        let busiest = days.max { $0.amount < $1.amount }
+        let share = total > 0 ? busiest.map { NSDecimalNumber(decimal: $0.amount / total).doubleValue } ?? 0 : 0
+        return WeekdayPattern(days: days, chargeCount: chargeCount, total: total, busiest: busiest, busiestShare: share)
+    }
+
+    // MARK: - Same month last year (reservoir-35r)
+
+    /// The category's spend in the same month a year earlier, or nil when the data does not reach
+    /// back that far (the first entry is more than a week into that month).
+    static func sameMonthLastYear(
+        for category: String?,
+        month: Date,
+        entries: [Entry],
+        calendar: Calendar = .current
+    ) -> Decimal? {
+        guard let yearAgo = calendar.date(byAdding: .year, value: -1, to: month),
+              let interval = calendar.dateInterval(of: .month, for: yearAgo),
+              let firstEntry = entries.map(\.date).min(),
+              let tolerance = calendar.date(byAdding: .day, value: 7, to: interval.start),
+              firstEntry < tolerance
+        else { return nil }
+        return entries
+            .filter { $0.category == category && $0.date >= interval.start && $0.date < interval.end }
+            .reduce(Decimal(0)) { $0 + $1.amount }
+    }
+
+    // MARK: - Unusual months (reservoir-qj2)
+
+    struct Callout: Equatable {
+        var category: String
+        var amount: Decimal
+        /// Average monthly spend in the category over the earlier months.
+        var usual: Decimal
+        /// True when the month is still in progress, so the amount is a floor, not a total.
+        var inProgress: Bool
+
+        var name: String { CategorySpendCalculator.displayName(for: category) }
+        var ratio: Double { usual > 0 ? NSDecimalNumber(decimal: amount / usual).doubleValue : 0 }
+
+        /// "Entertainment is 2.1× its usual" / "Entertainment was 2.1× its usual".
+        var text: String { "\(name) \(inProgress ? "is already" : "was") \(Self.ratioText(ratio)) its usual" }
+        /// "$310 so far vs about $150 a month".
+        var detailText: String {
+            return "\(amount.wholeDollarText)\(inProgress ? " so far" : "") vs about \(usual.wholeDollarText) a month"
+        }
+
+        private static func ratioText(_ ratio: Double) -> String {
+            ratio >= 10 ? "\(Int(ratio.rounded()))×" : String(format: "%.1f×", ratio)
+        }
+    }
+
+    /// Thresholds: at least two earlier months of data, a usual of at least $20 a month, and
+    /// this month at least 1.5× usual and at least $25 above it.
+    static let calloutMinimumPriorMonths = 2
+    static let calloutMinimumUsual: Decimal = 20
+    static let calloutRatio: Decimal = 1.5
+    static let calloutMinimumExcess: Decimal = 25
+    private static let calloutLookbackMonths = 5
+
+    /// Whether `spend` is far enough above `usual` to be a callout. `projections` takes whatever
+    /// this rejects, so a category is never in neither list just because of where a threshold sits.
+    private static func isCalloutWorthy(spend: Decimal, usual: Decimal) -> Bool {
+        usual >= calloutMinimumUsual && spend >= usual * calloutRatio && spend - usual >= calloutMinimumExcess
+    }
+
+    /// Average monthly spend in `category` over the earlier months.
+    private static func usual(
+        for category: String?, in prior: [[String?: (amount: Decimal, count: Int)]]
+    ) -> Decimal {
+        prior.reduce(Decimal(0)) { $0 + ($1[category]?.amount ?? 0) } / Decimal(prior.count)
+    }
+
+    /// Categories whose spend in `month` is well above their average for the earlier months
+    /// (up to five, none before the first month with any data), biggest excess first. For a
+    /// month in progress the comparison is its spend so far against a whole usual month, so
+    /// it only fires when the month has already outrun the average.
+    static func callouts(
+        month: Date,
+        entries: [Entry],
+        now: Date? = nil,
+        calendar: Calendar = .current
+    ) -> [Callout] {
+        guard let interval = calendar.dateInterval(of: .month, for: month),
+              let prior = priorMonthTotals(before: interval.start, entries: entries, calendar: calendar)
+        else { return [] }
+
+        let current = totals(in: interval.start..<interval.end, entries: entries)
+        let inProgress = now.map { $0 >= interval.start && $0 < interval.end } ?? false
+
+        var result: [Callout] = []
+        for (category, spend) in current {
+            guard let category else { continue }
+            let usual = usual(for: category, in: prior)
+            guard isCalloutWorthy(spend: spend.amount, usual: usual) else { continue }
+            result.append(Callout(category: category, amount: spend.amount, usual: usual, inProgress: inProgress))
+        }
+        return result.sorted {
+            let lhs = $0.amount - $0.usual, rhs = $1.amount - $1.usual
+            return lhs != rhs ? lhs > rhs : $0.name < $1.name
+        }
+    }
+
+    /// Per-category totals for up to five whole months before `monthStart`, none before the first
+    /// month with any data; nil when fewer than `calloutMinimumPriorMonths` qualify.
+    private static func priorMonthTotals(
+        before monthStart: Date, entries: [Entry], calendar: Calendar
+    ) -> [[String?: (amount: Decimal, count: Int)]]? {
+        guard let firstEntry = entries.map(\.date).min(),
+              let firstMonth = calendar.dateInterval(of: .month, for: firstEntry)?.start
+        else { return nil }
+        var months: [Range<Date>] = []
+        for back in 1...calloutLookbackMonths {
+            guard let start = calendar.date(byAdding: .month, value: -back, to: monthStart),
+                  let prior = calendar.dateInterval(of: .month, for: start),
+                  prior.start >= firstMonth
+            else { break }
+            months.append(prior.start..<prior.end)
+        }
+        guard months.count >= calloutMinimumPriorMonths else { return nil }
+        return months.map { totals(in: $0, entries: entries) }
+    }
+
+    /// Average monthly spend in `category` over the earlier months, by the same rule the callouts
+    /// use (up to five, none before the first month with data); nil with fewer than two such
+    /// months. `months` is how many were averaged.
+    static func usualMonthly(
+        for category: String?, before month: Date, entries: [Entry], calendar: Calendar = .current
+    ) -> (average: Decimal, months: Int)? {
+        guard let interval = calendar.dateInterval(of: .month, for: month),
+              let prior = priorMonthTotals(before: interval.start, entries: entries, calendar: calendar)
+        else { return nil }
+        return (usual(for: category, in: prior), prior.count)
+    }
+
+    // MARK: - Month-end pace (reservoir-2zf)
+
+    struct Projection: Equatable {
+        var category: String
+        var spent: Decimal
+        /// Spend so far scaled to the whole month.
+        var projected: Decimal
+        var usual: Decimal
+
+        var name: String { CategorySpendCalculator.displayName(for: category) }
+        /// "Food and drink is on pace for $640".
+        var text: String { "\(name) is on pace for \(projected.wholeDollarText)" }
+        /// "$310 so far, usually about $520".
+        var detailText: String {
+            return "\(spent.wholeDollarText) so far, usually about \(usual.wholeDollarText)"
+        }
+    }
+
+    /// A pace is only read after this many days of the month.
+    static let projectionMinimumDays = 7
+    /// One big purchase early in the month is not a pace.
+    static let projectionMinimumCharges = 2
+    static let projectionRatio: Decimal = 1.25
+
+    /// Categories on course to finish the month well above their usual, by straight-line pace
+    /// (spend so far / days elapsed x days in the month). Same data rules as `callouts`: at least
+    /// two earlier months, a usual of $20+, and at least $25 above it, plus at least two charges so
+    /// far. Categories `callouts` already reports are left out. Empty unless `now` is inside
+    /// `month` and its `projectionMinimumDays`th day or later. Biggest excess first.
+    static func projections(
+        month: Date,
+        entries: [Entry],
+        now: Date,
+        calendar: Calendar = .current
+    ) -> [Projection] {
+        guard let interval = calendar.dateInterval(of: .month, for: month),
+              now >= interval.start, now < interval.end,
+              let prior = priorMonthTotals(before: interval.start, entries: entries, calendar: calendar),
+              let daysInMonth = calendar.range(of: .day, in: .month, for: month)?.count
+        else { return [] }
+        let elapsed = daysElapsed(since: interval.start, through: now, calendar: calendar)
+        guard elapsed >= projectionMinimumDays else { return [] }
+
+        let current = totals(in: interval.start..<interval.end, entries: entries)
+        var result: [Projection] = []
+        for (category, spend) in current {
+            guard let category else { continue }
+            let usual = usual(for: category, in: prior)
+            let projected = spend.amount * Decimal(daysInMonth) / Decimal(elapsed)
+            guard spend.count >= projectionMinimumCharges,
+                  usual >= calloutMinimumUsual,
+                  !isCalloutWorthy(spend: spend.amount, usual: usual),
+                  projected >= usual * projectionRatio,
+                  projected - usual >= calloutMinimumExcess
+            else { continue }
+            result.append(Projection(category: category, spent: spend.amount, projected: projected, usual: usual))
+        }
+        return result.sorted {
+            let lhs = $0.projected - $0.usual, rhs = $1.projected - $1.usual
+            return lhs != rhs ? lhs > rhs : $0.name < $1.name
+        }
+    }
+
+    // MARK: - Unusually large charges (reservoir-cn4)
+
+    /// A charge must be at least this many times the merchant's usual, and at least
+    /// `outlierMinimumExcess` above it.
+    static let outlierRatio: Decimal = 2.5
+    static let outlierMinimumExcess: Decimal = 40
+    /// Charges from this merchant needed before there is a usual to compare with.
+    static let outlierMinimumPrior = 3
+    static let outlierLookbackDays = 365
+
+    /// For each charge much larger than the merchant's usual, that usual (median of the
+    /// merchant's earlier charges in the last year), keyed by `Entry.id`. Entries without an id
+    /// or merchant are ignored; merchants in `excluding` (subscriptions, whose price changes are
+    /// reported separately) are skipped.
+    static func outliers(
+        entries: [Entry], excluding recurringMerchants: Set<String> = [], calendar: Calendar = .current
+    ) -> [AnyHashable: Decimal] {
+        var result: [AnyHashable: Decimal] = [:]
+        let groups = Dictionary(grouping: entries.filter { $0.id != nil && !$0.merchant.isEmpty && $0.amount > 0 }) {
+            merchantKey($0.merchant)
+        }
+        for (key, group) in groups where !recurringMerchants.contains(key) {
+            for charge in group {
+                guard let id = charge.id,
+                      let cutoff = calendar.date(byAdding: .day, value: -outlierLookbackDays, to: charge.date)
+                else { continue }
+                // Strictly earlier charges only, so charges sharing a timestamp do not depend on sort order.
+                let prior = group.filter { $0.date < charge.date && $0.date >= cutoff }.map(\.amount).sorted()
+                guard prior.count >= outlierMinimumPrior else { continue }
+                let mid = prior.count / 2
+                let usual = prior.count % 2 == 1 ? prior[mid] : (prior[mid - 1] + prior[mid]) / 2
+                if usual > 0, charge.amount >= usual * outlierRatio, charge.amount - usual >= outlierMinimumExcess {
+                    result[id] = usual
+                }
+            }
+        }
+        return result
+    }
+
+    private static func totals(in range: Range<Date>, entries: [Entry]) -> [String?: (amount: Decimal, count: Int)] {
+        totals(in: range, entries: entries, key: \.category)
+    }
+
+    private static func totals<Key: Hashable>(
+        in range: Range<Date>, entries: [Entry], key: (Entry) -> Key
+    ) -> [Key: (amount: Decimal, count: Int)] {
+        var result: [Key: (amount: Decimal, count: Int)] = [:]
+        for entry in entries where range.contains(entry.date) {
+            result[key(entry), default: (0, 0)].amount += entry.amount
+            result[key(entry), default: (0, 0)].count += 1
+        }
+        return result
+    }
+
+    /// Totals per group in the month and in its comparison window (empty when there is none).
+    private static func totals<Key: Hashable>(
+        _ entries: [Entry],
+        in windows: (current: Range<Date>, previous: Range<Date>?, comparesPartialMonth: Bool),
+        key: (Entry) -> Key
+    ) -> (current: [Key: (amount: Decimal, count: Int)], previous: [Key: (amount: Decimal, count: Int)]) {
+        (
+            totals(in: windows.current, entries: entries, key: key),
+            windows.previous.map { totals(in: $0, entries: entries, key: key) } ?? [:]
+        )
+    }
+
+    /// Days of the month through `now`, counting `now`'s own day (1 on the first).
+    private static func daysElapsed(since monthStart: Date, through now: Date, calendar: Calendar) -> Int {
+        (calendar.dateComponents([.day], from: monthStart, to: calendar.startOfDay(for: now)).day ?? 0) + 1
+    }
+
+    /// `FOOD_AND_DRINK` becomes "Food and drink"; nil becomes "Uncategorized".
+    static func displayName(for category: String?) -> String {
+        guard let category, !category.isEmpty else { return uncategorizedName }
+        let words = category.lowercased().split(separator: "_").map(String.init)
+        guard let first = words.first else { return uncategorizedName }
+        let rest = words.dropFirst().joined(separator: " ")
+        return (first.prefix(1).uppercased() + first.dropFirst()) + (rest.isEmpty ? "" : " " + rest)
+    }
+}
+
+/// What the three comparison tables (categories, detailed labels, merchants) share, so one sort
+/// orders them all.
+fileprivate protocol ComparedRow {
+    var amount: Decimal { get }
+    var previousAmount: Decimal { get }
+    var name: String { get }
+}
+
+extension CategorySpendCalculator.Row: ComparedRow {}
+extension CategorySpendCalculator.DetailRow: ComparedRow {}
+extension CategorySpendCalculator.MerchantRow: ComparedRow {}
+
+fileprivate extension Array where Element: ComparedRow {
+    /// Most spend first, then most spend in the comparison window, then name.
+    func sortedLargestFirst() -> [Element] {
+        sorted {
+            if $0.amount != $1.amount { return $0.amount > $1.amount }
+            if $0.previousAmount != $1.previousAmount { return $0.previousAmount > $1.previousAmount }
+            return $0.name < $1.name
+        }
+    }
+}
