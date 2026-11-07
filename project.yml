@@ -39,6 +39,8 @@ targets:
           UIApplicationSupportsMultipleScenes: false
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         PlaidClientID: "$(PLAID_CLIENT_ID)"
         PlaidSandboxSecret: "$(PLAID_SANDBOX_SECRET)"
         PlaidProductionSecret: "$(PLAID_PRODUCTION_SECRET)"
