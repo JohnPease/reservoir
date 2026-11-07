@@ -57,8 +57,7 @@ enum CategorySpendCalculator {
         calendar: Calendar = .current
     ) -> Month {
         guard let windows = windows(for: month, now: now, calendar: calendar) else { return Month(rows: [], total: 0) }
-        let current = totals(in: windows.current, entries: entries)
-        let previous = windows.previous.map { totals(in: $0, entries: entries) } ?? [:]
+        let (current, previous) = totals(entries, in: windows, key: \.category)
         let partial = windows.comparesPartialMonth
 
         let rows = Set(current.keys).union(previous.keys)
@@ -70,11 +69,7 @@ enum CategorySpendCalculator {
                     previousAmount: previous[category]?.amount ?? 0
                 )
             }
-            .sorted {
-                if $0.amount != $1.amount { return $0.amount > $1.amount }
-                if $0.previousAmount != $1.previousAmount { return $0.previousAmount > $1.previousAmount }
-                return $0.name < $1.name
-            }
+            .sortedLargestFirst()
         return Month(
             rows: rows,
             total: current.values.reduce(0) { $0 + $1.amount },
@@ -117,7 +112,7 @@ enum CategorySpendCalculator {
         var end = prior.end
         var partial = false
         if let now, now >= interval.start, now < interval.end {
-            let elapsed = (calendar.dateComponents([.day], from: interval.start, to: calendar.startOfDay(for: now)).day ?? 0) + 1
+            let elapsed = daysElapsed(since: interval.start, through: now, calendar: calendar)
             if let sameDays = calendar.date(byAdding: .day, value: elapsed, to: prior.start), sameDays < prior.end {
                 end = sameDays
                 partial = true
@@ -151,17 +146,7 @@ enum CategorySpendCalculator {
         calendar: Calendar = .current
     ) -> [DetailRow] {
         guard let windows = windows(for: month, now: now, calendar: calendar) else { return [] }
-        let inCategory = entries.filter { $0.category == category }
-        func grouped(_ range: Range<Date>) -> [String?: (amount: Decimal, count: Int)] {
-            var result: [String?: (amount: Decimal, count: Int)] = [:]
-            for entry in inCategory where range.contains(entry.date) {
-                result[entry.categoryDetailed, default: (0, 0)].amount += entry.amount
-                result[entry.categoryDetailed, default: (0, 0)].count += 1
-            }
-            return result
-        }
-        let current = grouped(windows.current)
-        let previous = windows.previous.map(grouped) ?? [:]
+        let (current, previous) = totals(entries.filter { $0.category == category }, in: windows, key: \.categoryDetailed)
         return Set(current.keys).union(previous.keys)
             .map {
                 DetailRow(
@@ -170,11 +155,7 @@ enum CategorySpendCalculator {
                     previousAmount: previous[$0]?.amount ?? 0
                 )
             }
-            .sorted {
-                if $0.amount != $1.amount { return $0.amount > $1.amount }
-                if $0.previousAmount != $1.previousAmount { return $0.previousAmount > $1.previousAmount }
-                return $0.name < $1.name
-            }
+            .sortedLargestFirst()
     }
 
     /// `FOOD_AND_DRINK_FAST_FOOD` inside `FOOD_AND_DRINK` becomes "Fast food". A label that
@@ -215,17 +196,7 @@ enum CategorySpendCalculator {
             let key = merchantKey(entry.merchant)
             if display[key].map({ entry.date >= $0.date }) ?? true { display[key] = (entry.merchant, entry.date) }
         }
-        func grouped(_ range: Range<Date>) -> [String: (amount: Decimal, count: Int)] {
-            var result: [String: (amount: Decimal, count: Int)] = [:]
-            for entry in inCategory where range.contains(entry.date) {
-                let key = merchantKey(entry.merchant)
-                result[key, default: (0, 0)].amount += entry.amount
-                result[key, default: (0, 0)].count += 1
-            }
-            return result
-        }
-        let current = grouped(windows.current)
-        let previous = windows.previous.map(grouped) ?? [:]
+        let (current, previous) = totals(inCategory, in: windows) { merchantKey($0.merchant) }
         return Set(current.keys).union(previous.keys)
             .map {
                 MerchantRow(
@@ -234,11 +205,7 @@ enum CategorySpendCalculator {
                     previousAmount: previous[$0]?.amount ?? 0
                 )
             }
-            .sorted {
-                if $0.amount != $1.amount { return $0.amount > $1.amount }
-                if $0.previousAmount != $1.previousAmount { return $0.previousAmount > $1.previousAmount }
-                return $0.name < $1.name
-            }
+            .sortedLargestFirst()
     }
 
     static func merchantKey(_ name: String) -> String {
@@ -358,7 +325,7 @@ enum CategorySpendCalculator {
 
     /// Average monthly spend in `category` over the earlier months.
     private static func usual(
-        for category: String, in prior: [[String?: (amount: Decimal, count: Int)]]
+        for category: String?, in prior: [[String?: (amount: Decimal, count: Int)]]
     ) -> Decimal {
         prior.reduce(Decimal(0)) { $0 + ($1[category]?.amount ?? 0) } / Decimal(prior.count)
     }
@@ -413,6 +380,18 @@ enum CategorySpendCalculator {
         return months.map { totals(in: $0, entries: entries) }
     }
 
+    /// Average monthly spend in `category` over the earlier months, by the same rule the callouts
+    /// use (up to five, none before the first month with data); nil with fewer than two such
+    /// months. `months` is how many were averaged.
+    static func usualMonthly(
+        for category: String?, before month: Date, entries: [Entry], calendar: Calendar = .current
+    ) -> (average: Decimal, months: Int)? {
+        guard let interval = calendar.dateInterval(of: .month, for: month),
+              let prior = priorMonthTotals(before: interval.start, entries: entries, calendar: calendar)
+        else { return nil }
+        return (usual(for: category, in: prior), prior.count)
+    }
+
     // MARK: - Month-end pace (reservoir-2zf)
 
     struct Projection: Equatable {
@@ -453,7 +432,7 @@ enum CategorySpendCalculator {
               let prior = priorMonthTotals(before: interval.start, entries: entries, calendar: calendar),
               let daysInMonth = calendar.range(of: .day, in: .month, for: month)?.count
         else { return [] }
-        let elapsed = (calendar.dateComponents([.day], from: interval.start, to: calendar.startOfDay(for: now)).day ?? 0) + 1
+        let elapsed = daysElapsed(since: interval.start, through: now, calendar: calendar)
         guard elapsed >= projectionMinimumDays else { return [] }
 
         let current = totals(in: interval.start..<interval.end, entries: entries)
@@ -516,12 +495,35 @@ enum CategorySpendCalculator {
     }
 
     private static func totals(in range: Range<Date>, entries: [Entry]) -> [String?: (amount: Decimal, count: Int)] {
-        var byCategory: [String?: (amount: Decimal, count: Int)] = [:]
+        totals(in: range, entries: entries, key: \.category)
+    }
+
+    private static func totals<Key: Hashable>(
+        in range: Range<Date>, entries: [Entry], key: (Entry) -> Key
+    ) -> [Key: (amount: Decimal, count: Int)] {
+        var result: [Key: (amount: Decimal, count: Int)] = [:]
         for entry in entries where range.contains(entry.date) {
-            byCategory[entry.category, default: (0, 0)].amount += entry.amount
-            byCategory[entry.category, default: (0, 0)].count += 1
+            result[key(entry), default: (0, 0)].amount += entry.amount
+            result[key(entry), default: (0, 0)].count += 1
         }
-        return byCategory
+        return result
+    }
+
+    /// Totals per group in the month and in its comparison window (empty when there is none).
+    private static func totals<Key: Hashable>(
+        _ entries: [Entry],
+        in windows: (current: Range<Date>, previous: Range<Date>?, comparesPartialMonth: Bool),
+        key: (Entry) -> Key
+    ) -> (current: [Key: (amount: Decimal, count: Int)], previous: [Key: (amount: Decimal, count: Int)]) {
+        (
+            totals(in: windows.current, entries: entries, key: key),
+            windows.previous.map { totals(in: $0, entries: entries, key: key) } ?? [:]
+        )
+    }
+
+    /// Days of the month through `now`, counting `now`'s own day (1 on the first).
+    private static func daysElapsed(since monthStart: Date, through now: Date, calendar: Calendar) -> Int {
+        (calendar.dateComponents([.day], from: monthStart, to: calendar.startOfDay(for: now)).day ?? 0) + 1
     }
 
     /// `FOOD_AND_DRINK` becomes "Food and drink"; nil becomes "Uncategorized".
@@ -531,5 +533,28 @@ enum CategorySpendCalculator {
         guard let first = words.first else { return uncategorizedName }
         let rest = words.dropFirst().joined(separator: " ")
         return (first.prefix(1).uppercased() + first.dropFirst()) + (rest.isEmpty ? "" : " " + rest)
+    }
+}
+
+/// What the three comparison tables (categories, detailed labels, merchants) share, so one sort
+/// orders them all.
+fileprivate protocol ComparedRow {
+    var amount: Decimal { get }
+    var previousAmount: Decimal { get }
+    var name: String { get }
+}
+
+extension CategorySpendCalculator.Row: ComparedRow {}
+extension CategorySpendCalculator.DetailRow: ComparedRow {}
+extension CategorySpendCalculator.MerchantRow: ComparedRow {}
+
+fileprivate extension Array where Element: ComparedRow {
+    /// Most spend first, then most spend in the comparison window, then name.
+    func sortedLargestFirst() -> [Element] {
+        sorted {
+            if $0.amount != $1.amount { return $0.amount > $1.amount }
+            if $0.previousAmount != $1.previousAmount { return $0.previousAmount > $1.previousAmount }
+            return $0.name < $1.name
+        }
     }
 }

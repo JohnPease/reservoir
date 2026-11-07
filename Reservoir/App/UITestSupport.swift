@@ -86,6 +86,12 @@ enum UITestScenario: String {
     /// two completed months (reservoir-62p).
     case budgetPastMonths
 
+    /// Categorized history for Today's category card, "higher than usual" callout and "Coming up"
+    /// card (reservoir-qj2, reservoir-nm8): Entertainment $30 in each of the three months before
+    /// this one and $120 this month, and a $15 monthly "Streaming Co" charge whose next one is due
+    /// in a few days. No goal or budget.
+    case categorizedSpend
+
     static var current: UITestScenario? {
         ProcessInfo.processInfo.environment["UITEST_SCENARIO"].flatMap(UITestScenario.init(rawValue:))
     }
@@ -560,6 +566,46 @@ enum UITestScenario: String {
                     plaidTransactionID: "uitest-budget-txn-\(index)",
                     plaidItemID: "uitest-item",
                     plaidAccountID: entry.0
+                ))
+            }
+
+        case .categorizedSpend:
+            let calendar = Calendar.current
+            for back in 1...3 {
+                context.insert(SpendTransaction(
+                    amount: 30,
+                    date: calendar.date(byAdding: .month, value: -back, to: .now)!,
+                    merchantName: "Cinema \(back)",
+                    type: .variable,
+                    entryMethod: .imported,
+                    plaidTransactionID: "uitest-cat-past-\(back)",
+                    category: "ENTERTAINMENT",
+                    categoryDetailed: "ENTERTAINMENT_MOVIES_AND_MUSIC"
+                ))
+            }
+            context.insert(SpendTransaction(
+                amount: 120,
+                date: .now,
+                merchantName: "Concert Hall",
+                type: .variable,
+                entryMethod: .imported,
+                plaidTransactionID: "uitest-cat-now",
+                category: "ENTERTAINMENT",
+                categoryDetailed: "ENTERTAINMENT_MUSIC_AND_AUDIO"
+            ))
+            // Same day of the month three months running; the latest was 27 days ago, so the next
+            // is expected a few days from now.
+            let latest = calendar.date(byAdding: .day, value: -27, to: .now)!
+            for back in 0...2 {
+                context.insert(SpendTransaction(
+                    amount: 15,
+                    date: calendar.date(byAdding: .month, value: -back, to: latest)!,
+                    merchantName: "Streaming Co",
+                    type: .variable,
+                    entryMethod: .imported,
+                    plaidTransactionID: "uitest-cat-stream-\(back)",
+                    category: "GENERAL_SERVICES",
+                    categoryDetailed: "GENERAL_SERVICES_OTHER_GENERAL_SERVICES"
                 ))
             }
 

@@ -1017,7 +1017,9 @@ final class TransactionImportService {
                     incomingMerchantName: mapped.merchantName,
                     manualTransaction: match,
                     plaidItemID: sourceItemID,
-                    plaidAccountID: mapped.accountID
+                    plaidAccountID: mapped.accountID,
+                    incomingCategory: mapped.category,
+                    incomingCategoryDetailed: mapped.categoryDetailed
                 )
                 let failureMessage = PersistenceSaveHelper.saveOrRollback(
                     modelContext: modelContext,
@@ -1200,17 +1202,10 @@ final class TransactionImportService {
         for stamp in queuedStamps {
             guard let index = mergeQueue.firstIndex(where: { $0.id == stamp.plaidTransactionID }) else { continue }
             let decision = mergeQueue[index]
-            let incoming = decision.incoming
             mergeQueue[index] = PendingMergeDecision(
                 id: decision.id,
                 manualTransaction: decision.manualTransaction,
-                incoming: MappedPlaidTransaction(
-                    plaidTransactionID: incoming.plaidTransactionID,
-                    amount: incoming.amount,
-                    date: incoming.date,
-                    merchantName: incoming.merchantName,
-                    accountID: stamp.accountID
-                )
+                incoming: decision.incoming.withAccountID(stamp.accountID)
             )
         }
         return true
@@ -1541,7 +1536,9 @@ final class TransactionImportService {
                 amount: record.incomingAmount,
                 date: record.incomingDate,
                 merchantName: record.incomingMerchantName,
-                accountID: record.plaidAccountID
+                accountID: record.plaidAccountID,
+                category: record.incomingCategory,
+                categoryDetailed: record.incomingCategoryDetailed
             )
             return PendingMergeDecision(id: record.plaidTransactionID, manualTransaction: manual, incoming: incoming)
         }

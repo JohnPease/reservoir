@@ -40,6 +40,7 @@ final class RecurringChargeCalculatorTests: XCTestCase {
             charge(date(2026, 8, 20), 10, "Streamly"),
             charge(date(2026, 9, 20), 10, "Streamly"),
             charge(date(2026, 10, 20), 12, "Streamly"),
+            charge(date(2026, 5, 1), 5, "Elsewhere"),  // history from before the first charge
         ]
         let found = RecurringChargeCalculator.detect(entries: entries, now: now, calendar: calendar)
         XCTAssertEqual(found.first?.previousAmount, 10)
@@ -189,5 +190,33 @@ final class RecurringChargeCalculatorTests: XCTestCase {
         let found = RecurringChargeCalculator.detect(entries: twoSubscriptions, now: now, calendar: calendar)
         let upcoming = RecurringChargeCalculator.upcoming(found, now: date(2026, 11, 3), calendar: calendar)
         XCTAssertEqual(RecurringChargeCalculator.total(of: upcoming), 12)
+    }
+
+    func test_upcomingSkipsADateRightAfterAnEarlyPostedBill() {
+        // Usually the 1st; the latest posted on Jan 31, so Feb 1 is already paid for and the next is Mar 1.
+        let entries = [
+            charge(date(2025, 10, 1), 30, "Cloud"), charge(date(2025, 11, 1), 30, "Cloud"),
+            charge(date(2025, 12, 1), 30, "Cloud"), charge(date(2026, 1, 31), 30, "Cloud"),
+        ]
+        let found = RecurringChargeCalculator.detect(entries: entries, now: date(2026, 2, 3), calendar: calendar)
+        XCTAssertEqual(found.first?.usualDay, 1)
+        XCTAssertTrue(RecurringChargeCalculator.upcoming(found, now: date(2026, 2, 1), calendar: calendar).isEmpty)
+        XCTAssertEqual(
+            RecurringChargeCalculator.upcoming(found, now: date(2026, 2, 25), calendar: calendar).first?.expectedDate,
+            calendar.startOfDay(for: date(2026, 3, 1))
+        )
+    }
+
+    func test_newNeedsHistoryFromBeforeTheFirstCharge() {
+        // Three monthly charges, the first within 100 days, but nothing older in the data: not "New".
+        let entries = [
+            charge(date(2026, 8, 20), 10, "Streamly"), charge(date(2026, 9, 20), 10, "Streamly"),
+            charge(date(2026, 10, 20), 10, "Streamly"),
+        ]
+        XCTAssertFalse(RecurringChargeCalculator.detect(entries: entries, now: now, calendar: calendar).first?.isNew ?? true)
+
+        // The same charges with an unrelated purchase from months earlier: now it is new.
+        let withHistory = entries + [charge(date(2026, 5, 1), 5, "Elsewhere")]
+        XCTAssertTrue(RecurringChargeCalculator.detect(entries: withHistory, now: now, calendar: calendar).first?.isNew ?? false)
     }
 }

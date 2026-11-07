@@ -33,6 +33,9 @@ enum RecurringChargeCalculator {
     /// A merchant that has not charged in this many days is treated as cancelled.
     static let activeWithinDays = 45
     static let newWithinDays = 100
+    /// "New" needs this much history from before the charge, so a freshly linked account whose
+    /// first import is recent does not flag every subscription it finds.
+    static let newMinimumPriorHistoryDays = 60
     /// How far back history is considered.
     static let lookbackDays = 210
     /// Share of charges within 15% of the median amount.
@@ -44,7 +47,8 @@ enum RecurringChargeCalculator {
         let groups = Dictionary(grouping: entries.filter { !$0.merchant.isEmpty && $0.date >= cutoff && $0.date <= now }) {
             CategorySpendCalculator.merchantKey($0.merchant)
         }
-        return groups.values.compactMap { recurring(from: $0, now: now, calendar: calendar) }
+        let historyStart = entries.map(\.date).min()
+        return groups.values.compactMap { recurring(from: $0, historyStart: historyStart, now: now, calendar: calendar) }
             .sorted {
                 $0.typicalAmount != $1.typicalAmount ? $0.typicalAmount > $1.typicalAmount : $0.merchant < $1.merchant
             }
@@ -120,8 +124,22 @@ enum RecurringChargeCalculator {
         .sorted { $0.expectedDate != $1.expectedDate ? $0.expectedDate < $1.expectedDate : $0.merchant < $1.merchant }
     }
 
+    /// A bill that posted days early (usually the 1st, this time Jan 31) already paid for the
+    /// month its usual day falls in; the next one is a month further on.
+    private static let minimumGapDays = 15
+
     private static func nextExpectedDay(after last: Date, usualDay: Int, calendar: Calendar) -> Date? {
-        guard let nextMonth = calendar.date(byAdding: .month, value: 1, to: last),
+        guard var day = dayInMonth(after: last, usualDay: usualDay, calendar: calendar) else { return nil }
+        let gap = calendar.dateComponents([.day], from: calendar.startOfDay(for: last), to: day).day ?? 0
+        if gap < minimumGapDays {
+            guard let later = dayInMonth(after: day, usualDay: usualDay, calendar: calendar) else { return nil }
+            day = later
+        }
+        return day
+    }
+
+    private static func dayInMonth(after date: Date, usualDay: Int, calendar: Calendar) -> Date? {
+        guard let nextMonth = calendar.date(byAdding: .month, value: 1, to: date),
               let length = calendar.range(of: .day, in: .month, for: nextMonth)?.count
         else { return nil }
         var parts = calendar.dateComponents([.year, .month], from: nextMonth)
@@ -129,7 +147,9 @@ enum RecurringChargeCalculator {
         return calendar.date(from: parts).map { calendar.startOfDay(for: $0) }
     }
 
-    private static func recurring(from group: [CategorySpendCalculator.Entry], now: Date, calendar: Calendar) -> Recurring? {
+    private static func recurring(
+        from group: [CategorySpendCalculator.Entry], historyStart: Date?, now: Date, calendar: Calendar
+    ) -> Recurring? {
         let charges = group.sorted { $0.date < $1.date }
         guard charges.count >= minimumCharges, let first = charges.first, let last = charges.last else { return nil }
 
@@ -164,9 +184,17 @@ enum RecurringChargeCalculator {
             firstDate: first.date,
             chargeCount: charges.count,
             previousAmount: changed ? previous : nil,
-            isNew: first.date >= newCutoff,
+            isNew: first.date >= newCutoff && hasHistory(before: first.date, since: historyStart, calendar: calendar),
             usualDay: Int(median(charges.map { Double(calendar.component(.day, from: $0.date)) }).rounded())
         )
+    }
+
+    /// Whether the data reaches back far enough before `date` for "first seen" to mean "new".
+    private static func hasHistory(before date: Date, since historyStart: Date?, calendar: Calendar) -> Bool {
+        guard let historyStart,
+              let needed = calendar.date(byAdding: .day, value: -newMinimumPriorHistoryDays, to: date)
+        else { return false }
+        return historyStart <= needed
     }
 
     private static func mostCommonCategory(_ charges: [CategorySpendCalculator.Entry]) -> String? {

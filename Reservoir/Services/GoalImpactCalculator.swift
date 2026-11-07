@@ -18,7 +18,7 @@ enum GoalImpactCalculator {
 
         /// "Cutting a quarter of Food and drink (about $103 a month) would finish this goal roughly 9 days sooner."
         var text: String {
-            let money = monthlySaving.formatted(.currency(code: "USD").precision(.fractionLength(0)))
+            let money = monthlySaving.wholeDollarText
             return "Cutting a quarter of \(categoryName) (about \(money) a month) would finish this goal roughly \(daysSooner) \(daysSooner == 1 ? "day" : "days") sooner."
         }
     }

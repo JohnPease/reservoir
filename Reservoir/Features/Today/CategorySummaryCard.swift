@@ -19,10 +19,10 @@ struct CategorySummaryCard: View {
                         Text("Spending by category · \(referenceDate.formatted(.dateTime.month(.wide)))")
                             .font(.caption)
                             .foregroundStyle(Color("ReservoirTextSecondary"))
-                        Text("\(top.name) \(top.amount.formatted(.currency(code: "USD").precision(.fractionLength(0))))")
+                        Text("\(top.name) \(top.amount.wholeDollarText)")
                             .font(.title3.weight(.semibold))
                             .foregroundStyle(Color("ReservoirTextPrimary"))
-                        Text("of \(summary.total.formatted(.currency(code: "USD").precision(.fractionLength(0)))) this month")
+                        Text("of \(summary.total.wholeDollarText) this month")
                             .font(.caption)
                             .foregroundStyle(Color("ReservoirTextSecondary"))
                         if let callout {
@@ -44,7 +44,8 @@ struct CategorySummaryCard: View {
                 .reservoirCardBackground(Color("ReservoirSurface"))
             }
             .buttonStyle(.plain)
-            .accessibilityElement(children: .combine)
+            // .contain, not .combine, so the callout stays reachable by its own identifier.
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("today.categoryCard")
         }
     }

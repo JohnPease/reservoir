@@ -71,7 +71,10 @@ struct CategoryTrendView: View {
                 .frame(height: 200)
                 .accessibilityIdentifier("categories.trendChart")
             } footer: {
-                footer(history: history, lastYear: lastYear, thisMonth: thisMonthAmount)
+                footer(
+                    usual: CategorySpendCalculator.usualMonthly(for: category, before: month, entries: entries, calendar: calendar),
+                    lastYear: lastYear, thisMonth: thisMonthAmount
+                )
             }
             Section {
                 NavigationLink {
@@ -87,7 +90,7 @@ struct CategoryTrendView: View {
                         NavigationLink {
                             CategoryChargesView(title: row.name, category: category, merchant: row.name, month: month)
                         } label: {
-                            MerchantRowView(row: row)
+                            ComparisonRowView(name: row.name, amount: row.amount, count: row.count, change: row.change)
                         }
                     }
                 }
@@ -99,7 +102,7 @@ struct CategoryTrendView: View {
                         NavigationLink {
                             CategoryChargesView(title: row.name, category: category, detailed: .some(row.detailed), month: month)
                         } label: {
-                            DetailRowView(row: row)
+                            ComparisonRowView(name: row.name, amount: row.amount, count: row.count, change: row.change)
                         }
                     }
                 }
@@ -131,12 +134,11 @@ struct CategoryTrendView: View {
     }
 
     @ViewBuilder
-    private func footer(history: [CategorySpendCalculator.MonthTotal], lastYear: Decimal?, thisMonth: Decimal) -> some View {
-        let earlier = history.dropLast()
+    private func footer(usual: (average: Decimal, months: Int)?, lastYear: Decimal?, thisMonth: Decimal) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            if !earlier.isEmpty {
-                let average = earlier.reduce(Decimal(0)) { $0 + $1.amount } / Decimal(earlier.count)
-                Text("Average of the earlier \(earlier.count) months: \(average.formatted(.currency(code: "USD").precision(.fractionLength(0)))).")
+            // The same "usual" the callouts use: earlier months only, none before the data begins.
+            if let usual {
+                Text("Average of the earlier \(usual.months) months: \(usual.average.wholeDollarText).")
             }
             if let lastYear {
                 Text(lastYearText(lastYear: lastYear, thisMonth: thisMonth))
@@ -147,10 +149,9 @@ struct CategoryTrendView: View {
 
     private func lastYearText(lastYear: Decimal, thisMonth: Decimal) -> String {
         let monthName = month.formatted(.dateTime.month(.wide))
-        let money = { (value: Decimal) in value.formatted(.currency(code: "USD").precision(.fractionLength(0))) }
         let change = thisMonth - lastYear
-        let direction = change == 0 ? "the same" : (change > 0 ? "up \(money(change))" : "down \(money(-change))")
-        return "\(monthName) last year: \(money(lastYear)), so this year is \(direction)."
+        let direction = change == 0 ? "the same" : (change > 0 ? "up \(change.wholeDollarText)" : "down \((-change).wholeDollarText)")
+        return "\(monthName) last year: \(lastYear.wholeDollarText), so this year is \(direction)."
     }
 
     private func weekdayInsight(_ pattern: CategorySpendCalculator.WeekdayPattern) -> String {
@@ -161,49 +162,27 @@ struct CategoryTrendView: View {
     }
 }
 
-private struct MerchantRowView: View {
-    let row: CategorySpendCalculator.MerchantRow
+/// A merchant or detailed-label row: name and amount, then the charge count and the change on
+/// the comparison window.
+private struct ComparisonRowView: View {
+    let name: String
+    let amount: Decimal
+    let count: Int
+    let change: Decimal
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
-                Text(row.name)
+                Text(name)
                 Spacer()
-                Text(row.amount.formatted(.currency(code: "USD")))
+                Text(amount.formatted(.currency(code: "USD")))
                     .monospacedDigit()
             }
             HStack {
-                Text("\(row.count) \(row.count == 1 ? "charge" : "charges")")
+                Text("\(count) \(count == 1 ? "charge" : "charges")")
                 Spacer()
-                if row.change != 0 {
-                    let amount = abs(row.change).formatted(.currency(code: "USD").precision(.fractionLength(0)))
-                    Text(row.change > 0 ? "up \(amount)" : "down \(amount)")
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-        .accessibilityElement(children: .combine)
-    }
-}
-
-private struct DetailRowView: View {
-    let row: CategorySpendCalculator.DetailRow
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Text(row.name)
-                Spacer()
-                Text(row.amount.formatted(.currency(code: "USD")))
-                    .monospacedDigit()
-            }
-            HStack {
-                Text("\(row.count) \(row.count == 1 ? "charge" : "charges")")
-                Spacer()
-                if row.change != 0 {
-                    let amount = abs(row.change).formatted(.currency(code: "USD").precision(.fractionLength(0)))
-                    Text(row.change > 0 ? "up \(amount)" : "down \(amount)")
+                if change != 0 {
+                    Text(change > 0 ? "up \(abs(change).wholeDollarText)" : "down \(abs(change).wholeDollarText)")
                 }
             }
             .font(.caption)

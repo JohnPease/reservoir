@@ -11,7 +11,7 @@ final class AccountBackfillImportTests: XCTestCase {
     private static let itemID = "item-1"
 
     override func setUpWithError() throws {
-        let schema = Schema(versionedSchema: SchemaV11.self)
+        let schema = Schema(versionedSchema: SchemaV12.self)
         container = try ModelContainer(
             for: schema, migrationPlan: ReservoirMigrationPlan.self,
             configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)]
@@ -1131,7 +1131,7 @@ final class AccountBackfillImportTests: XCTestCase {
     /// `save()` the importer attempts throws. Returns the read-only context and the file URL
     /// (to read back what is really on disk).
     private func makeReadOnlyContext(seed: (ModelContext) throws -> Void) throws -> (context: ModelContext, url: URL) {
-        let schema = Schema(versionedSchema: SchemaV11.self)
+        let schema = Schema(versionedSchema: SchemaV12.self)
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("AccountBackfillImportTests-\(UUID().uuidString)")
             .appendingPathExtension("store")
@@ -1152,7 +1152,7 @@ final class AccountBackfillImportTests: XCTestCase {
     }
 
     private func onDisk<T: PersistentModel>(_ type: T.Type, at url: URL) throws -> [T] {
-        let schema = Schema(versionedSchema: SchemaV11.self)
+        let schema = Schema(versionedSchema: SchemaV12.self)
         let container = try ModelContainer(
             for: schema, migrationPlan: ReservoirMigrationPlan.self,
             configurations: [ModelConfiguration(schema: schema, url: url)]

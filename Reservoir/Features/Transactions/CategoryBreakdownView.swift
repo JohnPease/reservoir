@@ -150,7 +150,7 @@ private struct CategoryRowView: View {
         if change == 0 {
             Text("no change")
         } else {
-            let amount = abs(change).formatted(.currency(code: "USD").precision(.fractionLength(0)))
+            let amount = abs(change).wholeDollarText
             Label(
                 change > 0 ? "up \(amount)" : "down \(amount)",
                 systemImage: change > 0 ? "arrow.up" : "arrow.down"

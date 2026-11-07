@@ -416,4 +416,19 @@ final class CategorySpendCalculatorTests: XCTestCase {
         XCTAssertEqual(Set(CategorySpendCalculator.outliers(entries: entries, calendar: calendar).keys), [4, 5])
         XCTAssertEqual(Set(CategorySpendCalculator.outliers(entries: entries.reversed(), calendar: calendar).keys), [4, 5])
     }
+
+    // MARK: - Usual month (shared by callouts, pace and the trend footer)
+
+    func test_usualMonthlyAveragesEarlierMonthsWithData() {
+        let usual = CategorySpendCalculator.usualMonthly(
+            for: "ENTERTAINMENT", before: date(2026, 10, 15), entries: calloutEntries(entertainmentThisMonth: 130), calendar: calendar
+        )
+        XCTAssertEqual(usual?.average, 50)
+        XCTAssertEqual(usual?.months, 4, "June to September; nothing before the first month with data counts.")
+    }
+
+    func test_usualMonthlyNeedsTwoEarlierMonths() {
+        let entries = [entry(date(2026, 9, 5), 50, "ENTERTAINMENT"), entry(date(2026, 10, 5), 90, "ENTERTAINMENT")]
+        XCTAssertNil(CategorySpendCalculator.usualMonthly(for: "ENTERTAINMENT", before: date(2026, 10, 15), entries: entries, calendar: calendar))
+    }
 }

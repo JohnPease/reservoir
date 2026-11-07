@@ -580,7 +580,7 @@ appears anywhere in the app. It owns two responsibilities:
   "Recurring charges" (reservoir-o0a, `RecurringChargeCalculator`): merchants with one
   charge in each of at least three months, about a month apart, similar amounts (60%
   within 15% of the median), charged again in the last 45 days; flagged "New" (first seen
-  within 100 days) or with the previous amount when the price moved by at least 5% and
+  within 100 days, and only when the data reaches back at least 60 days before that first charge) or with the previous amount when the price moved by at least 5% and
   $1. A best guess from stored history. Past months in the budget review list each
   month's top three categories among the counted spend (reservoir-d5m). Active goal
   cards add a line (reservoir-11z, `GoalImpactCalculator`) estimating how many days
@@ -595,7 +595,8 @@ appears anywhere in the app. It owns two responsibilities:
   (`UpcomingBillsCard`) listing recurring charges expected from two days ago through the
   next seven days, with a combined total, linking to the recurring list. The expected date
   is the charge's usual day of the month in the month after its last charge (clamped to
-  the month's length); one more than two days late drops off. Amounts are the current
+  the month's length; a date within 15 days of the last charge, as when a bill posted early,
+  moves a month on); one more than two days late drops off. Amounts are the current
   price. It is informational and does not change the daily limit. The recurring list's
   header gives the monthly and yearly total and, when prices moved, the net monthly
   change. The breakdown adds "On pace to run high" (`CategorySpendCalculator.projections`):
@@ -605,6 +606,12 @@ appears anywhere in the app. It owns two responsibilities:
   out). A charge at least 2.5x and $40 above its merchant's median over the last year (at
   least three strictly earlier charges; subscriptions excluded) shows "Usually about $X"
   in red on its row (`CategorySpendCalculator.outliers`).
+
+  A manual entry merged with its Plaid match takes Plaid's category, and a queued merge
+  decision remembers the incoming category (`PendingTransactionMerge`, `SchemaV12`) so
+  "Merge" or "Keep both" after a relaunch categorizes the row too. The category trend
+  screen's "Average of the earlier N months" uses the same rule as the callouts (up to five
+  months, none before the data begins, at least two).
 
   **Re-scan (reservoir-kuc)**: Settings > Re-scan Plaid (read-only) pulls each
   item's full history from a nil cursor (`runDiagnosticRescan()`) and reports how

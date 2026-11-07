@@ -33,6 +33,15 @@ struct MappedPlaidTransaction: Equatable {
         self.category = category
         self.categoryDetailed = categoryDetailed
     }
+
+    /// The same transaction attributed to `accountID` (the account backfill's stamp).
+    func withAccountID(_ accountID: String?) -> MappedPlaidTransaction {
+        MappedPlaidTransaction(
+            plaidTransactionID: plaidTransactionID, amount: amount, date: date, merchantName: merchantName,
+            accountID: accountID, isPending: isPending, pendingTransactionID: pendingTransactionID,
+            category: category, categoryDetailed: categoryDetailed
+        )
+    }
 }
 
 /// Maps Plaid's wire-format `PlaidTransaction` (see `TransactionImportService`'s DTOs)

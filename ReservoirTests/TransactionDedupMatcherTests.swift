@@ -112,6 +112,19 @@ final class TransactionDedupMatcherTests: XCTestCase {
         XCTAssertTrue(manual.wasMergedFromManual)
     }
 
+    func testApplyMerge_takesPlaidCategory() {
+        let manual = makeManual(amount: 12.50, merchantName: "Coffee Shop")
+        let incoming = MappedPlaidTransaction(
+            plaidTransactionID: "plaid-1", amount: 12.50, date: .now, merchantName: "Coffee Shop",
+            category: "FOOD_AND_DRINK", categoryDetailed: "FOOD_AND_DRINK_COFFEE"
+        )
+
+        TransactionDedupMatcher.applyMerge(to: manual, incoming: incoming)
+
+        XCTAssertEqual(manual.category, "FOOD_AND_DRINK")
+        XCTAssertEqual(manual.categoryDetailed, "FOOD_AND_DRINK_COFFEE")
+    }
+
     func testApplyMerge_preservesTypeAndManualOverride() {
         let manual = makeManual(type: .fixed, isManualOverride: true)
         let incoming = mapped()
