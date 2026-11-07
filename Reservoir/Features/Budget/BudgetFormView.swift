@@ -12,10 +12,6 @@ struct BudgetFormView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(TransactionImportService.self) private var importService: TransactionImportService?
 
-    /// All transactions, used only to find the earliest imported row of the selected
-    /// accounts (the start-date floor).
-    @Query private var transactions: [SpendTransaction]
-
     let mode: Mode
     var accessibilityIdentifier: String = "budget.createBudgetSheet"
     private let linkedAccountStore: LinkedAccountStoring
@@ -25,7 +21,6 @@ struct BudgetFormView: View {
     @State private var selectedAccountIDs: Set<String> = []
     @State private var startDate: Date
     @State private var linkedAccounts: [LinkedAccount] = []
-    @State private var earliestImportedDate: Date?
     @State private var saveError: String?
     /// Set for the duration of `save()` (and until the sheet dismisses on success) so a
     /// second tap on Save/Create can't run a second write while the first is finishing.
@@ -62,16 +57,13 @@ struct BudgetFormView: View {
             monthlyAmount: monthlyAmount,
             selectedAccountIDs: selectedAccountIDs,
             startDate: startDate,
-            earliestImportedDate: earliestImportedDate,
             referenceDate: referenceDate,
             calendar: calendar
         )
     }
 
     private var startDateRange: ClosedRange<Date> {
-        let floor = BudgetValidator.startDateFloor(
-            earliestImportedDate: earliestImportedDate, referenceDate: referenceDate, calendar: calendar
-        )
+        let floor = BudgetValidator.startDateFloor(referenceDate: referenceDate, calendar: calendar)
         return floor...max(floor, calendar.startOfDay(for: referenceDate))
     }
 
@@ -195,7 +187,6 @@ struct BudgetFormView: View {
         .accessibilityIdentifier(accessibilityIdentifier)
         .task {
             linkedAccounts = linkedAccountStore.loadAll()
-            refreshEarliestImportedDate()
             // The picker needs cached account metadata; if the backfill that provides it is
             // still owed, run it now and reload (reservoir-0fq).
             await importService?.runAccountBackfillIfNeeded()
@@ -204,9 +195,6 @@ struct BudgetFormView: View {
         .onChange(of: importService?.isImporting) {
             linkedAccounts = linkedAccountStore.loadAll()
         }
-        // Selecting different accounts can move the start-date floor; recompute it so
-        // the validator (and date range) re-evaluate the current start date.
-        .onChange(of: selectedAccountIDs) { refreshEarliestImportedDate() }
     }
 
     private func binding(for accountID: String) -> Binding<Bool> {
@@ -215,12 +203,6 @@ struct BudgetFormView: View {
             set: { isOn in
                 if isOn { selectedAccountIDs.insert(accountID) } else { selectedAccountIDs.remove(accountID) }
             }
-        )
-    }
-
-    private func refreshEarliestImportedDate() {
-        earliestImportedDate = BudgetValidator.earliestImportedDate(
-            selectedAccountIDs: selectedAccountIDs, transactions: transactions, calendar: calendar
         )
     }
 

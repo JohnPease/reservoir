@@ -18,12 +18,11 @@ final class BudgetValidatorTests: XCTestCase {
     private func validate(
         amount: Decimal = 1000,
         accounts: Set<String> = ["a"],
-        start: Date,
-        earliest: Date? = nil
+        start: Date
     ) -> BudgetValidator.ValidationResult {
         BudgetValidator.validate(
             monthlyAmount: amount, selectedAccountIDs: accounts, startDate: start,
-            earliestImportedDate: earliest, referenceDate: today, calendar: calendar
+            referenceDate: today, calendar: calendar
         )
     }
 
@@ -57,44 +56,19 @@ final class BudgetValidatorTests: XCTestCase {
         XCTAssertNil(validate(start: date(2026, 10, 26)).startDateError, "today is allowed")
     }
 
-    func testFloorIsSevenThirtyDaysBackWithoutImportedHistory() {
-        let floor = BudgetValidator.startDateFloor(earliestImportedDate: nil, referenceDate: today, calendar: calendar)
+    func testFloorIsSevenThirtyDaysBack() {
+        let floor = BudgetValidator.startDateFloor(referenceDate: today, calendar: calendar)
         XCTAssertEqual(floor, calendar.date(byAdding: .day, value: -730, to: today))
         XCTAssertNil(validate(start: floor).startDateError)
         XCTAssertNotNil(validate(start: calendar.date(byAdding: .day, value: -1, to: floor)!).startDateError)
     }
 
-    func testFloorIsLaterOfHistoryCapAndEarliestImport() {
-        let recent = date(2026, 6, 15)
-        XCTAssertEqual(BudgetValidator.startDateFloor(earliestImportedDate: recent, referenceDate: today, calendar: calendar), recent)
-        let ancient = date(2020, 1, 1)
-        XCTAssertEqual(
-            BudgetValidator.startDateFloor(earliestImportedDate: ancient, referenceDate: today, calendar: calendar),
-            calendar.date(byAdding: .day, value: -730, to: today)
-        )
-    }
-
-    func testStartBeforeEarliestImportIsRejected() {
-        let result = validate(start: date(2026, 6, 14), earliest: date(2026, 6, 15))
-        XCTAssertNotNil(result.startDateError)
-        XCTAssertTrue(result.startDateError!.hasPrefix("Start date can't be before"))
-        XCTAssertNil(validate(start: date(2026, 6, 15), earliest: date(2026, 6, 15)).startDateError)
+    func testStartOfMonthIsAllowedRegardlessOfImportedHistory() {
+        // A freshly linked phone may have no transaction on the 1st; the budget still starts there.
+        XCTAssertNil(validate(start: date(2026, 10, 1)).startDateError)
     }
 
     func testDefaultStartDateIsFirstOfCurrentMonth() {
         XCTAssertEqual(BudgetValidator.defaultStartDate(referenceDate: today, calendar: calendar), date(2026, 10, 1))
-    }
-
-    func testEarliestImportedDateUsesOnlySelectedAccountsAndIgnoresManual() throws {
-        let rows = [
-            SpendTransaction(amount: 1, date: date(2026, 1, 5), merchantName: "A", type: .variable, entryMethod: .imported, plaidAccountID: "a"),
-            SpendTransaction(amount: 1, date: date(2026, 3, 5), merchantName: "B", type: .variable, entryMethod: .imported, plaidAccountID: "a"),
-            SpendTransaction(amount: 1, date: date(2025, 1, 1), merchantName: "C", type: .variable, entryMethod: .imported, plaidAccountID: "b"),
-            SpendTransaction(amount: 1, date: date(2024, 1, 1), merchantName: "D", type: .variable, entryMethod: .manual),
-            SpendTransaction(amount: 1, date: date(2023, 1, 1), merchantName: "E", type: .variable, entryMethod: .imported)
-        ]
-        XCTAssertEqual(BudgetValidator.earliestImportedDate(selectedAccountIDs: ["a"], transactions: rows, calendar: calendar), date(2026, 1, 5))
-        XCTAssertEqual(BudgetValidator.earliestImportedDate(selectedAccountIDs: ["a", "b"], transactions: rows, calendar: calendar), date(2025, 1, 1))
-        XCTAssertNil(BudgetValidator.earliestImportedDate(selectedAccountIDs: ["z"], transactions: rows, calendar: calendar))
     }
 }

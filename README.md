@@ -240,8 +240,9 @@ on every 1st). The budget has no revision history — `BudgetCalculator`
 recomputes the whole window from `startDate` with the budget's *current* fields,
 so editing a setting recalculates everything as if it had always applied.
 `BudgetValidator` (pure) owns form validation and the start-date floor
-(`max(today - 730 days, earliest imported transaction among the selected
-accounts)`); `BudgetService` enforces "only one budget" and wraps saves in
+(`today - 730 days`; deliberately not tied to the earliest imported transaction, so a new
+budget can start on the 1st of the month even right after relinking, with quiet days
+accruing their full base); `BudgetService` enforces "only one budget" and wraps saves in
 `PersistenceSaveHelper`; `BudgetAccountService` shapes the account picker
 (grouped by institution, "Name ••mask", "Closed account" rows for selected
 accounts that are no longer linked) and prunes a budget's selection when an
