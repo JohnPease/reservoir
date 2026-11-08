@@ -1165,7 +1165,8 @@ same reset-on-the-1st rule), so the carry shown matches the Today hero's carried
 tests pin that, including a skipped-midnight time zone. Today's own spend is not banked yet, so the
 carry line stops at yesterday. The viewed month and range are held by `GoalsView` (a pinned month of
 `nil` follows the current month), so a rotation, which rebuilds the card under a different parent,
-keeps them; the selected day stays local so scrubbing never re-runs the day walk.
+keeps them; the selected day stays local so scrubbing never re-runs the day walk. The mockups these
+follow are in `docs/design/foldable/` (open the HTML files in a browser).
 
 ### Home screen widget (reservoir-apd)
 

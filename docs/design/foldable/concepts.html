@@ -1,0 +1,205 @@
+<title>Foldable Concepts</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: spec sheet. Findings and rules on top, then the four screens drawn at true point size, scaled to fit. */
+:root{
+  --bg:#F5FBF9; --surface:#FFFFFF; --ink:#0A2A36; --ink2:#5B7A78; --muted:#8A9C99; --accent:#0A5C64; --warn:#993C1D; --line:#D5E6E2; --sheet:#E7F1EE;
+  --sans:'IBM Plex Sans',system-ui,sans-serif; --mono:'IBM Plex Mono',ui-monospace,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0A2A36;--surface:#123847;--ink:#EAF6F2;--ink2:#7FA39D;--muted:#5E827D;--accent:#3FA8A0;--warn:#E8967A;--line:#1F4B5A;--sheet:#0E3140;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0A2A36;--surface:#123847;--ink:#EAF6F2;--ink2:#7FA39D;--muted:#5E827D;--accent:#3FA8A0;--warn:#E8967A;--line:#1F4B5A;--sheet:#0E3140;color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:15px/1.55 var(--sans);padding-block:32px 64px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.wrap{max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:40px}
+h1{font-size:30px;line-height:1.15;margin:0 0 8px;font-weight:600;text-wrap:balance}
+h2{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink2);margin:0 0 12px;font-weight:600}
+p{margin:0 0 10px;max-width:68ch}
+.intro p{color:var(--ink2);font-size:16px}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:8px 14px 8px 0;border-bottom:1px solid var(--line);vertical-align:top;font-variant-numeric:tabular-nums}
+th{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink2);font-weight:600}
+td.m{font-family:var(--mono);font-size:13px;white-space:nowrap}
+.scroll{overflow-x:auto}
+.rules{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:24px}
+.rules div{border-top:2px solid var(--accent);padding-top:10px}
+.rules b{display:block;margin-bottom:4px}
+.rules span{color:var(--ink2);font-size:14px}
+.stage{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:36px 28px;align-items:start}
+.fig{margin:0;display:flex;flex-direction:column;gap:12px;min-width:0}
+.fig figcaption{font-size:13px;color:var(--ink2)}
+.fig figcaption b{color:var(--ink);display:block;font-size:15px}
+.zoomer{overflow:hidden}
+/* device frames, true pt size; .dev is scaled with zoom so it fits the column */
+.dev{position:relative;background:var(--bg);border:1px solid var(--line);border-radius:36px;overflow:hidden;font:14px/1.35 -apple-system,'SF Pro Text',system-ui,sans-serif;color:var(--ink);zoom:var(--z,.6);box-shadow:0 0 0 8px var(--sheet)}
+.scr{position:absolute;inset:0 0 56px 0;padding:44px 16px 16px;display:flex;flex-direction:column;gap:12px;overflow:hidden}
+.dev.l .scr{padding-top:24px}
+.card{background:var(--surface);border-radius:16px;padding:14px 16px}
+.lbl{font-size:12px;color:var(--ink2)}
+.big{font-size:48px;line-height:1.05;font-weight:700;letter-spacing:-.02em;margin:2px 0}
+.sub{font-size:13px;color:var(--ink2)}
+.pos{color:var(--accent)}
+.bar{height:6px;border-radius:3px;background:var(--sheet);margin:10px 0 8px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--accent)}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.num{font-size:24px;font-weight:600}
+.t{font-size:18px;font-weight:600}
+.warn{font-size:12px;font-weight:600;color:var(--warn);margin-top:4px}
+.row{display:flex;justify-content:space-between;padding:7px 0;border-top:1px solid var(--line);font-size:14px}
+.row:first-of-type{margin-top:6px}
+.cta{border:0;border-radius:14px;background:var(--accent);color:var(--bg);font:600 15px -apple-system,system-ui,sans-serif;padding:13px}
+.tabs{position:absolute;left:0;right:0;bottom:0;height:56px;display:flex;justify-content:space-around;align-items:center;background:var(--surface);border-top:1px solid var(--line);font-size:11px;color:var(--muted)}
+.tabs .on,.rail .on{color:var(--accent);font-weight:600}
+.two{flex-direction:row;gap:14px}
+.two .col{flex:1;display:flex;flex-direction:column;gap:12px;min-width:0}
+.cl .col:first-child{flex:0 0 44%}
+.cl .big{font-size:56px}
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.rl .scr{inset:0 0 0 132px;padding:28px 20px 16px}
+.rail{position:absolute;left:0;top:0;bottom:0;width:132px;padding:36px 12px;background:var(--surface);border-right:1px solid var(--line);display:flex;flex-direction:column;gap:6px;font-size:14px;color:var(--ink2)}
+.rail span{padding:9px 10px;border-radius:10px}
+.rail .on{background:var(--sheet)}
+.il{flex-direction:row;gap:16px}
+.il .a{flex:0 0 46%;display:flex;flex-direction:column;gap:12px}
+.il .b{flex:1;display:flex;flex-direction:column;gap:12px;min-width:0}
+.il .big{font-size:64px}
+.pick{border-left:3px solid var(--accent);padding-left:14px}
+code{font-family:var(--mono);font-size:13px;background:var(--sheet);padding:1px 5px;border-radius:4px}
+
+.concept{display:flex;flex-direction:column;gap:14px}
+.ch{display:flex;align-items:baseline;gap:12px;border-top:2px solid var(--accent);padding-top:12px}
+.ch h2{font-size:22px;letter-spacing:0;text-transform:none;color:var(--ink);margin:0}
+.k{font-family:var(--mono);font-size:13px;color:var(--accent);font-weight:500}
+.stage{grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr))}
+.w{color:#fff}
+.tankwrap{position:relative;margin:8px 0}
+.tanknum{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center}
+.tanknum .big{font-size:84px}
+.a-cover{gap:10px}
+.a-inner{flex-direction:row;gap:28px;padding:28px 28px 16px}
+.tankcol{position:relative;width:220px;flex:none}
+.tmark{position:absolute;left:228px;font-size:11px;font-family:var(--mono);color:var(--ink2)}
+.aside{flex:1;display:flex;flex-direction:column;gap:10px;padding-left:36px}
+.big small{font-size:20px;font-weight:500;color:var(--ink2)}
+.steps{display:flex;flex-direction:column;gap:0;margin:6px 0}
+.step{display:flex;gap:12px;align-items:flex-start;padding:7px 0;border-left:2px solid var(--line);margin-left:5px;padding-left:14px;position:relative}
+.step i{position:absolute;left:-6px;top:11px;width:10px;height:10px;border-radius:50%;background:var(--surface);border:2px solid var(--accent)}
+.step.now i{background:var(--accent)}
+.step div{display:flex;justify-content:space-between;width:100%}
+.step span{color:var(--ink2)}
+.strip{display:block;width:100%;height:auto}
+.b-inner{gap:8px;padding:28px 20px 16px}
+.bh{display:flex;justify-content:space-between;align-items:flex-end}
+.seg{display:flex;background:var(--sheet);border-radius:10px;padding:2px;font-size:12px}
+.seg span{padding:5px 12px;border-radius:8px;color:var(--ink2)}
+.seg .on{background:var(--surface);color:var(--ink);font-weight:600}
+.b-detail{margin-top:4px}
+.c-inner{padding:0;gap:0}
+.half{flex:1;padding:44px 24px 16px;display:flex;flex-direction:column;gap:8px;position:relative}
+.half.next{padding-top:24px;background:var(--sheet)}
+.tag{font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:var(--accent);font-weight:500}
+.big.x{font-size:72px}
+.seam{height:0;position:relative;border-top:1px dashed var(--muted)}
+.seam span{position:absolute;right:12px;top:-8px;font:11px var(--mono);color:var(--muted);background:var(--bg);padding:0 6px}
+.tl{display:flex;flex-direction:column}
+.tl div{display:grid;grid-template-columns:44px 1fr auto;padding:9px 0;border-top:1px solid var(--line)}
+.tl em{font-style:normal;font-weight:600}
+.tl span{color:var(--ink2)}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{background:var(--surface);border-radius:999px;padding:6px 12px;font-size:13px}
+.chip.w{color:var(--warn);font-weight:600}
+.cats{display:flex;flex-direction:column;gap:10px;margin:8px 0}
+.crow{padding:8px 10px;border-radius:12px}
+.crow.sel{background:var(--surface)}
+.cn{display:flex;justify-content:space-between;margin-bottom:5px}
+.cn span{color:var(--ink2)}
+.cb{position:relative;height:8px;border-radius:4px;background:var(--sheet)}
+.cb i{display:block;height:100%;border-radius:4px;background:var(--accent)}
+.cb i.w{background:var(--warn)}
+.cb u{position:absolute;top:-3px;width:2px;height:14px;background:var(--ink);text-decoration:none}
+.d-inner{flex-direction:row;gap:0;padding:24px 0 0}
+.page{flex:1;padding:8px 28px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.page.right{background:var(--surface)}
+.gutter{width:14px;background:linear-gradient(90deg,transparent,rgba(0,0,0,.12),transparent)}
+.day{font:11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink2);margin-top:8px}
+.flag{display:block;font-style:normal;font-size:11px;color:var(--warn);font-weight:600}
+.hero .big.w{color:inherit}
+.dev .row{align-items:flex-start}
+</style>
+<div class="wrap">
+<header class="intro">
+  <h1>Four foldable concepts</h1>
+  <p>The first set only rearranged the existing cards. These start from what each screen is good at. Every concept has a cover version and an inner version, and the figures are examples. Nothing here is built.</p>
+</header>
+<section class="concept"><div class="ch"><span class="k">A</span><h2>The tank</h2></div><p>The app is named for a reservoir, so today is drawn as one. The water level is what is left to spend; every purchase lowers it a step you can read down the side. On the cover it is the whole screen, and unfolding makes it tall with the day's steps written beside it.</p><div class="stage"><figure class="fig"><div class="dev p" style="width:466px;height:678px"><div class="scr a-cover">
+  <div class="lbl">Left to spend today</div>
+  <div class="tankwrap"><svg class="tank" width="418" height="470" viewBox="0 0 418 470" aria-hidden="true"><rect x="0" y="0" width="418" height="470" rx="22" fill="var(--sheet)"/><clipPath id="tc1"><rect x="0" y="0" width="418" height="470" rx="22"/></clipPath><g clip-path="url(#tc1)"><rect x="0" y="102.0" width="418" height="368.0" fill="var(--accent)" opacity=".9"/></g><line x1="0" x2="418" y1="0.0" y2="0.0" stroke="var(--bg)" stroke-width="1.5" stroke-dasharray="3 4" opacity=".8"/><line x1="0" x2="418" y1="26.6" y2="26.6" stroke="var(--bg)" stroke-width="1.5" stroke-dasharray="3 4" opacity=".8"/><line x1="0" x2="418" y1="102.0" y2="102.0" stroke="var(--bg)" stroke-width="1.5" stroke-dasharray="3 4" opacity=".8"/></svg><div class="tanknum"><div class="big w">$83</div><div class="sub w">of $106 · $77 base + $29 carried</div></div></div>
+  <div class="row"><span>Trader Joe's · 12:40 pm</span><b>−$17</b></div>
+  <div class="row"><span>Blue Bottle · 8:12 am</span><b>−$6</b></div>
+</div><nav class="tabs"><span class="on">Today</span><span>Plans</span><span>Transactions</span><span>Settings</span></nav></div><figcaption><b>Cover, portrait</b> · today as a tank. The water level is what you have left; each purchase drops it a step</figcaption></figure><figure class="fig"><div class="dev l" style="width:890px;height:626px"><div class="scr a-inner">
+  <div class="tankcol"><svg class="tank" width="220" height="520" viewBox="0 0 220 520" aria-hidden="true"><rect x="0" y="0" width="220" height="520" rx="22" fill="var(--sheet)"/><clipPath id="tc2"><rect x="0" y="0" width="220" height="520" rx="22"/></clipPath><g clip-path="url(#tc2)"><rect x="0" y="112.8" width="220" height="407.2" fill="var(--accent)" opacity=".9"/></g><line x1="0" x2="220" y1="0.0" y2="0.0" stroke="var(--bg)" stroke-width="1.5" stroke-dasharray="3 4" opacity=".8"/><line x1="0" x2="220" y1="29.4" y2="29.4" stroke="var(--bg)" stroke-width="1.5" stroke-dasharray="3 4" opacity=".8"/><line x1="0" x2="220" y1="112.8" y2="112.8" stroke="var(--bg)" stroke-width="1.5" stroke-dasharray="3 4" opacity=".8"/></svg>
+    <div class="tmark" style="top:20px">$100</div>
+    <div class="tmark" style="top:104px">$83</div>
+    <div class="tmark" style="top:-4px">$106</div>
+  </div>
+  <div class="aside">
+    <div class="lbl">Wednesday, November 7</div>
+    <div class="big">$83 <small>left</small></div>
+    <div class="sub">$77 daily base + <b class="pos">$29</b> carried from Nov 1–6</div>
+    <div class="steps">
+      <div class="step"><i></i><div><b>Start of day</b><span>$106</span></div></div>
+      <div class="step"><i></i><div><b>Blue Bottle · 8:12 am</b><span>−$6 → $100</span></div></div>
+      <div class="step"><i></i><div><b>Trader Joe's · 12:40 pm</b><span>−$17 → $83</span></div></div>
+      <div class="step now"><i></i><div><b>Now</b><span>$83 left</span></div></div>
+    </div>
+    <button class="cta">Add transaction</button>
+  </div>
+</div><nav class="tabs"><span class="on">Today</span><span>Plans</span><span>Transactions</span><span>Settings</span></nav></div><figcaption><b>Inner, landscape</b> · the tank is drawn tall at the left with the day's purchases stepping down its side</figcaption></figure></div></section><section class="concept"><div class="ch"><span class="k">B</span><h2>The month strip</h2></div><p>The daily limit with carryover is the idea no other budget app has, and nothing in the app shows how the carryover is built. This puts every day of the month in one row. Bars over the base turn red, and the line below shows what each day added to or took from tomorrow.</p><div class="stage"><figure class="fig"><div class="dev p" style="width:466px;height:678px"><div class="scr">
+  <div class="lbl">This week · daily spend vs $77 base</div>
+  <svg width="434" height="230" viewBox="0 0 434 230" class="strip" aria-hidden="true"><rect x="19.0" y="118.5" width="38.9" height="89.5" rx="3" fill="var(--accent)"/><text x="38.4" y="224" text-anchor="middle" font-size="11" fill="var(--ink2)">1</text><rect x="79.8" y="76.7" width="38.9" height="131.3" rx="3" fill="var(--warn)"/><text x="99.3" y="224" text-anchor="middle" font-size="11" fill="var(--ink2)">2</text><rect x="140.7" y="138.7" width="38.9" height="69.3" rx="3" fill="var(--accent)"/><text x="160.1" y="224" text-anchor="middle" font-size="11" fill="var(--ink2)">3</text><rect x="201.5" y="34.9" width="38.9" height="173.1" rx="3" fill="var(--warn)"/><text x="221.0" y="224" text-anchor="middle" font-size="11" fill="var(--ink2)">4</text><rect x="262.4" y="157.5" width="38.9" height="50.5" rx="3" fill="var(--accent)"/><text x="281.9" y="224" text-anchor="middle" font-size="11" fill="var(--ink2)">5</text><rect x="323.2" y="96.9" width="38.9" height="111.1" rx="3" fill="var(--accent)"/><text x="342.7" y="224" text-anchor="middle" font-size="11" fill="var(--ink2)">6</text><rect x="384.1" y="174.8" width="38.9" height="33.2" rx="3" fill="var(--accent)" opacity=".55"/><rect x="373.1" y="6" width="60.9" height="202" rx="6" fill="none" stroke="var(--ink)" stroke-width="1.5"/><text x="403.6" y="224" text-anchor="middle" font-size="11" fill="var(--ink2)">7</text><line x1="8" x2="434" y1="96.9" y2="96.9" stroke="var(--ink2)" stroke-dasharray="4 4"/><text x="432" y="91.9" text-anchor="end" font-size="11" fill="var(--ink2)">$77 daily base</text></svg>
+  <div class="lbl">Carried forward</div>
+  <svg width="434" height="110" viewBox="0 0 434 110" class="strip" aria-hidden="true"><line x1="8" x2="434" y1="64.8" y2="64.8" stroke="var(--line)"/><polyline fill="none" stroke="var(--accent)" stroke-width="2.5" points="38.4,50.1 99.3,63.8 160.1,35.4 221.0,77.5 281.9,36.4 342.7,36.4"/><circle cx="38.4" cy="50.1" r="3.5" fill="var(--accent)"/><circle cx="99.3" cy="63.8" r="3.5" fill="var(--accent)"/><circle cx="160.1" cy="35.4" r="3.5" fill="var(--accent)"/><circle cx="221.0" cy="77.5" r="3.5" fill="var(--accent)"/><circle cx="281.9" cy="36.4" r="3.5" fill="var(--accent)"/><circle cx="342.7" cy="36.4" r="3.5" fill="var(--accent)"/><text x="350.7" y="28.4" font-size="12" font-weight="600" fill="var(--ink)">+$29</text><text x="8" y="59.8" font-size="11" fill="var(--ink2)">$0</text></svg>
+  <div class="card"><div class="lbl">Tomorrow starts at</div><div class="num">$77 + $29 = $106</div><div class="sub">Nov 4 cost you $43 over base; Nov 5 won't give it all back.</div></div>
+</div><nav class="tabs"><span class="on">Today</span><span>Plans</span><span>Transactions</span><span>Settings</span></nav></div><figcaption><b>Cover, portrait</b> · the week as seven bars. Red bars went over the base; the line underneath is the carryover</figcaption></figure><figure class="fig"><div class="dev l" style="width:890px;height:626px"><div class="scr b-inner">
+  <div class="bh"><div><div class="lbl">November · every day against its limit</div><div class="t">$29 ahead after 6 days</div></div><div class="seg"><span class="on">Month</span><span>Quarter</span></div></div>
+  <svg width="850" height="230" viewBox="0 0 850 230" class="strip" aria-hidden="true"><rect x="13.1" y="118.5" width="18.0" height="89.5" rx="3" fill="var(--accent)"/><text x="22.0" y="224" text-anchor="middle" font-size="11" fill="var(--ink2)">1</text><rect x="41.1" y="76.7" width="18.0" height="131.3" rx="3" fill="var(--warn)"/><rect x="69.2" y="138.7" width="18.0" height="69.3" rx="3" fill="var(--accent)"/><rect x="97.3" y="34.9" width="18.0" height="173.1" rx="3" fill="var(--warn)"/><rect x="125.3" y="157.5" width="18.0" height="50.5" rx="3" fill="var(--accent)"/><text x="134.3" y="224" text-anchor="middle" font-size="11" fill="var(--ink2)">5</text><rect x="153.4" y="96.9" width="18.0" height="111.1" rx="3" fill="var(--accent)"/><rect x="181.5" y="174.8" width="18.0" height="33.2" rx="3" fill="var(--accent)" opacity=".55"/><rect x="176.4" y="6" width="28.1" height="202" rx="6" fill="none" stroke="var(--ink)" stroke-width="1.5"/><rect x="209.5" y="206" width="18.0" height="2" fill="var(--line)"/><rect x="237.6" y="206" width="18.0" height="2" fill="var(--line)"/><rect x="265.7" y="206" width="18.0" height="2" fill="var(--line)"/><text x="274.6" y="224" text-anchor="middle" font-size="11" fill="var(--ink2)">10</text><rect x="293.7" y="206" width="18.0" height="2" fill="var(--line)"/><rect x="321.8" y="206" width="18.0" height="2" fill="var(--line)"/><rect x="349.9" y="206" width="18.0" height="2" fill="var(--line)"/><rect x="377.9" y="206" width="18.0" height="2" fill="var(--line)"/><rect x="406.0" y="206" width="18.0" height="2" fill="var(--line)"/><text x="415.0" y="224" text-anchor="middle" font-size="11" fill="var(--ink2)">15</text><rect x="434.1" y="206" width="18.0" height="2" fill="var(--line)"/><rect x="462.1" y="206" width="18.0" height="2" fill="var(--line)"/><rect x="490.2" y="206" width="18.0" height="2" fill="var(--line)"/><rect x="518.3" y="206" width="18.0" height="2" fill="var(--line)"/><rect x="546.3" y="206" width="18.0" height="2" fill="var(--line)"/><text x="555.3" y="224" text-anchor="middle" font-size="11" fill="var(--ink2)">20</text><rect x="574.4" y="206" width="18.0" height="2" fill="var(--line)"/><rect x="602.5" y="206" width="18.0" height="2" fill="var(--line)"/><rect x="630.5" y="206" width="18.0" height="2" fill="var(--line)"/><rect x="658.6" y="206" width="18.0" height="2" fill="var(--line)"/><rect x="686.7" y="206" width="18.0" height="2" fill="var(--line)"/><text x="695.6" y="224" text-anchor="middle" font-size="11" fill="var(--ink2)">25</text><rect x="714.7" y="206" width="18.0" height="2" fill="var(--line)"/><rect x="742.8" y="206" width="18.0" height="2" fill="var(--line)"/><rect x="770.9" y="206" width="18.0" height="2" fill="var(--line)"/><rect x="798.9" y="206" width="18.0" height="2" fill="var(--line)"/><rect x="827.0" y="206" width="18.0" height="2" fill="var(--line)"/><text x="836.0" y="224" text-anchor="middle" font-size="11" fill="var(--ink2)">30</text><line x1="8" x2="850" y1="96.9" y2="96.9" stroke="var(--ink2)" stroke-dasharray="4 4"/><text x="848" y="91.9" text-anchor="end" font-size="11" fill="var(--ink2)">$77 daily base</text></svg>
+  <div class="lbl">Carried forward, cumulative</div>
+  <svg width="850" height="100" viewBox="0 0 850 100" class="strip" aria-hidden="true"><line x1="8" x2="850" y1="58.8" y2="58.8" stroke="var(--line)"/><polyline fill="none" stroke="var(--accent)" stroke-width="2.5" points="22.0,45.6 50.1,57.9 78.2,32.4 106.2,70.2 134.3,33.3 162.4,33.3"/><circle cx="22.0" cy="45.6" r="3.5" fill="var(--accent)"/><circle cx="50.1" cy="57.9" r="3.5" fill="var(--accent)"/><circle cx="78.2" cy="32.4" r="3.5" fill="var(--accent)"/><circle cx="106.2" cy="70.2" r="3.5" fill="var(--accent)"/><circle cx="134.3" cy="33.3" r="3.5" fill="var(--accent)"/><circle cx="162.4" cy="33.3" r="3.5" fill="var(--accent)"/><text x="170.4" y="25.3" font-size="12" font-weight="600" fill="var(--ink)">+$29</text><text x="8" y="53.8" font-size="11" fill="var(--ink2)">$0</text></svg>
+  <div class="pair b-detail"><div class="card"><div class="lbl">Nov 4 · over by $43</div><div class="row"><span>Costco</span><b>$88</b></div><div class="row"><span>Sweetgreen</span><b>$32</b></div></div>
+  <div class="card"><div class="lbl">Today · Nov 7</div><div class="row"><span>Trader Joe's</span><b>$17</b></div><div class="row"><span>Blue Bottle</span><b>$6</b></div></div></div>
+</div><nav class="tabs"><span class="on">Today</span><span>Plans</span><span>Transactions</span><span>Settings</span></nav></div><figcaption><b>Inner, landscape</b> · the whole month. Tap a bar to open that day underneath; it shows how the carryover was built, day by day</figcaption></figure></div></section><section class="concept"><div class="ch"><span class="k">C</span><h2>Now and next</h2></div><p>The fold gives the inner display a natural top and bottom. The top is what you spend from today, the bottom is what is coming, so a screen that mixes both today becomes two clear zones. The cover keeps only the top and a one-line preview of the bottom.</p><div class="stage"><figure class="fig"><div class="dev p" style="width:466px;height:678px"><div class="scr">
+  <section class="card hero"><div class="lbl">Left to spend today</div><div class="big">$83</div><div class="sub">of $106 · spent $23</div><div class="bar"><i style="width:22%"></i></div></section>
+  <section class="card"><div class="lbl">Next up</div><div class="row"><span>Streaming Co · Tue</span><b>$15</b></div></section>
+  <section class="card"><div class="lbl">On pace to run high</div><div class="t">Dining</div><div class="warn">About $90 over its usual by month end</div></section>
+</div><nav class="tabs"><span class="on">Today</span><span>Plans</span><span>Transactions</span><span>Settings</span></nav></div><figcaption><b>Cover, portrait</b> · only "Now" and a one-line "Next". Unfolding adds the rest</figcaption></figure><figure class="fig"><div class="dev p" style="width:626px;height:890px"><div class="scr c-inner">
+  <div class="half now"><div class="tag">NOW</div>
+    <div class="lbl">Wednesday, November 7</div><div class="big x">$83</div><div class="sub">left today · $106 limit, $23 spent</div>
+    <div class="bar"><i style="width:22%"></i></div>
+    <div class="row"><span>Trader Joe's · 12:40 pm</span><b>−$17</b></div><div class="row"><span>Blue Bottle · 8:12 am</span><b>−$6</b></div>
+    <button class="cta">Add transaction</button></div>
+  <div class="seam"><span>fold</span></div>
+  <div class="half next"><div class="tag">NEXT</div>
+    <div class="lbl">Coming up this week</div>
+    <div class="tl"><div><b>Tue</b><span>Streaming Co</span><em>$15</em></div><div><b>Fri</b><span>Gym</span><em>$40</em></div><div><b>Sun</b><span>Phone</span><em>$62</em></div></div>
+    <div class="lbl" style="margin-top:12px">Where the month is heading</div>
+    <div class="chips"><span class="chip w">Dining +$90</span><span class="chip">Groceries on track</span><span class="chip">Subscriptions $212 / mo</span></div>
+  </div>
+</div><nav class="tabs"><span class="on">Today</span><span>Plans</span><span>Transactions</span><span>Settings</span></nav></div><figcaption><b>Inner, portrait</b> · the fold becomes the divider. Above it is today, below it is what is ahead. Held like a laptop, the top half faces you</figcaption></figure></div></section><section class="concept"><div class="ch"><span class="k">D</span><h2>The ledger spread</h2></div><p>Categories, trends and unusual-charge flags are the newest part of the app and have the most detail. On the inner display they become a book: summary on the left page, the charges behind a row on the right, with no navigation push.</p><div class="stage"><figure class="fig"><div class="dev p" style="width:466px;height:678px"><div class="scr">
+  <div class="lbl">Spending by category · November</div><div class="t">$601 so far</div>
+  <div class="cats"><div class="crow sel"><div class="cn"><b>Dining</b><span>$212</span></div><div class="cb"><i style="width:82%" class="w"></i><u style="left:46%"></u></div></div><div class="crow"><div class="cn"><b>Groceries</b><span>$186</span></div><div class="cb"><i style="width:72%" class=""></i><u style="left:73%"></u></div></div><div class="crow"><div class="cn"><b>Transport</b><span>$94</span></div><div class="cb"><i style="width:36%" class=""></i><u style="left:38%"></u></div></div><div class="crow"><div class="cn"><b>Shopping</b><span>$61</span></div><div class="cb"><i style="width:23%" class=""></i><u style="left:31%"></u></div></div><div class="crow"><div class="cn"><b>Entertainment</b><span>$48</span></div><div class="cb"><i style="width:18%" class=""></i><u style="left:15%"></u></div></div></div>
+  <div class="sub">The tick is each category's usual for this point in the month.</div>
+</div><nav class="tabs"><span class="on">Today</span><span>Plans</span><span>Transactions</span><span>Settings</span></nav></div><figcaption><b>Cover, portrait</b> · categories with a tick for "usual". Tapping a row opens the ledger as a full screen</figcaption></figure><figure class="fig"><div class="dev l" style="width:890px;height:626px"><div class="scr d-inner">
+  <div class="page left"><div class="lbl">Spending by category · November</div><div class="t">$601 so far</div><div class="cats"><div class="crow sel"><div class="cn"><b>Dining</b><span>$212</span></div><div class="cb"><i style="width:82%" class="w"></i><u style="left:46%"></u></div></div><div class="crow"><div class="cn"><b>Groceries</b><span>$186</span></div><div class="cb"><i style="width:72%" class=""></i><u style="left:73%"></u></div></div><div class="crow"><div class="cn"><b>Transport</b><span>$94</span></div><div class="cb"><i style="width:36%" class=""></i><u style="left:38%"></u></div></div><div class="crow"><div class="cn"><b>Shopping</b><span>$61</span></div><div class="cb"><i style="width:23%" class=""></i><u style="left:31%"></u></div></div><div class="crow"><div class="cn"><b>Entertainment</b><span>$48</span></div><div class="cb"><i style="width:18%" class=""></i><u style="left:15%"></u></div></div></div></div>
+  <div class="gutter"></div>
+  <div class="page right"><div class="lbl">Dining</div><div class="t">$212 · usual $120</div>
+    <div class="day">Tue, Nov 6</div><div class="row"><span>Sweetgreen</span><b>$32</b></div><div class="row"><span>Chipotle</span><b>$14</b></div>
+    <div class="day">Sun, Nov 4</div><div class="row"><span>Sushi Den <em class="flag">Usually about $38</em></span><b>$96</b></div>
+    <div class="day">Fri, Nov 2</div><div class="row"><span>Blue Bottle</span><b>$6</b></div><div class="row"><span>Taqueria</span><b>$22</b></div>
+    <div class="day">Thu, Nov 1</div><div class="row"><span>Pizza Place</span><b>$42</b></div>
+  </div>
+</div><nav class="tabs"><span class="on">Today</span><span>Plans</span><span>Transactions</span><span>Settings</span></nav></div><figcaption><b>Inner, landscape</b> · an open book. Pick a category on the left page and its charges are written on the right</figcaption></figure></div></section>
+<section class="pick"><h2>Decision for you</h2><p>Pick one to prototype, or tell me which pieces to combine. My suggestion: B on the inner display for budget history, A as the cover glance, and D for Transactions.</p></section>
+</div>
+<script>
+(function(){function fit(){document.querySelectorAll('.fig').forEach(function(f){var d=f.querySelector('.dev');var w=parseFloat(d.style.width);d.style.setProperty('--z',Math.min(1,(f.clientWidth-16)/w).toFixed(3));});}fit();window.addEventListener('resize',fit);})();
+</script>
