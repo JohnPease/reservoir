@@ -99,14 +99,16 @@ struct GoalsView: View {
                     onDelete: { budgetPendingDelete = budget },
                     onShowPastMonths: { budgetPendingReview = budget }
                 )
-                if budgetModel.state == .active {
-                    BudgetMonthStripView(budget: budget, transactions: transactions, referenceDate: todayClock.referenceDate)
-                }
             } else {
                 BudgetSetRowView { isShowingCreateBudget = true }
             }
 
         }
+        // The month strip, when the budget has figures to chart.
+        let strip: BudgetMonthStripView? = {
+            guard let budget, budgetModel?.state == .active else { return nil }
+            return BudgetMonthStripView(budget: budget, transactions: transactions, referenceDate: todayClock.referenceDate)
+        }()
         let goalsSection = VStack(spacing: 20) {
             sectionHeader("Savings goals")
             if hasNoGoalsAtAll {
@@ -145,22 +147,33 @@ struct GoalsView: View {
 
         NavigationStack {
             GeometryReader { proxy in
-                if ScreenLayout.layout(for: proxy.size) == .column {
+                if let strip, ScreenLayout.layout(for: proxy.size) != .column {
+                    // The strip wants the width, so it takes the right side; the budget card
+                    // and any goals stack on the left. Without a strip there is nothing to
+                    // put opposite them, so that case stays one column.
+                    HStack(alignment: .top, spacing: 0) {
+                        ScrollView {
+                            VStack(spacing: 20) {
+                                budgetSection
+                                goalsSection
+                            }
+                            .padding()
+                        }
+                        .frame(width: proxy.size.width * 0.42)
+                        ScrollView {
+                            strip.padding()
+                        }
+                    }
+                } else {
                     ScrollView {
                         VStack(spacing: 20) {
                             budgetSection
+                            if let strip { strip }
                             goalsSection
                         }
                         .padding()
-                    }
-                } else {
-                    HStack(alignment: .top, spacing: 0) {
-                        ScrollView {
-                            budgetSection.padding()
-                        }
-                        ScrollView {
-                            goalsSection.padding()
-                        }
+                        .frame(maxWidth: 640)
+                        .frame(maxWidth: .infinity)
                     }
                 }
             }
