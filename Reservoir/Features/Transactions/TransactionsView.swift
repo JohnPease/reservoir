@@ -27,7 +27,7 @@ struct TransactionsView: View {
     @State private var isShowingAddTransaction = false
     @State private var transactionPendingEdit: SpendTransaction?
     /// The row shown in the detail pane on wide screens (reservoir-h2k).
-    @State private var selectedTransaction: SpendTransaction?
+    @State private var selectedTransactionID: PersistentIdentifier?
     @State private var transactionPendingDelete: SpendTransaction?
     @State private var actionError: String?
     @State private var isShowingImportErrorDetail = false
@@ -148,7 +148,7 @@ struct TransactionsView: View {
                                 Section(TransactionsScreenCalculator.sectionTitle(for: section.day, referenceDate: todayClock.referenceDate, calendar: calendar)) {
                                     ForEach(section.transactions, id: \.persistentModelID) { transaction in
                                         Button {
-                                            if isWide { selectedTransaction = transaction } else { transactionPendingEdit = transaction }
+                                            if isWide { selectedTransactionID = transaction.persistentModelID } else { transactionPendingEdit = transaction }
                                         } label: {
                                             TransactionRowView(
                                                 transaction: transaction,
@@ -159,7 +159,7 @@ struct TransactionsView: View {
                                         }
                                         .buttonStyle(.plain)
                                         .listRowBackground(
-                                            isWide && selectedTransaction == transaction
+                                            isWide && selectedTransactionID == transaction.persistentModelID
                                                 ? Color("ReservoirSurface") : Color("ReservoirBackground")
                                         )
                                         .swipeActions {
@@ -182,7 +182,9 @@ struct TransactionsView: View {
                         .frame(width: isWide ? min(proxy.size.width * 0.45, 420) : nil)
                         if isWide {
                             Divider()
-                            if let selected = selectedTransaction, !selected.isDeleted {
+                            // Resolved from the visible list each render, so a row that a sync, a
+                            // filter or the edit sheet removed can never leave a stale detail.
+                            if let selected = filteredTransactions.first(where: { $0.persistentModelID == selectedTransactionID }) {
                                 TransactionDetailPane(
                                     transaction: selected,
                                     usualAmount: outliers[selected.persistentModelID],
@@ -344,7 +346,6 @@ struct TransactionsView: View {
     }
 
     private func delete(_ transaction: SpendTransaction) {
-        if selectedTransaction == transaction { selectedTransaction = nil }
         actionError = PersistenceSaveHelper.deleteWithRollback(
             transaction,
             modelContext: modelContext,

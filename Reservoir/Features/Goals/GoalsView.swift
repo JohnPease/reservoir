@@ -32,6 +32,10 @@ struct GoalsView: View {
     @State private var goalPendingEdit: SavingsGoal?
     @State private var goalPendingDelete: SavingsGoal?
     @State private var actionError: String?
+    /// The month strip's view state lives here so a rotation, which swaps the layout and
+    /// rebuilds the card, keeps the month and range (reservoir-h2k).
+    @State private var stripMonth: Date?
+    @State private var stripIsWeekly = false
 
     private let calendar: Calendar = .current
     private let logger = Logger(subsystem: "com.reservoir.app", category: "GoalsView")
@@ -107,7 +111,10 @@ struct GoalsView: View {
         // The month strip, when the budget has figures to chart.
         let strip: BudgetMonthStripView? = {
             guard let budget, budgetModel?.state == .active else { return nil }
-            return BudgetMonthStripView(budget: budget, transactions: transactions, referenceDate: todayClock.referenceDate)
+            return BudgetMonthStripView(
+                budget: budget, transactions: transactions, referenceDate: todayClock.referenceDate,
+                pinnedMonth: $stripMonth, isWeekly: $stripIsWeekly
+            )
         }()
         let goalsSection = VStack(spacing: 20) {
             sectionHeader("Savings goals")

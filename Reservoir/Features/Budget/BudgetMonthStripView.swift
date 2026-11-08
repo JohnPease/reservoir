@@ -6,97 +6,153 @@ import SwiftUI
 /// daily base, with the carryover line underneath, so you can see how today's limit was
 /// built. Tapping a day lists its transactions. Presentation only; the figures come from
 /// `BudgetMonthStripCalculator`.
+///
+/// The month and Week/Month choice are bindings owned by `GoalsView`, because the card is
+/// rebuilt when a rotation swaps the Plans layout and its own `@State` would reset. The
+/// selected day stays local to `StripBody`, so dragging across the chart never re-runs the
+/// day walk done here.
 struct BudgetMonthStripView: View {
     let budget: Budget
     let transactions: [SpendTransaction]
     let referenceDate: Date
-
-    private enum Range: String, CaseIterable, Identifiable {
-        case week = "Week", month = "Month"
-        var id: String { rawValue }
-    }
-
+    /// The month being viewed; `nil` follows the current month (so it rolls over at midnight
+    /// on the 1st and can never point outside the budget's range).
+    @Binding var pinnedMonth: Date?
+    @Binding var isWeekly: Bool
     /// True inside the full-screen cover: bigger charts, a close button instead of expand.
     var isFullScreen = false
 
-    @State private var month: Date
-    @State private var range: Range
-    @State private var selectedDate: Date?
     @State private var isShowingFullScreen = false
     @Environment(\.dismiss) private var dismiss
     private let calendar = Calendar.current
 
-    init(
-        budget: Budget, transactions: [SpendTransaction], referenceDate: Date,
-        startMonth: Date? = nil, startsWeekly: Bool = false, isFullScreen: Bool = false
-    ) {
-        self.budget = budget
-        self.transactions = transactions
-        self.referenceDate = referenceDate
-        self.isFullScreen = isFullScreen
-        _month = State(initialValue: startMonth ?? referenceDate)
-        _range = State(initialValue: startsWeekly ? .week : .month)
+    private func strip(for month: Date) -> BudgetMonthStripCalculator.Strip? {
+        BudgetMonthStripCalculator.strip(
+            budget: budget, transactions: transactions, month: month, referenceDate: referenceDate, calendar: calendar
+        )
     }
 
     var body: some View {
-        if let strip = BudgetMonthStripCalculator.strip(
-            budget: budget, transactions: transactions, month: month, referenceDate: referenceDate, calendar: calendar
-        ) {
-            if isFullScreen {
-                NavigationStack {
-                    ScrollView { content(strip).padding() }
-                        .background(Color("ReservoirBackground"))
-                        .navigationTitle("Month")
-                        .navigationBarTitleDisplayMode(.inline)
-                        .toolbar {
-                            ToolbarItem(placement: .confirmationAction) {
-                                Button("Done") { dismiss() }
-                                    .accessibilityIdentifier("budget.strip.done")
+        // A pinned month that no longer exists (the budget's start date moved later) falls back
+        // to the current one.
+        let strip = strip(for: pinnedMonth ?? referenceDate) ?? strip(for: referenceDate)
+        Group {
+            if let strip {
+                let days = visibleDays(strip)
+                let content = StripBody(
+                    strip: strip,
+                    days: days,
+                    transactionsByDay: transactionsByDay(),
+                    isWeekly: $isWeekly,
+                    isFullScreen: isFullScreen,
+                    isCurrentMonth: !strip.hasNext,
+                    onShift: { shift($0, from: strip) },
+                    onExpand: { isShowingFullScreen = true }
+                )
+                if isFullScreen {
+                    NavigationStack {
+                        ScrollView { content.padding() }
+                            .background(Color("ReservoirBackground"))
+                            .navigationTitle("Month")
+                            .navigationBarTitleDisplayMode(.inline)
+                            .toolbar {
+                                ToolbarItem(placement: .confirmationAction) {
+                                    Button("Done") { dismiss() }
+                                        .accessibilityIdentifier("budget.strip.done")
+                                }
                             }
-                        }
-                }
-            } else {
-                content(strip)
-                    .fullScreenCover(isPresented: $isShowingFullScreen) {
-                        BudgetMonthStripView(
-                            budget: budget, transactions: transactions, referenceDate: referenceDate,
-                            startMonth: month, startsWeekly: range == .week, isFullScreen: true
-                        )
                     }
+                } else {
+                    content
+                }
             }
+        }
+        // On the stable container, not inside the `if`, so a missing strip can't pull the cover away.
+        .fullScreenCover(isPresented: $isShowingFullScreen) {
+            BudgetMonthStripView(
+                budget: budget, transactions: transactions, referenceDate: referenceDate,
+                pinnedMonth: $pinnedMonth, isWeekly: $isWeekly, isFullScreen: true
+            )
         }
     }
 
+    /// The month's days, or for Week the seven ending today (or the month's last day when looking
+    /// back), reaching into the previous month early in a month so it is always seven bars.
     private func visibleDays(_ strip: BudgetMonthStripCalculator.Strip) -> [BudgetMonthStripCalculator.Day] {
-        guard range == .week else { return strip.days }
-        // The seven days ending today (or the month's last day when looking back).
+        guard isWeekly else { return strip.days }
         let lastIndex = strip.days.lastIndex(where: { !$0.isFuture }) ?? strip.days.count - 1
-        return Array(strip.days[max(0, lastIndex - 6)...lastIndex])
+        var days = Array(strip.days[max(0, lastIndex - 6)...lastIndex])
+        if days.count < 7, strip.hasPrevious,
+           let previousMonth = calendar.date(byAdding: .month, value: -1, to: strip.monthStart),
+           let previous = self.strip(for: previousMonth) {
+            days = Array(previous.days.suffix(7 - days.count)) + days
+        }
+        return days
     }
 
-    private func content(_ strip: BudgetMonthStripCalculator.Strip) -> some View {
-        let days = visibleDays(strip)
-        let selected = days.first { calendar.isDate($0.date, inSameDayAs: selectedDate ?? .distantPast) }
-        return VStack(alignment: .leading, spacing: 12) {
-            header(strip)
-            Picker("Range", selection: $range) {
-                ForEach(Range.allCases) { Text($0.rawValue).tag($0) }
+    /// Counted transactions per day, built once per render from the same filter the calculator uses.
+    private func transactionsByDay() -> [Date: [SpendTransaction]] {
+        Dictionary(
+            grouping: BudgetCalculator.countingTransactions(transactions, for: budget, calendar: calendar)
+        ) { calendar.startOfDay(for: $0.date) }
+    }
+
+    private func shift(_ delta: Int, from strip: BudgetMonthStripCalculator.Strip) {
+        guard let next = calendar.date(byAdding: .month, value: delta, to: strip.monthStart) else { return }
+        // Paging back to the current month goes back to following it.
+        let currentStart = calendar.dateInterval(of: .month, for: referenceDate)?.start
+        pinnedMonth = next >= (currentStart ?? next) ? nil : next
+    }
+}
+
+/// The card's content and the one piece of state that changes while scrubbing.
+private struct StripBody: View {
+    let strip: BudgetMonthStripCalculator.Strip
+    let days: [BudgetMonthStripCalculator.Day]
+    let transactionsByDay: [Date: [SpendTransaction]]
+    @Binding var isWeekly: Bool
+    let isFullScreen: Bool
+    let isCurrentMonth: Bool
+    let onShift: (Int) -> Void
+    let onExpand: () -> Void
+
+    @State private var selectedDate: Date?
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    private let calendar = Calendar.current
+
+    /// Taller charts when there is room; a landscape phone is about 400 pt high.
+    private var spendHeight: CGFloat { isFullScreen ? (verticalSizeClass == .compact ? 220 : 340) : 170 }
+    private var carryHeight: CGFloat { isFullScreen ? (verticalSizeClass == .compact ? 120 : 170) : 90 }
+
+    /// Only days that have happened can be selected; a future day has nothing to show.
+    private var selected: BudgetMonthStripCalculator.Day? {
+        guard let selectedDate else { return nil }
+        return days.first { !$0.isFuture && calendar.isDate($0.date, inSameDayAs: selectedDate) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            header
+            Picker("Range", selection: $isWeekly) {
+                Text("Week").tag(true)
+                Text("Month").tag(false)
             }
             .pickerStyle(.segmented)
             .accessibilityIdentifier("budget.strip.range")
+            .onChange(of: isWeekly) { selectedDate = nil }
 
             Text("Daily spend against the \(BudgetSummaryCalculator.whole(days.first?.base ?? 0)) base")
                 .font(.caption)
                 .foregroundStyle(Color("ReservoirTextSecondary"))
-            spendChart(days, selected: selected)
-                .frame(height: isFullScreen ? 340 : 170)
+            spendChart
+                .frame(height: spendHeight)
                 .accessibilityIdentifier("budget.strip.spend")
 
             Text("Carried forward")
                 .font(.caption)
                 .foregroundStyle(Color("ReservoirTextSecondary"))
-            carryChart(days)
-                .frame(height: isFullScreen ? 170 : 90)
+            carryChart
+                .frame(height: carryHeight)
                 .accessibilityIdentifier("budget.strip.carry")
 
             if let selected {
@@ -114,50 +170,44 @@ struct BudgetMonthStripView: View {
         .accessibilityIdentifier("budget.strip")
     }
 
-    private func header(_ strip: BudgetMonthStripCalculator.Strip) -> some View {
+    private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(strip.monthStart.formatted(.dateTime.month(.wide).year()))
                     .font(.headline)
                     .foregroundStyle(Color("ReservoirTextPrimary"))
-                Text(carryText(strip.carryNow))
+                Text(carryText)
                     .font(.subheadline)
                     .foregroundStyle(strip.carryNow < 0 ? Color("ReservoirDeficit") : Color("ReservoirTextSecondary"))
                     .accessibilityIdentifier("budget.strip.carryNow")
             }
             Spacer()
             if !isFullScreen {
-                Button { isShowingFullScreen = true } label: {
-                    Image(systemName: "arrow.up.left.and.arrow.down.right")
-                }
-                .accessibilityLabel("Show full screen")
-                .accessibilityIdentifier("budget.strip.fullScreen")
+                Button(action: onExpand) { Image(systemName: "arrow.up.left.and.arrow.down.right") }
+                    .accessibilityLabel("Show full screen")
+                    .accessibilityIdentifier("budget.strip.fullScreen")
             }
-            Button { shift(-1) } label: { Image(systemName: "chevron.left") }
+            Button { selectedDate = nil; onShift(-1) } label: { Image(systemName: "chevron.left") }
                 .disabled(!strip.hasPrevious)
                 .accessibilityLabel("Previous month")
                 .accessibilityIdentifier("budget.strip.previous")
-            Button { shift(1) } label: { Image(systemName: "chevron.right") }
+            Button { selectedDate = nil; onShift(1) } label: { Image(systemName: "chevron.right") }
                 .disabled(!strip.hasNext)
                 .accessibilityLabel("Next month")
                 .accessibilityIdentifier("budget.strip.next")
         }
     }
 
-    private func carryText(_ carry: Decimal) -> String {
-        if carry > 0 { return "\(BudgetSummaryCalculator.whole(carry)) ahead so far" }
-        if carry < 0 { return "\(BudgetSummaryCalculator.whole(-carry)) behind so far" }
-        return "Right on the base so far"
+    /// "So far" while the month is running, "at month end" once it is over.
+    private var carryText: String {
+        let when = isCurrentMonth ? "so far" : "at month end"
+        let carry = strip.carryNow
+        if carry > 0 { return "\(BudgetSummaryCalculator.whole(carry)) ahead \(when)" }
+        if carry < 0 { return "\(BudgetSummaryCalculator.whole(-carry)) behind \(when)" }
+        return "Right on the base \(when)"
     }
 
-    private func shift(_ delta: Int) {
-        if let next = calendar.date(byAdding: .month, value: delta, to: month) {
-            month = next
-            selectedDate = nil
-        }
-    }
-
-    private func spendChart(_ days: [BudgetMonthStripCalculator.Day], selected: BudgetMonthStripCalculator.Day?) -> some View {
+    private var spendChart: some View {
         Chart {
             ForEach(days) { day in
                 if !day.isFuture {
@@ -177,8 +227,8 @@ struct BudgetMonthStripView: View {
             }
         }
         .chartXSelection(value: $selectedDate)
-        .chartXScale(domain: xDomain(days))
-        .chartXAxis { dayAxis(days) }
+        .chartXScale(domain: xDomain)
+        .chartXAxis { dayAxis }
         .chartYAxis {
             AxisMarks(position: .leading) { value in
                 AxisGridLine().foregroundStyle(Color("ReservoirTextMuted").opacity(0.3))
@@ -187,7 +237,7 @@ struct BudgetMonthStripView: View {
         }
     }
 
-    private func carryChart(_ days: [BudgetMonthStripCalculator.Day]) -> some View {
+    private var carryChart: some View {
         // Today's own spend is not banked yet, so the line stops at yesterday.
         let past = days.filter { !$0.isFuture && !$0.isToday }
         return Chart {
@@ -202,8 +252,8 @@ struct BudgetMonthStripView: View {
                     .symbolSize(past.count > 14 ? 14 : 30)
             }
         }
-        .chartXScale(domain: xDomain(days))
-        .chartXAxis { dayAxis(days) }
+        .chartXScale(domain: xDomain)
+        .chartXAxis { dayAxis }
         .chartYAxis {
             AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
                 AxisValueLabel { if let v = value.as(Double.self) { Text("$\(Int(v))") } }
@@ -213,23 +263,20 @@ struct BudgetMonthStripView: View {
 
     /// The full span of the visible days, so a month early on keeps its shape and the
     /// future days show as empty room rather than the chart stretching to fit what exists.
-    private func xDomain(_ days: [BudgetMonthStripCalculator.Day]) -> ClosedRange<Date> {
-        let first = days.first?.date ?? referenceDate
-        let last = days.last?.date ?? referenceDate
+    private var xDomain: ClosedRange<Date> {
+        let first = days.first?.date ?? .now
+        let last = days.last?.date ?? first
         return first...(calendar.date(byAdding: .day, value: 1, to: last) ?? last)
     }
 
-    private func dayAxis(_ days: [BudgetMonthStripCalculator.Day]) -> some AxisContent {
+    private var dayAxis: some AxisContent {
         AxisMarks(values: .stride(by: .day, count: days.count > 14 ? 5 : 1)) { _ in
             AxisValueLabel(format: .dateTime.day())
         }
     }
 
     private func dayDetail(_ day: BudgetMonthStripCalculator.Day) -> some View {
-        let rows = transactions
-            .filter { BudgetCalculator.countsTowardBudget($0, selectedAccountIDs: Set(budget.selectedAccountIDs), startDate: budget.startDate, calendar: calendar)
-                && calendar.isDate($0.date, inSameDayAs: day.date) }
-            .sorted { $0.date > $1.date }
+        let rows = (transactionsByDay[day.date] ?? []).sorted { $0.date > $1.date }
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(day.date.formatted(.dateTime.weekday(.wide).month(.abbreviated).day()))

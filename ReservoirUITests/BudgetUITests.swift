@@ -37,6 +37,18 @@ final class BudgetUITests: XCTestCase {
         XCTAssertTrue(app.buttons["budget.strip.fullScreen"].waitForExistence(timeout: 5))
     }
 
+    func testMonthStripWeekSwitchKeepsTheCardAndPagingStopsAtTheBudgetStart() {
+        let app = launchedApp(scenario: "budgetSeeded", seedAccount: true)
+        app.tabBars.buttons["Plans"].tap()
+        XCTAssertTrue(app.otherElements["budget.strip"].waitForExistence(timeout: 5))
+        app.buttons["Week"].tap()
+        XCTAssertTrue(app.otherElements["budget.strip"].exists)
+        XCTAssertTrue(app.staticTexts["budget.strip.carryNow"].label.hasSuffix("so far"))
+        XCTAssertFalse(app.buttons["budget.strip.previous"].isEnabled, "the budget starts this month")
+        app.buttons["Month"].tap()
+        XCTAssertTrue(app.otherElements["budget.strip"].exists)
+    }
+
     func testTabIsRenamedToPlansAndShowsSetBudgetRowWhenNoBudget() {
         let app = launchedApp(scenario: "emptyGoal")
         XCTAssertFalse(app.tabBars.buttons["Goals"].exists)

@@ -106,4 +106,58 @@ final class BudgetMonthStripCalculatorTests: XCTestCase {
         XCTAssertNil(strip(b, [], month: date(2026, 8, 1), now: date(2026, 10, 3)))
         XCTAssertNil(strip(b, [], month: date(2026, 11, 1), now: date(2026, 10, 3)))
     }
+
+    func testBudgetStartingTodayHasOnePastlessDay() throws {
+        let b = budget(start: date(2026, 10, 5))
+        let result = try XCTUnwrap(strip(b, [], month: date(2026, 10, 5), now: date(2026, 10, 5)))
+        XCTAssertEqual(result.days.first?.date, calendar.startOfDay(for: date(2026, 10, 5)))
+        XCTAssertTrue(result.days.first?.isToday ?? false)
+        XCTAssertEqual(result.carryNow, 0)
+    }
+
+    func testBudgetStartingAfterTheMonthReturnsNil() {
+        let b = budget(start: date(2026, 11, 3))
+        XCTAssertNil(strip(b, [], month: date(2026, 10, 1), now: date(2026, 11, 5)))
+    }
+
+    func testFutureDatedTransactionIsNotCounted() throws {
+        let b = budget(start: date(2026, 10, 1))
+        let rows = [spend(500, on: date(2026, 10, 20))]
+        let result = try XCTUnwrap(strip(b, rows, month: date(2026, 10, 1), now: date(2026, 10, 5)))
+        XCTAssertEqual(result.days[19].spent, 0)
+        XCTAssertEqual(result.carryNow, 400, "four finished days of $100 base, nothing spent")
+    }
+
+    func testStartFreshCarryNowOnTheFirstIsZero() throws {
+        let b = budget(start: date(2026, 9, 1), carries: false, amount: 3000)
+        let rows = [spend(20, on: date(2026, 9, 30))]
+        let result = try XCTUnwrap(strip(b, rows, month: date(2026, 10, 1), now: date(2026, 10, 1)))
+        XCTAssertEqual(result.carryNow, 0)
+        XCTAssertEqual(result.days[0].carryIn, 0)
+    }
+
+    func testSkippedMidnightDayKeepsItsSpend() throws {
+        // Sao Paulo skipped midnight on 2018-11-04, so that day starts at 01:00.
+        var sp = Calendar(identifier: .gregorian)
+        sp.timeZone = TimeZone(identifier: "America/Sao_Paulo")!
+        let b = Budget(
+            monthlyAmount: 3000,
+            startDate: sp.date(from: DateComponents(year: 2018, month: 10, day: 28))!,
+            carriesAcrossMonths: true, selectedAccountIDs: ["a"]
+        )
+        context.insert(b)
+        let rows = [
+            spend(50, on: sp.date(from: DateComponents(year: 2018, month: 11, day: 4, hour: 15))!),
+            spend(70, on: sp.date(from: DateComponents(year: 2018, month: 11, day: 5, hour: 9))!)
+        ]
+        let now = sp.date(from: DateComponents(year: 2018, month: 11, day: 8, hour: 12))!
+        let result = try XCTUnwrap(BudgetMonthStripCalculator.strip(
+            budget: b, transactions: rows, month: now, referenceDate: now, calendar: sp
+        ))
+        XCTAssertEqual(result.days.count, 30)
+        XCTAssertEqual(result.days[3].spent, 50, "Nov 4")
+        XCTAssertEqual(result.days[4].spent, 70, "Nov 5")
+        let hero = try XCTUnwrap(BudgetCalculator.summary(budget: b, allTransactions: rows, referenceDate: now, calendar: sp))
+        XCTAssertEqual(result.carryNow, hero.carriedForward)
+    }
 }

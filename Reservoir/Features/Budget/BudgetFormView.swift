@@ -170,6 +170,7 @@ struct BudgetFormView: View {
             }
             .scrollContentBackground(.hidden)
             .listRowBackground(Color("ReservoirSurface"))
+            .readableFormWidth()
             .background(Color("ReservoirBackground"))
             .navigationTitle(mode.isEdit ? "Edit Budget" : "Monthly Budget")
             .toolbar {
