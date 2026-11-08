@@ -99,6 +99,9 @@ struct GoalsView: View {
                     onDelete: { budgetPendingDelete = budget },
                     onShowPastMonths: { budgetPendingReview = budget }
                 )
+                if budgetModel.state == .active {
+                    BudgetMonthStripView(budget: budget, transactions: transactions, referenceDate: todayClock.referenceDate)
+                }
             } else {
                 BudgetSetRowView { isShowingCreateBudget = true }
             }

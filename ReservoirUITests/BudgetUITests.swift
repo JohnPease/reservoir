@@ -23,6 +23,18 @@ final class BudgetUITests: XCTestCase {
         field.typeText(value)
     }
 
+    func testPlansShowsTheMonthStrip() {
+        let app = launchedApp(scenario: "budgetSeeded", seedAccount: true)
+        app.tabBars.buttons["Plans"].tap()
+        XCTAssertTrue(app.otherElements["budget.strip"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["budget.strip.carryNow"].exists)
+        XCTAssertTrue(app.buttons["budget.strip.next"].exists)
+        XCTAssertFalse(app.buttons["budget.strip.next"].isEnabled, "already on the current month")
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
+
     func testTabIsRenamedToPlansAndShowsSetBudgetRowWhenNoBudget() {
         let app = launchedApp(scenario: "emptyGoal")
         XCTAssertFalse(app.tabBars.buttons["Goals"].exists)
