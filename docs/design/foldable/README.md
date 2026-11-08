@@ -1,6 +1,7 @@
 # Foldable layout designs (reservoir-h2k)
 
-Static HTML mockups, open them in a browser. All figures on the pages are examples.
+Static HTML mockups (open them in a browser) with full-page PNG renders beside each (`layouts.png`,
+`concepts.png`, rendered at 2x in dark mode). All figures on the pages are examples.
 
 - `layouts.html`: Today drawn for the foldable's cover (466 x 678 pt) and inner (626 x 890 pt) displays in
   portrait and landscape, with the layout rules. This is the design the adaptive layouts follow.
