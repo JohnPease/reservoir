@@ -16,23 +16,54 @@ struct BudgetMonthStripView: View {
         var id: String { rawValue }
     }
 
+    /// True inside the full-screen cover: bigger charts, a close button instead of expand.
+    var isFullScreen = false
+
     @State private var month: Date
-    @State private var range: Range = .month
+    @State private var range: Range
     @State private var selectedDate: Date?
+    @State private var isShowingFullScreen = false
+    @Environment(\.dismiss) private var dismiss
     private let calendar = Calendar.current
 
-    init(budget: Budget, transactions: [SpendTransaction], referenceDate: Date) {
+    init(
+        budget: Budget, transactions: [SpendTransaction], referenceDate: Date,
+        startMonth: Date? = nil, startsWeekly: Bool = false, isFullScreen: Bool = false
+    ) {
         self.budget = budget
         self.transactions = transactions
         self.referenceDate = referenceDate
-        _month = State(initialValue: referenceDate)
+        self.isFullScreen = isFullScreen
+        _month = State(initialValue: startMonth ?? referenceDate)
+        _range = State(initialValue: startsWeekly ? .week : .month)
     }
 
     var body: some View {
         if let strip = BudgetMonthStripCalculator.strip(
             budget: budget, transactions: transactions, month: month, referenceDate: referenceDate, calendar: calendar
         ) {
-            content(strip)
+            if isFullScreen {
+                NavigationStack {
+                    ScrollView { content(strip).padding() }
+                        .background(Color("ReservoirBackground"))
+                        .navigationTitle("Month")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("Done") { dismiss() }
+                                    .accessibilityIdentifier("budget.strip.done")
+                            }
+                        }
+                }
+            } else {
+                content(strip)
+                    .fullScreenCover(isPresented: $isShowingFullScreen) {
+                        BudgetMonthStripView(
+                            budget: budget, transactions: transactions, referenceDate: referenceDate,
+                            startMonth: month, startsWeekly: range == .week, isFullScreen: true
+                        )
+                    }
+            }
         }
     }
 
@@ -58,14 +89,14 @@ struct BudgetMonthStripView: View {
                 .font(.caption)
                 .foregroundStyle(Color("ReservoirTextSecondary"))
             spendChart(days, selected: selected)
-                .frame(height: 170)
+                .frame(height: isFullScreen ? 340 : 170)
                 .accessibilityIdentifier("budget.strip.spend")
 
             Text("Carried forward")
                 .font(.caption)
                 .foregroundStyle(Color("ReservoirTextSecondary"))
             carryChart(days)
-                .frame(height: 90)
+                .frame(height: isFullScreen ? 170 : 90)
                 .accessibilityIdentifier("budget.strip.carry")
 
             if let selected {
@@ -95,6 +126,13 @@ struct BudgetMonthStripView: View {
                     .accessibilityIdentifier("budget.strip.carryNow")
             }
             Spacer()
+            if !isFullScreen {
+                Button { isShowingFullScreen = true } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                }
+                .accessibilityLabel("Show full screen")
+                .accessibilityIdentifier("budget.strip.fullScreen")
+            }
             Button { shift(-1) } label: { Image(systemName: "chevron.left") }
                 .disabled(!strip.hasPrevious)
                 .accessibilityLabel("Previous month")
