@@ -78,67 +78,88 @@ struct GoalsView: View {
             calendar: calendar
         )
 
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 20) {
-                    sectionHeader("Monthly budget")
-                    if let budget, let budgetModel {
-                        BudgetCardView(
-                            budget: budget,
-                            state: budgetModel.state,
-                            summary: budgetModel.summary,
-                            insights: BudgetSummaryCalculator.insights(
-                                budget: budget,
-                                transactions: transactions,
-                                isAccountBackfillComplete: importService?.isAccountBackfillComplete ?? true,
-                                referenceDate: todayClock.referenceDate,
-                                summary: budgetModel.summary,
-                                calendar: calendar
-                            ),
-                            hasUnsyncedAccounts: importService?.hasUnsyncedAccounts ?? false,
-                            onEdit: { budgetPendingEdit = budget },
-                            onDelete: { budgetPendingDelete = budget },
-                            onShowPastMonths: { budgetPendingReview = budget }
+        // The two halves, arranged by `ScreenLayout` below (reservoir-h2k).
+        let budgetSection = VStack(spacing: 20) {
+            sectionHeader("Monthly budget")
+            if let budget, let budgetModel {
+                BudgetCardView(
+                    budget: budget,
+                    state: budgetModel.state,
+                    summary: budgetModel.summary,
+                    insights: BudgetSummaryCalculator.insights(
+                        budget: budget,
+                        transactions: transactions,
+                        isAccountBackfillComplete: importService?.isAccountBackfillComplete ?? true,
+                        referenceDate: todayClock.referenceDate,
+                        summary: budgetModel.summary,
+                        calendar: calendar
+                    ),
+                    hasUnsyncedAccounts: importService?.hasUnsyncedAccounts ?? false,
+                    onEdit: { budgetPendingEdit = budget },
+                    onDelete: { budgetPendingDelete = budget },
+                    onShowPastMonths: { budgetPendingReview = budget }
+                )
+            } else {
+                BudgetSetRowView { isShowingCreateBudget = true }
+            }
+
+        }
+        let goalsSection = VStack(spacing: 20) {
+            sectionHeader("Savings goals")
+            if hasNoGoalsAtAll {
+                NoActiveGoalPromptView(
+                    onCreateGoal: { isShowingCreateGoal = true },
+                    containerAccessibilityIdentifier: "goals.emptyState",
+                    buttonAccessibilityIdentifier: "goals.createGoal"
+                )
+            } else {
+                if !activeGoals.isEmpty {
+                    sectionHeader("Active goals")
+                    ForEach(activeGoals, id: \.persistentModelID) { goal in
+                        ActiveGoalCardView(
+                            goal: goal,
+                            referenceDate: todayClock.referenceDate,
+                            calendar: calendar,
+                            onEdit: { goalPendingEdit = goal },
+                            onDelete: { goalPendingDelete = goal }
                         )
-                    } else {
-                        BudgetSetRowView { isShowingCreateBudget = true }
                     }
+                }
 
-                    sectionHeader("Savings goals")
-                    if hasNoGoalsAtAll {
-                        NoActiveGoalPromptView(
-                            onCreateGoal: { isShowingCreateGoal = true },
-                            containerAccessibilityIdentifier: "goals.emptyState",
-                            buttonAccessibilityIdentifier: "goals.createGoal"
+                if !completedGoals.isEmpty {
+                    sectionHeader("Completed")
+                    ForEach(completedGoals, id: \.persistentModelID) { goal in
+                        CompletionBannerView(
+                            goal: goal,
+                            onDismiss: { dismiss(goal) },
+                            containerAccessibilityIdentifier: "goals.completedCard",
+                            dismissButtonAccessibilityIdentifier: "goals.completedCard.dismiss"
                         )
-                    } else {
-                        if !activeGoals.isEmpty {
-                            sectionHeader("Active goals")
-                            ForEach(activeGoals, id: \.persistentModelID) { goal in
-                                ActiveGoalCardView(
-                                    goal: goal,
-                                    referenceDate: todayClock.referenceDate,
-                                    calendar: calendar,
-                                    onEdit: { goalPendingEdit = goal },
-                                    onDelete: { goalPendingDelete = goal }
-                                )
-                            }
-                        }
+                    }
+                }
+            }
+        }
 
-                        if !completedGoals.isEmpty {
-                            sectionHeader("Completed")
-                            ForEach(completedGoals, id: \.persistentModelID) { goal in
-                                CompletionBannerView(
-                                    goal: goal,
-                                    onDismiss: { dismiss(goal) },
-                                    containerAccessibilityIdentifier: "goals.completedCard",
-                                    dismissButtonAccessibilityIdentifier: "goals.completedCard.dismiss"
-                                )
-                            }
+        NavigationStack {
+            GeometryReader { proxy in
+                if ScreenLayout.layout(for: proxy.size) == .column {
+                    ScrollView {
+                        VStack(spacing: 20) {
+                            budgetSection
+                            goalsSection
+                        }
+                        .padding()
+                    }
+                } else {
+                    HStack(alignment: .top, spacing: 0) {
+                        ScrollView {
+                            budgetSection.padding()
+                        }
+                        ScrollView {
+                            goalsSection.padding()
                         }
                     }
                 }
-                .padding()
             }
             .background(Color("ReservoirBackground"))
             .navigationTitle("Plans")
