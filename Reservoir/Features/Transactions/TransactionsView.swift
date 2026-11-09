@@ -26,6 +26,8 @@ struct TransactionsView: View {
     @State private var categoryFilter: TransactionsScreenCalculator.CategoryFilter = .all
     @State private var isShowingAddTransaction = false
     @State private var transactionPendingEdit: SpendTransaction?
+    /// The row shown in the detail pane on wide screens (reservoir-h2k).
+    @State private var selectedTransactionID: PersistentIdentifier?
     @State private var transactionPendingDelete: SpendTransaction?
     @State private var actionError: String?
     @State private var isShowingImportErrorDetail = false
@@ -73,6 +75,8 @@ struct TransactionsView: View {
         // Once per render, not once per row.
         let outliers = outliers
         NavigationStack {
+            GeometryReader { proxy in
+            let isWide = ScreenLayout.layout(for: proxy.size) != .column
             VStack(spacing: 0) {
                 if let error = importService?.presentedError {
                     HStack(spacing: 12) {
@@ -138,12 +142,13 @@ struct TransactionsView: View {
                             await triggerRefresh()
                         }
                     } else {
+                        HStack(spacing: 0) {
                         List {
                             ForEach(sections) { section in
                                 Section(TransactionsScreenCalculator.sectionTitle(for: section.day, referenceDate: todayClock.referenceDate, calendar: calendar)) {
                                     ForEach(section.transactions, id: \.persistentModelID) { transaction in
                                         Button {
-                                            transactionPendingEdit = transaction
+                                            if isWide { selectedTransactionID = transaction.persistentModelID } else { transactionPendingEdit = transaction }
                                         } label: {
                                             TransactionRowView(
                                                 transaction: transaction,
@@ -153,7 +158,10 @@ struct TransactionsView: View {
                                             )
                                         }
                                         .buttonStyle(.plain)
-                                        .listRowBackground(Color("ReservoirBackground"))
+                                        .listRowBackground(
+                                            isWide && selectedTransactionID == transaction.persistentModelID
+                                                ? Color("ReservoirSurface") : Color("ReservoirBackground")
+                                        )
                                         .swipeActions {
                                             Button(role: .destructive) {
                                                 transactionPendingDelete = transaction
@@ -170,6 +178,23 @@ struct TransactionsView: View {
                         .accessibilityIdentifier("transactions.list")
                         .refreshable {
                             await triggerRefresh()
+                        }
+                        .frame(width: isWide ? min(proxy.size.width * 0.45, 420) : nil)
+                        if isWide {
+                            Divider()
+                            // Resolved from the visible list each render, so a row that a sync, a
+                            // filter or the edit sheet removed can never leave a stale detail.
+                            if let selected = filteredTransactions.first(where: { $0.persistentModelID == selectedTransactionID }) {
+                                TransactionDetailPane(
+                                    transaction: selected,
+                                    usualAmount: outliers[selected.persistentModelID],
+                                    onEdit: { transactionPendingEdit = selected },
+                                    onDelete: { transactionPendingDelete = selected }
+                                )
+                            } else {
+                                TransactionDetailPlaceholder()
+                            }
+                        }
                         }
                     }
                 }
@@ -228,6 +253,7 @@ struct TransactionsView: View {
                     }
                     .accessibilityIdentifier("transactions.addTransaction")
                 }
+            }
             }
             }
         }

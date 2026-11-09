@@ -76,7 +76,7 @@ Project layout:
 ```
 Reservoir/
   App/            — entry point, RootTabView, ModelContainer setup
-  Features/       — one folder per tab (Today, Plans, Transactions, Settings; Plans = the Goals/ and Budget/ folders)
+  Features/       — one folder per tab (Today, Plans, Transactions, Settings; Plans = the Goals/ and Budget/ folders; wide layouts and landscape are described under "Wide screens, landscape and the month strip")
   Models/         — SwiftData @Model types
     Migrations/   — VersionedSchema (SchemaV1, SchemaV2, …) + SchemaMigrationPlan
   Services/       — I/O boundaries (Plaid, persistence) and business logic
@@ -1135,6 +1135,38 @@ for "something's wrong" red text, even though that token's documented meaning
 not general-purpose errors — no dedicated error token exists, and introducing
 one wasn't obviously justified for two call sites; flagged for product-lead/JP
 to confirm rather than decided unilaterally.
+
+### Wide screens, landscape and the month strip (reservoir-h2k)
+
+Landscape is allowed. `ScreenLayout` (`Shared/ScreenLayout.swift`, pure) picks a layout from the
+container's size, not the device: under 600 pt wide is one column, 600 pt or wider and taller than
+wide is a "wide column", and 600 pt or wider and wider than tall is two "panes". That covers a
+rotated phone and both displays of a foldable (cover about 466 x 678 pt, inner about 626 x 890 pt)
+with one rule. Screens read it through a `GeometryReader`:
+
+- **Today** keeps its single column when narrow; the wide column puts the category and Coming up cards
+  side by side; panes pin the limit card and Add transaction button on the left and scroll the
+  other cards on the right.
+- **Transactions** shows the list with a detail pane when wide (`TransactionDetailPane`: Edit and
+  Delete, usual-amount note). The selection is held as a persistent id and resolved from the visible
+  list each render, so a row that a sync, the filter or the edit sheet removes never leaves a stale
+  pane. Narrow screens still open the edit sheet on tap.
+- **Plans** puts the Month strip on the right when wide, with the budget card and any goals stacked on
+  the left; with no strip (no budget, or still syncing) it stays one column at a readable width.
+- Forms cap their width with `readableFormWidth()` so they do not stretch across a wide screen.
+
+The **Month strip** (`Features/Budget/BudgetMonthStripView.swift`, below the budget card on Plans)
+draws each day of a month as a bar against the daily base (red when over the base) with the cumulative
+carryover underneath, a Week/Month switch (Week is always the seven days ending today, reaching into the
+previous month early in a month), month paging back to the budget's first month, tap-a-day for that
+day's counted transactions, and a full-screen mode. `BudgetMonthStripCalculator` (pure apart from the
+model types) walks the days exactly like `DailyLimitCalculator.carryForward` (same `startOfDay` stepping,
+same reset-on-the-1st rule), so the carry shown matches the Today hero's carried-forward figure; its
+tests pin that, including a skipped-midnight time zone. Today's own spend is not banked yet, so the
+carry line stops at yesterday. The viewed month and range are held by `GoalsView` (a pinned month of
+`nil` follows the current month), so a rotation, which rebuilds the card under a different parent,
+keeps them; the selected day stays local so scrubbing never re-runs the day walk. The mockups these
+follow are in `docs/design/foldable/` (open the HTML files in a browser).
 
 ### Home screen widget (reservoir-apd)
 

@@ -32,6 +32,10 @@ struct GoalsView: View {
     @State private var goalPendingEdit: SavingsGoal?
     @State private var goalPendingDelete: SavingsGoal?
     @State private var actionError: String?
+    /// The month strip's view state lives here so a rotation, which swaps the layout and
+    /// rebuilds the card, keeps the month and range (reservoir-h2k).
+    @State private var stripMonth: Date?
+    @State private var stripIsWeekly = false
 
     private let calendar: Calendar = .current
     private let logger = Logger(subsystem: "com.reservoir.app", category: "GoalsView")
@@ -78,67 +82,107 @@ struct GoalsView: View {
             calendar: calendar
         )
 
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 20) {
-                    sectionHeader("Monthly budget")
-                    if let budget, let budgetModel {
-                        BudgetCardView(
-                            budget: budget,
-                            state: budgetModel.state,
-                            summary: budgetModel.summary,
-                            insights: BudgetSummaryCalculator.insights(
-                                budget: budget,
-                                transactions: transactions,
-                                isAccountBackfillComplete: importService?.isAccountBackfillComplete ?? true,
-                                referenceDate: todayClock.referenceDate,
-                                summary: budgetModel.summary,
-                                calendar: calendar
-                            ),
-                            hasUnsyncedAccounts: importService?.hasUnsyncedAccounts ?? false,
-                            onEdit: { budgetPendingEdit = budget },
-                            onDelete: { budgetPendingDelete = budget },
-                            onShowPastMonths: { budgetPendingReview = budget }
-                        )
-                    } else {
-                        BudgetSetRowView { isShowingCreateBudget = true }
-                    }
+        // The two halves, arranged by `ScreenLayout` below (reservoir-h2k).
+        let budgetSection = VStack(spacing: 20) {
+            sectionHeader("Monthly budget")
+            if let budget, let budgetModel {
+                BudgetCardView(
+                    budget: budget,
+                    state: budgetModel.state,
+                    summary: budgetModel.summary,
+                    insights: BudgetSummaryCalculator.insights(
+                        budget: budget,
+                        transactions: transactions,
+                        isAccountBackfillComplete: importService?.isAccountBackfillComplete ?? true,
+                        referenceDate: todayClock.referenceDate,
+                        summary: budgetModel.summary,
+                        calendar: calendar
+                    ),
+                    hasUnsyncedAccounts: importService?.hasUnsyncedAccounts ?? false,
+                    onEdit: { budgetPendingEdit = budget },
+                    onDelete: { budgetPendingDelete = budget },
+                    onShowPastMonths: { budgetPendingReview = budget }
+                )
+            } else {
+                BudgetSetRowView { isShowingCreateBudget = true }
+            }
 
-                    sectionHeader("Savings goals")
-                    if hasNoGoalsAtAll {
-                        NoActiveGoalPromptView(
-                            onCreateGoal: { isShowingCreateGoal = true },
-                            containerAccessibilityIdentifier: "goals.emptyState",
-                            buttonAccessibilityIdentifier: "goals.createGoal"
+        }
+        // The month strip, when the budget has figures to chart.
+        let strip: BudgetMonthStripView? = {
+            guard let budget, budgetModel?.state == .active else { return nil }
+            return BudgetMonthStripView(
+                budget: budget, transactions: transactions, referenceDate: todayClock.referenceDate,
+                pinnedMonth: $stripMonth, isWeekly: $stripIsWeekly
+            )
+        }()
+        let goalsSection = VStack(spacing: 20) {
+            sectionHeader("Savings goals")
+            if hasNoGoalsAtAll {
+                NoActiveGoalPromptView(
+                    onCreateGoal: { isShowingCreateGoal = true },
+                    containerAccessibilityIdentifier: "goals.emptyState",
+                    buttonAccessibilityIdentifier: "goals.createGoal"
+                )
+            } else {
+                if !activeGoals.isEmpty {
+                    sectionHeader("Active goals")
+                    ForEach(activeGoals, id: \.persistentModelID) { goal in
+                        ActiveGoalCardView(
+                            goal: goal,
+                            referenceDate: todayClock.referenceDate,
+                            calendar: calendar,
+                            onEdit: { goalPendingEdit = goal },
+                            onDelete: { goalPendingDelete = goal }
                         )
-                    } else {
-                        if !activeGoals.isEmpty {
-                            sectionHeader("Active goals")
-                            ForEach(activeGoals, id: \.persistentModelID) { goal in
-                                ActiveGoalCardView(
-                                    goal: goal,
-                                    referenceDate: todayClock.referenceDate,
-                                    calendar: calendar,
-                                    onEdit: { goalPendingEdit = goal },
-                                    onDelete: { goalPendingDelete = goal }
-                                )
-                            }
-                        }
-
-                        if !completedGoals.isEmpty {
-                            sectionHeader("Completed")
-                            ForEach(completedGoals, id: \.persistentModelID) { goal in
-                                CompletionBannerView(
-                                    goal: goal,
-                                    onDismiss: { dismiss(goal) },
-                                    containerAccessibilityIdentifier: "goals.completedCard",
-                                    dismissButtonAccessibilityIdentifier: "goals.completedCard.dismiss"
-                                )
-                            }
-                        }
                     }
                 }
-                .padding()
+
+                if !completedGoals.isEmpty {
+                    sectionHeader("Completed")
+                    ForEach(completedGoals, id: \.persistentModelID) { goal in
+                        CompletionBannerView(
+                            goal: goal,
+                            onDismiss: { dismiss(goal) },
+                            containerAccessibilityIdentifier: "goals.completedCard",
+                            dismissButtonAccessibilityIdentifier: "goals.completedCard.dismiss"
+                        )
+                    }
+                }
+            }
+        }
+
+        NavigationStack {
+            GeometryReader { proxy in
+                if let strip, ScreenLayout.layout(for: proxy.size) != .column {
+                    // The strip wants the width, so it takes the right side; the budget card
+                    // and any goals stack on the left. Without a strip there is nothing to
+                    // put opposite them, so that case stays one column.
+                    HStack(alignment: .top, spacing: 0) {
+                        ScrollView {
+                            VStack(spacing: 20) {
+                                budgetSection
+                                goalsSection
+                            }
+                            .padding()
+                        }
+                        .frame(width: proxy.size.width * 0.42)
+                        ScrollView {
+                            strip.padding()
+                        }
+                    }
+                } else {
+                    ScrollView {
+                        VStack(spacing: 20) {
+                            budgetSection
+                            if let strip { strip }
+                            goalsSection
+                        }
+                        .padding()
+                        .frame(maxWidth: 640)
+                        .frame(maxWidth: .infinity)
+                    }
+                }
             }
             .background(Color("ReservoirBackground"))
             .navigationTitle("Plans")

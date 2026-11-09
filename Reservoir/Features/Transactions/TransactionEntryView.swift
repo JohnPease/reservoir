@@ -179,6 +179,7 @@ struct TransactionEntryView: View {
             }
             .scrollContentBackground(.hidden)
             .listRowBackground(Color("ReservoirSurface"))
+            .readableFormWidth()
             .background(Color("ReservoirBackground"))
             .navigationTitle(mode.isEdit ? "Edit Transaction" : "Add Transaction")
             .toolbar {

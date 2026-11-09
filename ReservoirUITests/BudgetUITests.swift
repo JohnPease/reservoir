@@ -23,6 +23,32 @@ final class BudgetUITests: XCTestCase {
         field.typeText(value)
     }
 
+    func testPlansShowsTheMonthStrip() {
+        let app = launchedApp(scenario: "budgetSeeded", seedAccount: true)
+        app.tabBars.buttons["Plans"].tap()
+        XCTAssertTrue(app.otherElements["budget.strip"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["budget.strip.carryNow"].exists)
+        XCTAssertTrue(app.buttons["budget.strip.next"].exists)
+        XCTAssertFalse(app.buttons["budget.strip.next"].isEnabled, "already on the current month")
+        app.buttons["budget.strip.fullScreen"].tap()
+        XCTAssertTrue(app.buttons["budget.strip.done"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.otherElements["budget.strip"].exists)
+        app.buttons["budget.strip.done"].tap()
+        XCTAssertTrue(app.buttons["budget.strip.fullScreen"].waitForExistence(timeout: 5))
+    }
+
+    func testMonthStripWeekSwitchKeepsTheCardAndPagingStopsAtTheBudgetStart() {
+        let app = launchedApp(scenario: "budgetSeeded", seedAccount: true)
+        app.tabBars.buttons["Plans"].tap()
+        XCTAssertTrue(app.otherElements["budget.strip"].waitForExistence(timeout: 5))
+        app.buttons["Week"].tap()
+        XCTAssertTrue(app.otherElements["budget.strip"].exists)
+        XCTAssertTrue(app.staticTexts["budget.strip.carryNow"].label.hasSuffix("so far"))
+        XCTAssertFalse(app.buttons["budget.strip.previous"].isEnabled, "the budget starts this month")
+        app.buttons["Month"].tap()
+        XCTAssertTrue(app.otherElements["budget.strip"].exists)
+    }
+
     func testTabIsRenamedToPlansAndShowsSetBudgetRowWhenNoBudget() {
         let app = launchedApp(scenario: "emptyGoal")
         XCTAssertFalse(app.tabBars.buttons["Goals"].exists)

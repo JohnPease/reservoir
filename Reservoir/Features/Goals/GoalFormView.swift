@@ -170,6 +170,7 @@ struct GoalFormView: View {
             }
             .scrollContentBackground(.hidden)
             .listRowBackground(Color("ReservoirSurface"))
+            .readableFormWidth()
             .background(Color("ReservoirBackground"))
             .navigationTitle(mode.isEdit ? "Edit Goal" : "Create a Goal")
             .toolbar {

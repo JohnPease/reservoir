@@ -1,0 +1,127 @@
+<title>Foldable Layouts</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: spec sheet. Findings and rules on top, then the four screens drawn at true point size, scaled to fit. */
+:root{
+  --bg:#F5FBF9; --surface:#FFFFFF; --ink:#0A2A36; --ink2:#5B7A78; --muted:#8A9C99; --accent:#0A5C64; --warn:#993C1D; --line:#D5E6E2; --sheet:#E7F1EE;
+  --sans:'IBM Plex Sans',system-ui,sans-serif; --mono:'IBM Plex Mono',ui-monospace,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0A2A36;--surface:#123847;--ink:#EAF6F2;--ink2:#7FA39D;--muted:#5E827D;--accent:#3FA8A0;--warn:#E8967A;--line:#1F4B5A;--sheet:#0E3140;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0A2A36;--surface:#123847;--ink:#EAF6F2;--ink2:#7FA39D;--muted:#5E827D;--accent:#3FA8A0;--warn:#E8967A;--line:#1F4B5A;--sheet:#0E3140;color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:15px/1.55 var(--sans);padding-block:32px 64px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.wrap{max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:40px}
+h1{font-size:30px;line-height:1.15;margin:0 0 8px;font-weight:600;text-wrap:balance}
+h2{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink2);margin:0 0 12px;font-weight:600}
+p{margin:0 0 10px;max-width:68ch}
+.intro p{color:var(--ink2);font-size:16px}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:8px 14px 8px 0;border-bottom:1px solid var(--line);vertical-align:top;font-variant-numeric:tabular-nums}
+th{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink2);font-weight:600}
+td.m{font-family:var(--mono);font-size:13px;white-space:nowrap}
+.scroll{overflow-x:auto}
+.rules{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:24px}
+.rules div{border-top:2px solid var(--accent);padding-top:10px}
+.rules b{display:block;margin-bottom:4px}
+.rules span{color:var(--ink2);font-size:14px}
+.stage{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:36px 28px;align-items:start}
+.fig{margin:0;display:flex;flex-direction:column;gap:12px;min-width:0}
+.fig figcaption{font-size:13px;color:var(--ink2)}
+.fig figcaption b{color:var(--ink);display:block;font-size:15px}
+.zoomer{overflow:hidden}
+/* device frames, true pt size; .dev is scaled with zoom so it fits the column */
+.dev{position:relative;background:var(--bg);border:1px solid var(--line);border-radius:36px;overflow:hidden;font:14px/1.35 -apple-system,'SF Pro Text',system-ui,sans-serif;color:var(--ink);zoom:var(--z,.6);box-shadow:0 0 0 8px var(--sheet)}
+.scr{position:absolute;inset:0 0 56px 0;padding:44px 16px 16px;display:flex;flex-direction:column;gap:12px;overflow:hidden}
+.dev.l .scr{padding-top:24px}
+.card{background:var(--surface);border-radius:16px;padding:14px 16px}
+.lbl{font-size:12px;color:var(--ink2)}
+.big{font-size:48px;line-height:1.05;font-weight:700;letter-spacing:-.02em;margin:2px 0}
+.sub{font-size:13px;color:var(--ink2)}
+.pos{color:var(--accent)}
+.bar{height:6px;border-radius:3px;background:var(--sheet);margin:10px 0 8px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--accent)}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.num{font-size:24px;font-weight:600}
+.t{font-size:18px;font-weight:600}
+.warn{font-size:12px;font-weight:600;color:var(--warn);margin-top:4px}
+.row{display:flex;justify-content:space-between;padding:7px 0;border-top:1px solid var(--line);font-size:14px}
+.row:first-of-type{margin-top:6px}
+.cta{border:0;border-radius:14px;background:var(--accent);color:var(--bg);font:600 15px -apple-system,system-ui,sans-serif;padding:13px}
+.tabs{position:absolute;left:0;right:0;bottom:0;height:56px;display:flex;justify-content:space-around;align-items:center;background:var(--surface);border-top:1px solid var(--line);font-size:11px;color:var(--muted)}
+.tabs .on,.rail .on{color:var(--accent);font-weight:600}
+.two{flex-direction:row;gap:14px}
+.two .col{flex:1;display:flex;flex-direction:column;gap:12px;min-width:0}
+.cl .col:first-child{flex:0 0 44%}
+.cl .big{font-size:56px}
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.rl .scr{inset:0 0 0 132px;padding:28px 20px 16px}
+.rail{position:absolute;left:0;top:0;bottom:0;width:132px;padding:36px 12px;background:var(--surface);border-right:1px solid var(--line);display:flex;flex-direction:column;gap:6px;font-size:14px;color:var(--ink2)}
+.rail span{padding:9px 10px;border-radius:10px}
+.rail .on{background:var(--sheet)}
+.il{flex-direction:row;gap:16px}
+.il .a{flex:0 0 46%;display:flex;flex-direction:column;gap:12px}
+.il .b{flex:1;display:flex;flex-direction:column;gap:12px;min-width:0}
+.il .big{font-size:64px}
+.pick{border-left:3px solid var(--accent);padding-left:14px}
+code{font-family:var(--mono);font-size:13px;background:var(--sheet);padding:1px 5px;border-radius:4px}
+</style>
+<div class="wrap">
+<header class="intro">
+  <h1>Reservoir on the foldable</h1>
+  <p>The new phone has two screens that are both close to square. Today's single tall column leaves most of either screen empty and has no landscape at all. Below are Today drawn for each screen and orientation. All figures on the mockups are examples.</p>
+</header>
+
+<section>
+  <h2>What the phone reports</h2>
+  <div class="scroll"><table>
+    <tr><th>Display</th><th>Pixels</th><th>Points (3x)</th><th>Width ÷ height</th><th>Layout class to expect</th></tr>
+    <tr><td>Cover</td><td class="m">1398 × 2034</td><td class="m">466 × 678</td><td class="m">0.69</td><td>Compact width, tall enough for a scrolling column</td></tr>
+    <tr><td>Inner</td><td class="m">1878 × 2670</td><td class="m">626 × 890</td><td class="m">0.70</td><td>Regular width in both orientations if the phone reports it that way</td></tr>
+  </table></div>
+  <p style="margin-top:10px;color:var(--ink2);font-size:14px">The phone also lists the inner display at 2007 × 2853. I'll confirm the real size in the running app before locking any breakpoint.</p>
+</section>
+
+<section>
+  <h2>Today, four ways</h2>
+  <div class="stage"><figure class="fig"><div class="dev p" style="width:466px;height:678px"><div class="scr one"><section class="card hero"><div class="lbl">Monthly budget · today</div><div class="big">$118</div><div class="sub">$77 daily base + <b class="pos">$41</b> carried forward</div><div class="bar"><i style="width:19%"></i></div><div class="sub">Spent $23 · <b>$95 left</b></div></section><section class="card cat"><div class="lbl">Spending by category · November</div><div class="t">Dining $212</div><div class="sub">of $684 this month</div><div class="warn">Dining is $90 over its usual</div></section><section class="card rec"><div class="lbl">Recent transactions</div><div class="row"><span>Blue Bottle</span><b>$6</b></div><div class="row"><span>Trader Joe's</span><b>$17</b></div><div class="row"><span>Shell</span><b>$48</b></div></section><section class="card up"><div class="lbl">Coming up</div><div class="row"><span>Streaming Co · Tue</span><b>$15</b></div><div class="row"><span>Gym · Fri</span><b>$40</b></div></section><button class="cta">Add transaction</button></div><nav class="tabs"><span class="on">Today</span><span>Plans</span><span>Transactions</span><span>Settings</span></nav></div><figcaption><b>Cover, portrait</b> 466 × 678 pt · one column, stats folded into the hero</figcaption></figure><figure class="fig"><div class="dev l" style="width:678px;height:466px"><div class="scr two cl"><div class="col"><section class="card hero"><div class="lbl">Monthly budget · today</div><div class="big">$118</div><div class="sub">$77 daily base + <b class="pos">$41</b> carried forward</div><div class="bar"><i style="width:19%"></i></div><div class="sub">Spent $23 · <b>$95 left</b></div></section><button class="cta">Add transaction</button></div><div class="col"><section class="card cat"><div class="lbl">Spending by category · November</div><div class="t">Dining $212</div><div class="sub">of $684 this month</div><div class="warn">Dining is $90 over its usual</div></section><section class="card rec"><div class="lbl">Recent transactions</div><div class="row"><span>Blue Bottle</span><b>$6</b></div><div class="row"><span>Trader Joe's</span><b>$17</b></div><div class="row"><span>Shell</span><b>$48</b></div></section><section class="card up"><div class="lbl">Coming up</div><div class="row"><span>Streaming Co · Tue</span><b>$15</b></div><div class="row"><span>Gym · Fri</span><b>$40</b></div></section></div></div><nav class="tabs"><span class="on">Today</span><span>Plans</span><span>Transactions</span><span>Settings</span></nav></div><figcaption><b>Cover, landscape</b> 678 × 466 pt · hero fixed on the left, cards scroll on the right</figcaption></figure><figure class="fig"><div class="dev p" style="width:626px;height:890px"><div class="scr ip"><section class="card hero"><div class="lbl">Monthly budget · today</div><div class="big">$118</div><div class="sub">$77 daily base + <b class="pos">$41</b> carried forward</div><div class="bar"><i style="width:19%"></i></div><div class="sub">Spent $23 · <b>$95 left</b></div></section><div class="stats"><div class="card stat"><div class="lbl">Spent today</div><div class="num">$23</div></div><div class="card stat"><div class="lbl">Left today</div><div class="num">$95</div></div></div><div class="pair"><section class="card cat"><div class="lbl">Spending by category · November</div><div class="t">Dining $212</div><div class="sub">of $684 this month</div><div class="warn">Dining is $90 over its usual</div></section><section class="card up"><div class="lbl">Coming up</div><div class="row"><span>Streaming Co · Tue</span><b>$15</b></div><div class="row"><span>Gym · Fri</span><b>$40</b></div></section></div><section class="card rec"><div class="lbl">Recent transactions</div><div class="row"><span>Blue Bottle</span><b>$6</b></div><div class="row"><span>Trader Joe's</span><b>$17</b></div><div class="row"><span>Shell</span><b>$48</b></div></section><button class="cta">Add transaction</button></div><nav class="tabs"><span class="on">Today</span><span>Plans</span><span>Transactions</span><span>Settings</span></nav></div><figcaption><b>Inner, portrait</b> 626 × 890 pt · two-up cards under a full-width hero</figcaption></figure><figure class="fig"><div class="dev l rl" style="width:890px;height:626px"><nav class="rail"><span class="on">Today</span><span>Plans</span><span>Transactions</span><span>Settings</span></nav><div class="scr il"><div class="col a"><section class="card hero"><div class="lbl">Monthly budget · today</div><div class="big">$118</div><div class="sub">$77 daily base + <b class="pos">$41</b> carried forward</div><div class="bar"><i style="width:19%"></i></div><div class="sub">Spent $23 · <b>$95 left</b></div></section><div class="stats"><div class="card stat"><div class="lbl">Spent today</div><div class="num">$23</div></div><div class="card stat"><div class="lbl">Left today</div><div class="num">$95</div></div></div><button class="cta">Add transaction</button></div><div class="col b"><section class="card cat"><div class="lbl">Spending by category · November</div><div class="t">Dining $212</div><div class="sub">of $684 this month</div><div class="warn">Dining is $90 over its usual</div></section><section class="card up"><div class="lbl">Coming up</div><div class="row"><span>Streaming Co · Tue</span><b>$15</b></div><div class="row"><span>Gym · Fri</span><b>$40</b></div></section><section class="card rec"><div class="lbl">Recent transactions</div><div class="row"><span>Blue Bottle</span><b>$6</b></div><div class="row"><span>Trader Joe's</span><b>$17</b></div><div class="row"><span>Shell</span><b>$48</b></div></section></div></div></div><figcaption><b>Inner, landscape</b> 890 × 626 pt · side rail replaces the tab bar, two panes</figcaption></figure></div>
+</section>
+
+<section>
+  <h2>Rules behind the layouts</h2>
+  <div class="rules">
+    <div><b>Switch on width, not on device</b><span>Use size classes and a width threshold of about 600 pt. Anything wider than that gets the two-pane layout, which also covers iPad later.</span></div>
+    <div><b>Hero first, then the supporting cards</b><span>The daily limit stays top-left in every layout. Cards keep their current order, filled across columns.</span></div>
+    <div><b>Swap the tab bar for a rail in wide landscape</b><span>A bottom bar costs 56 pt of a 466 pt tall screen. A 132 pt rail gives that height back.</span></div>
+    <div><b>Fold-safe state</b><span>Folding or unfolding rebuilds the window. Scroll position, open sheets and the selected tab must survive it.</span></div>
+  </div>
+</section>
+
+<section>
+  <h2>What has to change in the app</h2>
+  <div class="scroll"><table>
+    <tr><th>Item</th><th>Today</th><th>Needed</th></tr>
+    <tr><td>Orientation</td><td class="m">portrait only</td><td>Allow landscape in <code>project.yml</code></td></tr>
+    <tr><td>Device family</td><td class="m">iPhone only</td><td>No change; the foldable runs as an iPhone</td></tr>
+    <tr><td>Today, Transactions, Budget</td><td class="m">one VStack column</td><td>An adaptive container that picks one or two columns by width</td></tr>
+    <tr><td>Sheets and forms</td><td class="m">full-width sheets</td><td>Cap form width at about 520 pt and center it on the inner display</td></tr>
+  </table></div>
+</section>
+
+<section class="pick">
+  <h2>Decision for you</h2>
+  <p>Which screens come first? I'd start with Today across all four layouts, because the others reuse the same container. Then Transactions (list and detail side by side on the inner display) and Budget.</p>
+</section>
+</div>
+<script>
+// Scale each device to its column so true-pt layouts fit at any viewport width.
+(function(){
+  function fit(){
+    document.querySelectorAll('.fig').forEach(function(f){
+      var d=f.querySelector('.dev'); var w=parseFloat(d.style.width);
+      var z=Math.min(1,(f.clientWidth-16)/w); d.style.setProperty('--z',z.toFixed(3));
+    });
+  }
+  fit(); window.addEventListener('resize',fit);
+})();
+</script>

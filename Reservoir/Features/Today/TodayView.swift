@@ -135,70 +135,112 @@ struct TodayView: View {
         let entries = transactions.map(CategorySpendCalculator.Entry.init)
         let recurring = RecurringChargeCalculator.detect(entries: entries, now: todayClock.referenceDate, calendar: calendar)
 
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 24) {
-                    if let budgetModel {
-                        BudgetHeroCardView(
-                            state: budgetModel.state,
-                            summary: budgetModel.summary,
-                            insights: budgetInsights(budgetModel),
-                            onChooseAccounts: { tabSelection.selected = .goals }
-                        )
-                    }
+        // The pieces, laid out by `ScreenLayout` below (reservoir-h2k).
+        let lead = VStack(spacing: 24) {
+            if let budgetModel {
+                BudgetHeroCardView(
+                    state: budgetModel.state,
+                    summary: budgetModel.summary,
+                    insights: budgetInsights(budgetModel),
+                    onChooseAccounts: { tabSelection.selected = .goals }
+                )
+            }
 
-                    ForEach(completedGoals, id: \.persistentModelID) { goal in
-                        CompletionBannerView(goal: goal) {
-                            dismiss(goal)
-                        }
-                    }
-
-                    if let summary {
-                        // Titled only when the budget card is also showing, so a
-                        // savings-only Today is unchanged.
-                        HeroSection(summary: summary, title: budgetModel == nil ? nil : "Savings limit")
-                        TwoStatRow(summary: summary)
-                    } else if hasNoGoalsAtAll {
-                        // A budget with no goal needs no goal prompt: the budget card is
-                        // the whole story.
-                        if budgetModel == nil {
-                            NoActiveGoalPromptView {
-                                isShowingCreateGoal = true
-                            }
-                            Button("Or set a monthly budget instead.") {
-                                isShowingCreateBudget = true
-                            }
-                            .font(.subheadline)
-                            .foregroundStyle(Color("ReservoirTextSecondary"))
-                            .accessibilityIdentifier("today.setBudgetLink")
-                        }
-                    } else {
-                        // A completed-but-undismissed goal exists (its banner is already
-                        // shown above) but there's no active goal, so there's no daily
-                        // limit to show. Still surface today's spend rather than letting
-                        // it disappear from the screen — see TodayScreenCalculator.
-                        SpentTodayOnlyCard(amount: spentTodayWithoutActiveGoal)
-                    }
-
-                    CategorySummaryCard(transactions: transactions, referenceDate: todayClock.referenceDate)
-
-                    RecentTransactionsSection(
-                        transactions: recentTransactions,
-                        outliers: CategorySpendCalculator.outliers(entries: entries, recurring: recurring, calendar: calendar)
-                    )
-
-                    UpcomingBillsCard(recurring: recurring, referenceDate: todayClock.referenceDate, calendar: calendar)
-
-                    Button {
-                        isShowingAddTransaction = true
-                    } label: {
-                        Text("Add transaction")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(ReservoirPrimaryButtonStyle())
-                    .accessibilityIdentifier("today.addTransaction")
+            ForEach(completedGoals, id: \.persistentModelID) { goal in
+                CompletionBannerView(goal: goal) {
+                    dismiss(goal)
                 }
-                .padding()
+            }
+
+            if let summary {
+                // Titled only when the budget card is also showing, so a
+                // savings-only Today is unchanged.
+                HeroSection(summary: summary, title: budgetModel == nil ? nil : "Savings limit")
+                TwoStatRow(summary: summary)
+            } else if hasNoGoalsAtAll {
+                // A budget with no goal needs no goal prompt: the budget card is
+                // the whole story.
+                if budgetModel == nil {
+                    NoActiveGoalPromptView {
+                        isShowingCreateGoal = true
+                    }
+                    Button("Or set a monthly budget instead.") {
+                        isShowingCreateBudget = true
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(Color("ReservoirTextSecondary"))
+                    .accessibilityIdentifier("today.setBudgetLink")
+                }
+            } else {
+                // A completed-but-undismissed goal exists (its banner is already
+                // shown above) but there's no active goal, so there's no daily
+                // limit to show. Still surface today's spend rather than letting
+                // it disappear from the screen — see TodayScreenCalculator.
+                SpentTodayOnlyCard(amount: spentTodayWithoutActiveGoal)
+            }
+        }
+        let categories = CategorySummaryCard(transactions: transactions, referenceDate: todayClock.referenceDate)
+        let recent = RecentTransactionsSection(
+            transactions: recentTransactions,
+            outliers: CategorySpendCalculator.outliers(entries: entries, recurring: recurring, calendar: calendar)
+        )
+        let upcoming = UpcomingBillsCard(recurring: recurring, referenceDate: todayClock.referenceDate, calendar: calendar)
+        let addButton = Button {
+            isShowingAddTransaction = true
+        } label: {
+            Text("Add transaction")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(ReservoirPrimaryButtonStyle())
+        .accessibilityIdentifier("today.addTransaction")
+
+        NavigationStack {
+            GeometryReader { proxy in
+                switch ScreenLayout.layout(for: proxy.size) {
+                case .column:
+                    ScrollView {
+                        VStack(spacing: 24) {
+                            lead
+                            categories
+                            recent
+                            upcoming
+                            addButton
+                        }
+                        .padding()
+                    }
+                case .wideColumn:
+                    ScrollView {
+                        VStack(spacing: 24) {
+                            lead
+                            HStack(alignment: .top, spacing: 16) {
+                                categories
+                                upcoming
+                            }
+                            recent
+                            addButton
+                        }
+                        .padding()
+                    }
+                case .panes:
+                    HStack(alignment: .top, spacing: 0) {
+                        ScrollView {
+                            VStack(spacing: 24) {
+                                lead
+                                addButton
+                            }
+                            .padding()
+                        }
+                        .frame(width: proxy.size.width * 0.44)
+                        ScrollView {
+                            VStack(spacing: 24) {
+                                categories
+                                recent
+                                upcoming
+                            }
+                            .padding()
+                        }
+                    }
+                }
             }
             .background(Color("ReservoirBackground"))
             // Pinned just above the tab bar so it stays visible without scrolling.
