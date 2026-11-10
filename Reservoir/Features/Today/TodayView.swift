@@ -136,54 +136,13 @@ struct TodayView: View {
         let recurring = RecurringChargeCalculator.detect(entries: entries, now: todayClock.referenceDate, calendar: calendar)
 
         // The pieces, laid out by `ScreenLayout` below (reservoir-h2k).
-        let lead = VStack(spacing: 24) {
-            if let budgetModel {
-                BudgetHeroCardView(
-                    state: budgetModel.state,
-                    summary: budgetModel.summary,
-                    insights: budgetInsights(budgetModel),
-                    onChooseAccounts: { tabSelection.selected = .goals }
-                )
-            }
-
-            ForEach(completedGoals, id: \.persistentModelID) { goal in
-                CompletionBannerView(goal: goal) {
-                    dismiss(goal)
-                }
-            }
-
-            if let summary {
-                // Titled only when the budget card is also showing, so a
-                // savings-only Today is unchanged.
-                HeroSection(summary: summary, title: budgetModel == nil ? nil : "Savings limit")
-                TwoStatRow(summary: summary)
-            } else if hasNoGoalsAtAll {
-                // A budget with no goal needs no goal prompt: the budget card is
-                // the whole story.
-                if budgetModel == nil {
-                    NoActiveGoalPromptView {
-                        isShowingCreateGoal = true
-                    }
-                    Button("Or set a monthly budget instead.") {
-                        isShowingCreateBudget = true
-                    }
-                    .font(.subheadline)
-                    .foregroundStyle(Color("ReservoirTextSecondary"))
-                    .accessibilityIdentifier("today.setBudgetLink")
-                }
-            } else {
-                // A completed-but-undismissed goal exists (its banner is already
-                // shown above) but there's no active goal, so there's no daily
-                // limit to show. Still surface today's spend rather than letting
-                // it disappear from the screen — see TodayScreenCalculator.
-                SpentTodayOnlyCard(amount: spentTodayWithoutActiveGoal)
-            }
-        }
+        let lead = leadContent(budgetModel: budgetModel, tank: nil)
         let categories = CategorySummaryCard(transactions: transactions, referenceDate: todayClock.referenceDate)
         let recent = RecentTransactionsSection(
             transactions: recentTransactions,
             outliers: CategorySpendCalculator.outliers(entries: entries, recurring: recurring, calendar: calendar)
         )
+        let heading = MonthHeadingCard(transactions: transactions, referenceDate: todayClock.referenceDate)
         let upcoming = UpcomingBillsCard(recurring: recurring, referenceDate: todayClock.referenceDate, calendar: calendar)
         let addButton = Button {
             isShowingAddTransaction = true
@@ -209,15 +168,20 @@ struct TodayView: View {
                         .padding()
                     }
                 case .wideColumn:
+                    // Held like a laptop the fold splits the screen: today above it, what is ahead below.
                     ScrollView {
                         VStack(spacing: 24) {
+                            ZoneLabel(title: "Now")
                             lead
-                            HStack(alignment: .top, spacing: 16) {
-                                categories
-                                upcoming
-                            }
                             recent
                             addButton
+                            FoldDivider()
+                            ZoneLabel(title: "Next")
+                            HStack(alignment: .top, spacing: 16) {
+                                upcoming
+                                heading
+                            }
+                            categories
                         }
                         .padding()
                     }
@@ -225,7 +189,7 @@ struct TodayView: View {
                     HStack(alignment: .top, spacing: 0) {
                         ScrollView {
                             VStack(spacing: 24) {
-                                lead
+                                leadContent(budgetModel: budgetModel, tank: tankView(budgetModel: budgetModel))
                                 addButton
                             }
                             .padding()
@@ -270,6 +234,70 @@ struct TodayView: View {
             BudgetFormView(mode: .create, accessibilityIdentifier: "today.createBudgetSheet")
         }
         .saveErrorAlert($dismissError)
+    }
+
+    /// The lead content: the hero (or its tank, when `tank` is given), completion banners and the
+    /// savings or no-goal states.
+    @ViewBuilder
+    private func leadContent(budgetModel: BudgetCalculator.CardModel?, tank: TodayTankView?) -> some View {
+        VStack(spacing: 24) {
+
+            if let tank {
+                tank
+            } else if let budgetModel {
+                BudgetHeroCardView(
+                    state: budgetModel.state,
+                    summary: budgetModel.summary,
+                    insights: budgetInsights(budgetModel),
+                    onChooseAccounts: { tabSelection.selected = .goals }
+                )
+            }
+
+            ForEach(completedGoals, id: \.persistentModelID) { goal in
+                CompletionBannerView(goal: goal) {
+                    dismiss(goal)
+                }
+            }
+
+            if let summary {
+                // Titled only when the budget card is also showing, so a
+                // savings-only Today is unchanged.
+                HeroSection(summary: summary, title: budgetModel == nil ? nil : "Savings limit")
+                TwoStatRow(summary: summary)
+            } else if hasNoGoalsAtAll {
+                // A budget with no goal needs no goal prompt: the budget card is
+                // the whole story.
+                if budgetModel == nil {
+                    NoActiveGoalPromptView {
+                        isShowingCreateGoal = true
+                    }
+                    Button("Or set a monthly budget instead.") {
+                        isShowingCreateBudget = true
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(Color("ReservoirTextSecondary"))
+                    .accessibilityIdentifier("today.setBudgetLink")
+                }
+            } else {
+                // A completed-but-undismissed goal exists (its banner is already
+                // shown above) but there's no active goal, so there's no daily
+                // limit to show. Still surface today's spend rather than letting
+                // it disappear from the screen — see TodayScreenCalculator.
+                SpentTodayOnlyCard(amount: spentTodayWithoutActiveGoal)
+            }
+        }
+    }
+
+    /// Today's purchases stepped down from the budget's limit, for the tank. `nil` unless the
+    /// budget is showing numbers.
+    private func tankView(budgetModel: BudgetCalculator.CardModel?) -> TodayTankView? {
+        guard let budget = budgets.first, let model = budgetModel, model.state == .active, let summary = model.summary else { return nil }
+        let today = calendar.startOfDay(for: todayClock.referenceDate)
+        let tomorrow = BudgetCalculator.nextDayStart(after: today, calendar: calendar)
+        let purchases = BudgetCalculator.countingTransactions(transactions, for: budget, calendar: calendar)
+            .filter { $0.date >= today && $0.date < tomorrow }
+            .map { DayStepsCalculator.Purchase(merchant: $0.merchantName, amount: $0.amount, enteredAt: $0.createdAt) }
+        return TodayTankView(summary: summary, day: DayStepsCalculator.day(limit: summary.limit, purchases: purchases))
     }
 
     /// Dismissing a completion banner resets the goal to a true empty/no-goal state:

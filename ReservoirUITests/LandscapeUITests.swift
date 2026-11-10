@@ -1,7 +1,8 @@
 import XCTest
 
-/// The wide-screen layouts (reservoir-h2k) reached by rotating a phone: Transactions' detail
-/// pane, and that the forms stay usable on a landscape phone's short screen.
+/// The wide-screen layouts (reservoir-h2k, reservoir-wrx) reached by rotating a phone: the side
+/// rail in place of the tab bar, Today's tank, Transactions' detail pane, the category ledger
+/// spread, and that the forms stay usable on a landscape phone's short screen.
 final class LandscapeUITests: XCTestCase {
 
     override func tearDown() {
@@ -23,7 +24,7 @@ final class LandscapeUITests: XCTestCase {
 
     func testTransactionsShowsDetailPaneAfterSelectingARow() {
         let app = launchedApp(scenario: "transactionsList")
-        app.tabBars.buttons["Transactions"].tap()
+        app.buttons["rail.transactions"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["transactions.detailPlaceholder"].waitForExistence(timeout: 5))
         let row = app.staticTexts["Coffee Shop"]
         XCTAssertTrue(row.waitForExistence(timeout: 5))
@@ -36,7 +37,7 @@ final class LandscapeUITests: XCTestCase {
 
     func testBudgetFormCanBeSavedFromALandscapePhone() {
         let app = launchedApp(scenario: "emptyGoal", seedAccount: true)
-        app.tabBars.buttons["Plans"].tap()
+        app.buttons["rail.plans"].tap()
         app.buttons["budget.setRow"].tap()
         XCTAssertTrue(app.otherElements["budget.createBudgetSheet"].waitForExistence(timeout: 5))
         let submit = app.buttons["budget.form.submit"]
@@ -47,9 +48,42 @@ final class LandscapeUITests: XCTestCase {
 
     func testAddTransactionSheetIsReachableInLandscape() {
         let app = launchedApp(scenario: "transactionsList")
-        app.tabBars.buttons["Transactions"].tap()
+        app.buttons["rail.transactions"].tap()
         app.buttons["transactions.addTransaction"].tap()
         XCTAssertTrue(app.otherElements["transactions.addTransactionSheet"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Cancel"].isHittable)
+    }
+
+    func testLandscapeSwapsTheTabBarForASideRailAndBackAgain() {
+        let app = launchedApp(scenario: "budgetSeeded", seedAccount: true)
+        XCTAssertTrue(app.buttons["rail.today"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.tabBars.firstMatch.exists, "the rail replaces the tab bar")
+        app.buttons["rail.plans"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["budget.card"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["rail.plans"].isSelected)
+
+        XCUIDevice.shared.orientation = .portrait
+        Thread.sleep(forTimeInterval: 1.5)
+        XCTAssertTrue(app.tabBars.buttons["Plans"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["rail.plans"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["budget.card"].exists, "the selected tab survives the rotation")
+    }
+
+    func testTodayDrawsTheBudgetAsATankWithTheDaysPurchases() {
+        let app = launchedApp(scenario: "budgetSeeded", seedAccount: true)
+        XCTAssertTrue(app.descendants(matching: .any)["today.tank"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["today.tank.remaining"].exists)
+        XCTAssertTrue(app.staticTexts["Budget Coffee"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["today.budgetHero"].exists, "the tank replaces the number hero")
+    }
+
+    func testCategoryLedgerShowsTheChargesBesideTheList() {
+        let app = launchedApp(scenario: "categorizedSpend")
+        let card = app.descendants(matching: .any)["today.categoryCard"]
+        XCTAssertTrue(card.waitForExistence(timeout: 5))
+        card.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["categories.ledger"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Concert Hall"].waitForExistence(timeout: 5), "the biggest category's charges are open")
+        XCTAssertTrue(app.buttons["categories.ledger.trend"].exists)
     }
 }
