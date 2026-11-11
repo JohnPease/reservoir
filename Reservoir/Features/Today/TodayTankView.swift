@@ -1,13 +1,16 @@
 import SwiftUI
 
-/// Today's budget hero drawn as a tank (reservoir-wrx): the water is what is left to spend, and
-/// each purchase is a step down its side. Used where the screen is wide and short (landscape on
-/// either display), where a tall tank with the day written beside it uses the space better than
-/// a number. Figures come from `DayStepsCalculator`; the hero and stat identifiers are the
-/// budget hero's, so the same tests find both.
+/// Today's budget as a sliced droplet (reservoir-wrx): the whole drop is today's limit, the water
+/// is what is left to spend, and above the water each purchase is a faint band at the height it
+/// took. A dashed line marks the daily base, so what sits above it is carried-forward money. Used
+/// where the screen is wide and short (landscape on either display). Figures come from
+/// `DayStepsCalculator`; the hero and stat identifiers are the budget hero's, so the same tests
+/// find both.
 struct TodayTankView: View {
     let summary: TodayScreenCalculator.Summary
     let day: DayStepsCalculator.Day
+
+    private static let dropSize = CGSize(width: 84, height: 116)
 
     private var isOver: Bool { day.remaining < 0 }
     private var waterColor: Color { Color(isOver ? "ReservoirDropletDeficit" : "ReservoirDropletHealthy") }
@@ -17,26 +20,27 @@ struct TodayTankView: View {
             Text(BudgetHeroCardView.title)
                 .font(.headline)
                 .foregroundStyle(Color("ReservoirTextPrimary"))
-            HStack(alignment: .top, spacing: 20) {
-                tank
-                    .frame(width: 72, height: 220)
-                VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .center, spacing: 12) {
+                slicedDrop
+                VStack(alignment: .leading, spacing: 2) {
                     Text(isOver ? "Over today" : "Left to spend today")
                         .font(.caption)
                         .foregroundStyle(isOver ? Color("ReservoirDeficit") : Color("ReservoirTextSecondary"))
                     Text(abs(day.remaining), format: .currency(code: "USD"))
-                        .font(.system(size: 38, weight: .bold))
+                        .font(.system(size: 34, weight: .bold))
                         .foregroundStyle(isOver ? Color("ReservoirDeficit") : Color("ReservoirTextPrimary"))
                         .minimumScaleFactor(0.6)
                         .lineLimit(1)
                         .accessibilityIdentifier("today.tank.remaining")
-                    Text("of \(CurrencyFormatting.usd(summary.limit)) · \(CurrencyFormatting.usd(summary.dailyBase)) base + \(CurrencyFormatting.usd(summary.carriedForward)) carried")
+                    Text("of \(CurrencyFormatting.usd(summary.limit))")
                         .font(.subheadline)
                         .foregroundStyle(Color("ReservoirTextSecondary"))
-                    steps
-                        .padding(.top, 12)
                 }
             }
+            Text("\(CurrencyFormatting.usd(summary.dailyBase)) base + \(CurrencyFormatting.usd(summary.carriedForward)) carried forward")
+                .font(.subheadline)
+                .foregroundStyle(Color("ReservoirTextSecondary"))
+            steps
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -45,27 +49,43 @@ struct TodayTankView: View {
         .accessibilityIdentifier("today.tank")
     }
 
-    /// The vessel, the water at `remaining`, and a tick where each purchase left the level.
-    private var tank: some View {
-        GeometryReader { proxy in
-            let height = proxy.size.height
-            let fill = DayStepsCalculator.fill(level: day.remaining, limit: day.limit)
-            ZStack(alignment: .bottom) {
-                RoundedRectangle(cornerRadius: 14).fill(Color("ReservoirDropletTrack"))
-                RoundedRectangle(cornerRadius: 14).fill(waterColor)
-                    .frame(height: max(height * fill, fill > 0 ? 8 : 0))
-                ForEach(Array(day.steps.enumerated()), id: \.offset) { _, step in
-                    let level = DayStepsCalculator.fill(level: step.levelAfter, limit: day.limit)
-                    Rectangle()
-                        .fill(Color("ReservoirBackground").opacity(0.7))
-                        .frame(height: 1)
-                        .offset(y: -height * level)
-                        .frame(maxHeight: .infinity, alignment: .bottom)
+    /// The drop, its water and purchase bands, and the daily-base line. Decorative: the figures
+    /// beside it say the same in text.
+    private var slicedDrop: some View {
+        let size = Self.dropSize
+        let limit = day.limit
+        let waterHeight = size.height * DayStepsCalculator.fill(level: day.remaining, limit: limit)
+        let baseY = size.height * (1 - DayStepsCalculator.fill(level: summary.dailyBase, limit: limit))
+        return ZStack(alignment: .topLeading) {
+            DropletShape().fill(Color("ReservoirDropletTrack"))
+                .frame(width: size.width, height: size.height)
+            ZStack(alignment: .topLeading) {
+                Rectangle().fill(waterColor)
+                    .frame(width: size.width, height: waterHeight)
+                    .offset(y: size.height - waterHeight)
+                ForEach(Array(DayStepsCalculator.slices(for: day).enumerated()), id: \.offset) { index, slice in
+                    let top = size.height * (1 - DayStepsCalculator.fill(level: slice.upper, limit: limit))
+                    let bottom = size.height * (1 - DayStepsCalculator.fill(level: slice.lower, limit: limit))
+                    Rectangle().fill(waterColor.opacity(index.isMultiple(of: 2) ? 0.16 : 0.26))
+                        .frame(width: size.width, height: bottom - top)
+                        .offset(y: top)
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color("ReservoirTextMuted"), lineWidth: 1.5))
+            .frame(width: size.width, height: size.height, alignment: .topLeading)
+            .clipShape(DropletShape())
+            if limit > summary.dailyBase, summary.dailyBase > 0 {
+                Rectangle()
+                    .stroke(Color("ReservoirTextPrimary"), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+                    .frame(width: size.width + 12, height: 1)
+                    .offset(x: -6, y: baseY)
+                Text("base")
+                    .font(.caption2)
+                    .foregroundStyle(Color("ReservoirTextSecondary"))
+                    .offset(x: size.width + 8, y: baseY - 7)
+            }
         }
+        .frame(width: size.width, height: size.height)
+        .padding(.trailing, 28)
         .accessibilityHidden(true)
     }
 

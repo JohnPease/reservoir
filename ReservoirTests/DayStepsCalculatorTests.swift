@@ -41,4 +41,31 @@ final class DayStepsCalculatorTests: XCTestCase {
         XCTAssertEqual(DayStepsCalculator.fill(level: 5, limit: 0), 0)
         XCTAssertEqual(DayStepsCalculator.fill(level: 5, limit: -3), 0)
     }
+
+    func testSlicesStackUpwardFromTheWaterWithTheLatestPurchaseLowest() {
+        let day = DayStepsCalculator.day(
+            limit: 106,
+            purchases: [purchase("Blue Bottle", 6, minutes: 1), purchase("Trader Joe's", 17, minutes: 2)]
+        )
+        XCTAssertEqual(DayStepsCalculator.slices(for: day), [
+            .init(lower: 83, upper: 100),
+            .init(lower: 100, upper: 106)
+        ])
+    }
+
+    func testSlicesStopAtTheEmptyLineWhenTheDayIsOverdrawn() {
+        let day = DayStepsCalculator.day(
+            limit: 100,
+            purchases: [purchase("A", 30, minutes: 1), purchase("B", 90, minutes: 2)]
+        )
+        // Remaining is -20: B spans -20...70 so it shows 0...70; A spans 70...100.
+        XCTAssertEqual(DayStepsCalculator.slices(for: day), [
+            .init(lower: 0, upper: 70),
+            .init(lower: 70, upper: 100)
+        ])
+    }
+
+    func testNoPurchasesMeansNoSlices() {
+        XCTAssertTrue(DayStepsCalculator.slices(for: DayStepsCalculator.day(limit: 50, purchases: [])).isEmpty)
+    }
 }

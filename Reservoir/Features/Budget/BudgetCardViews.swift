@@ -15,7 +15,7 @@ struct BudgetHeroCardView: View {
     var body: some View {
         if state == .active, let summary {
             VStack(spacing: 24) {
-                HeroSection(summary: summary, title: Self.title, identifiers: .budget)
+                DropletHeroView(summary: summary, title: Self.title)
                 TwoStatRow(summary: summary, identifier: HeroIdentifiers.budget.stats)
                 if let insights {
                     BudgetProgressSentenceView(sentence: insights.sentence)

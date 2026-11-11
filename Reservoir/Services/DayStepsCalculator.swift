@@ -45,4 +45,24 @@ enum DayStepsCalculator {
         let fraction = NSDecimalNumber(decimal: level / limit).doubleValue
         return min(max(fraction, 0), 1)
     }
+
+    /// One purchase drawn as a band of the tank above the water line.
+    struct Slice: Equatable {
+        /// Levels in dollars, `lower` < `upper`, both within 0...limit.
+        var lower: Decimal
+        var upper: Decimal
+    }
+
+    /// The bands for `day`'s purchases, stacked upward from the water line with the latest
+    /// purchase lowest, so reading up the drop goes back through the day. A purchase that
+    /// overdraws the day is cut at the empty line, and one past it has no band at all.
+    static func slices(for day: Day) -> [Slice] {
+        var top = day.remaining
+        return day.steps.reversed().compactMap { step in
+            let lower = max(top, 0)
+            let upper = min(top + step.amount, day.limit)
+            top += step.amount
+            return upper > lower ? Slice(lower: lower, upper: upper) : nil
+        }
+    }
 }
