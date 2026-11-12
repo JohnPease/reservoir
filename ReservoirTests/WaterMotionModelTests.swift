@@ -33,6 +33,17 @@ final class WaterMotionModelTests: XCTestCase {
         XCTAssertEqual(target(0, 1, .portraitUpsideDown), 0, accuracy: 1e-9)
     }
 
+    func testCalibrationFindsTheSensorTurnFromOneReading() {
+        func frame(_ x: Double, _ y: Double, _ o: WaterMotionModel.Orientation = .portrait) -> WaterMotionModel.Orientation? {
+            WaterMotionModel.calibratedSensorFrame(gravity: (x, y), orientation: o)
+        }
+        XCTAssertEqual(frame(0, -1), .portrait, "ordinary phone held upright")
+        XCTAssertEqual(frame(-1, 0.05), .landscapeRight, "foldable: gravity along -x while upright")
+        XCTAssertEqual(frame(0.3, -0.95), .portrait, "tilted a little still reads as upright")
+        XCTAssertEqual(frame(-1, 0, .landscapeRight), .portrait, "ordinary phone held in landscape")
+        XCTAssertNil(frame(0.05, -0.1), "flat on a table")
+    }
+
     func testAShoveSidewaysTipsTheWater() {
         let pushed = WaterMotionModel.targetAngle(gravity: (0, -1), userAcceleration: (-0.3, 0), orientation: .portrait)
         XCTAssertGreaterThan(pushed, 0)

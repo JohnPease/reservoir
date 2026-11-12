@@ -29,14 +29,31 @@ struct WaterMotionModel: Equatable {
     static func targetAngle(
         gravity: (x: Double, y: Double),
         userAcceleration: (x: Double, y: Double) = (0, 0),
-        orientation: Orientation
+        orientation: Orientation,
+        sensorFrame: Orientation = .portrait
     ) -> Double {
         let effective = (x: gravity.x - userAcceleration.x, y: gravity.y - userAcceleration.y)
-        let screen = screenFrame(effective, orientation)
+        let screen = screenFrame(screenFrame(effective, sensorFrame), orientation)
         // Upright, gravity is straight down the screen (0, -1) and the surface is level.
         guard screen.x != 0 || screen.y != 0 else { return 0 }
         let raw = atan2(screen.x, -screen.y) * gain
         return min(max(raw, -maxAngle), maxAngle)
+    }
+
+    /// The sensor's frame is not the same on every device: the foldable reports gravity along its
+    /// x axis when held upright. From one reading taken while the phone is held the way the screen
+    /// is turned (the interface follows the device), picks the quarter turn that makes it read
+    /// level. Nil while the phone is flat, or tilted too far to tell the turns apart.
+    static func calibratedSensorFrame(gravity: (x: Double, y: Double), orientation: Orientation) -> Orientation? {
+        guard (gravity.x * gravity.x + gravity.y * gravity.y).squareRoot() > 0.85 else { return nil }
+        let candidates: [Orientation] = [.portrait, .landscapeRight, .portraitUpsideDown, .landscapeLeft]
+        let best = candidates.min {
+            abs(targetAngle(gravity: gravity, orientation: orientation, sensorFrame: $0))
+                < abs(targetAngle(gravity: gravity, orientation: orientation, sensorFrame: $1))
+        }
+        guard let best,
+              abs(targetAngle(gravity: gravity, orientation: orientation, sensorFrame: best)) < 0.5 * gain else { return nil }
+        return best
     }
 
     /// Rotates a device-frame vector into the screen's (x right, y up) frame.

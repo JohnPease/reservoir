@@ -12,20 +12,29 @@ final class WaterMotion {
 
     private var model = WaterMotionModel()
     private let manager = CMMotionManager()
+    private var sensorFrame: WaterMotionModel.Orientation?
     private var lastTimestamp: TimeInterval?
 
     func start() {
         guard manager.isDeviceMotionAvailable, !manager.isDeviceMotionActive else { return }
         lastTimestamp = nil
+        sensorFrame = nil
         manager.deviceMotionUpdateInterval = 1.0 / 60.0
         manager.startDeviceMotionUpdates(to: .main) { [weak self] motion, _ in
             guard let self, let motion else { return }
             let dt = self.lastTimestamp.map { motion.timestamp - $0 } ?? 1.0 / 60.0
             self.lastTimestamp = motion.timestamp
+            let orientation = Self.interfaceOrientation
+            if self.sensorFrame == nil {
+                self.sensorFrame = WaterMotionModel.calibratedSensorFrame(
+                    gravity: (motion.gravity.x, motion.gravity.y), orientation: orientation
+                )
+            }
             let target = WaterMotionModel.targetAngle(
                 gravity: (motion.gravity.x, motion.gravity.y),
                 userAcceleration: (motion.userAcceleration.x, motion.userAcceleration.y),
-                orientation: Self.interfaceOrientation
+                orientation: orientation,
+                sensorFrame: self.sensorFrame ?? .portrait
             )
             self.model.step(toward: target, dt: dt)
             self.angle = self.model.angle
