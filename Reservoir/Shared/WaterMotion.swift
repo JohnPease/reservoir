@@ -113,13 +113,14 @@ struct WaterSurfaceShape: Shape {
 
     func path(in rect: CGRect) -> Path {
         let slope = CGFloat(tan(water.angle.radians))
-        let amplitude = 0.8 + 3 * CGFloat(water.ripple)
+        let amplitude = 1.6 + 6 * CGFloat(water.ripple)
         let phase = water.phase + phaseOffset
         func surface(_ x: CGFloat) -> CGFloat {
             let dx = x - rect.midX
             return level + dx * slope
                 + amplitude * CGFloat(sin(Double(dx) / 22 + phase))
-                + amplitude * 0.5 * CGFloat(sin(Double(dx) / 10 - phase * 1.5))
+                + amplitude * 0.6 * CGFloat(sin(Double(dx) / 10 - phase * 1.5))
+                + amplitude * 0.3 * CGFloat(sin(Double(dx) / 5 + phase * 2.3))
         }
         var path = Path()
         let left = rect.minX - rect.width

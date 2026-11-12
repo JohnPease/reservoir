@@ -12,9 +12,9 @@ final class SplashModelTests: XCTestCase {
     }
 
     func testOnlyAHardShakeSplashes() {
+        XCTAssertEqual(SplashModel.strength(userAcceleration: 0.2), 0)
         XCTAssertEqual(SplashModel.strength(userAcceleration: 0.3), 0)
-        XCTAssertEqual(SplashModel.strength(userAcceleration: 0.5), 0)
-        XCTAssertEqual(SplashModel.strength(userAcceleration: 1.25), 0.5, accuracy: 1e-9)
+        XCTAssertEqual(SplashModel.strength(userAcceleration: 0.9), 0.5, accuracy: 1e-9)
         XCTAssertEqual(SplashModel.strength(userAcceleration: 5), 1)
     }
 

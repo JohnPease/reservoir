@@ -82,7 +82,7 @@ struct WaterMotionModel: Equatable {
             remaining -= h
         }
         angle = min(max(angle, -Self.maxAngle), Self.maxAngle)
-        let disturbed = min(abs(velocity) / 2.5, 1)
+        let disturbed = min(abs(velocity) / 1.4, 1)
         ripple += (disturbed - ripple) * min(1, (disturbed > ripple ? 12 : 3) * min(max(dt, 0), 0.1))
     }
 }
