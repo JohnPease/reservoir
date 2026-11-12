@@ -1144,9 +1144,21 @@ wide is a "wide column", and 600 pt or wider and wider than tall is two "panes".
 rotated phone and both displays of a foldable (cover about 466 x 678 pt, inner about 626 x 890 pt)
 with one rule. Screens read it through a `GeometryReader`:
 
-- **Today** keeps its single column when narrow; the wide column puts the category and Coming up cards
-  side by side; panes pin the limit card and Add transaction button on the left and scroll the
-  other cards on the right.
+- **Today** keeps its single column when narrow. The wide column (the inner display held upright) splits
+  into **Now** (the limit, recent transactions, Add) and, under a dashed "fold" line, **Next** (Coming up,
+  "Where the month is heading" from the category callouts and pace projections, the category card).
+  Panes pin the budget as a **sliced droplet** (`TodayTankView`) and the Add button on the left and scroll
+  the other cards on the right: the whole drop is today's limit, the water is what is left, each purchase is
+  a faint band above the water at the height it took, and a dashed line marks the daily base (so what sits
+  above it is carried-forward money). The bands and written steps come from `DayStepsCalculator` (pure; the
+  steps use the same counted transactions as the hero, in the order the app entered them, since Plaid dates
+  carry no time of day). In every other layout the budget hero is **the number in the drop**
+  (`DropletHeroView`): the amount left printed inside a large droplet with the water rising behind it. Both
+  are for the budget only; the savings-goal hero is unchanged.
+- **Spending by category** shows each row's spend against its usual month (a tick on the bar, from
+  `CategorySpendCalculator.usualMonthly`). When wide it becomes a **ledger spread**: the list on the left,
+  and on the right the selected category's usual and charges (`CategoryChargesView`, embedded) with a Trend
+  link, instead of pushing a screen.
 - **Transactions** shows the list with a detail pane when wide (`TransactionDetailPane`: Edit and
   Delete, usual-amount note). The selection is held as a persistent id and resolved from the visible
   list each render, so a row that a sync, the filter or the edit sheet removes never leaves a stale

@@ -9,6 +9,8 @@ struct CategoryChargesView: View {
     var detailed: String?? = nil
     var merchant: String? = nil
     let month: Date
+    /// Shown inside another screen (the wide ledger spread), so it adds no navigation title.
+    var isEmbedded = false
 
     @Query private var transactions: [SpendTransaction]
     @Environment(TodayClock.self) private var todayClock
@@ -37,8 +39,20 @@ struct CategoryChargesView: View {
         }
         .scrollContentBackground(.hidden)
         .background(Color("ReservoirBackground"))
-        .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
+        .modifier(ChargesTitle(title: title, isEmbedded: isEmbedded))
         .accessibilityIdentifier("categories.charges")
+    }
+}
+
+private struct ChargesTitle: ViewModifier {
+    let title: String
+    let isEmbedded: Bool
+
+    func body(content: Content) -> some View {
+        if isEmbedded {
+            content
+        } else {
+            content.navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+        }
     }
 }

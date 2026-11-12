@@ -9,16 +9,33 @@ struct CategoryBreakdownView: View {
     @Environment(TodayClock.self) private var todayClock
 
     @State private var monthOffset = 0
+    /// The category open on the right-hand page when the screen is wide (reservoir-wrx); nil
+    /// until one is picked, which shows the biggest.
+    @State private var selection: Pick?
+
+    /// A row's identity; a struct because a nil category (uncategorized) is a row of its own.
+    private struct Pick: Hashable { var category: String? }
 
     private let calendar = Calendar.current
 
     var body: some View {
+        GeometryReader { proxy in
+            breakdown(wide: ScreenLayout.layout(for: proxy.size) != .column)
+        }
+        .navigationTitle("Spending by category")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    @ViewBuilder
+    private func breakdown(wide: Bool) -> some View {
         let month = displayedMonth
         let entries = transactions.map(CategorySpendCalculator.Entry.init)
         let summary = CategorySpendCalculator.month(
             containing: month, entries: entries, now: todayClock.referenceDate, calendar: calendar
         )
-        List {
+        let selected = summary.rows.first { Pick(category: $0.category) == selection } ?? summary.rows.first
+        let selectedPick = selected.map { Pick(category: $0.category) }
+        let list = List {
             Section {
                 HStack {
                     Button { monthOffset -= 1 } label: { Image(systemName: "chevron.left") }
@@ -88,10 +105,19 @@ struct CategoryBreakdownView: View {
             } else {
                 Section {
                     ForEach(summary.rows, id: \.category) { row in
-                        NavigationLink {
-                            CategoryTrendView(category: row.category, month: month)
-                        } label: {
-                            CategoryRowView(row: row, total: summary.total)
+                        let usual = CategorySpendCalculator.usualMonthly(for: row.category, before: month, entries: entries, calendar: calendar)?.average
+                        let label = CategoryRowView(row: row, usual: usual)
+                        if wide {
+                            Button { selection = Pick(category: row.category) } label: { label }
+                                .buttonStyle(.plain)
+                                .listRowBackground(Pick(category: row.category) == selectedPick ? Color("ReservoirSurfaceAccent") : nil)
+                                .accessibilityAddTraits(Pick(category: row.category) == selectedPick ? .isSelected : [])
+                        } else {
+                            NavigationLink {
+                                CategoryTrendView(category: row.category, month: month)
+                            } label: {
+                                label
+                            }
                         }
                     }
                 } footer: {
@@ -99,8 +125,20 @@ struct CategoryBreakdownView: View {
                 }
             }
         }
-        .navigationTitle("Spending by category")
-        .navigationBarTitleDisplayMode(.inline)
+        if wide {
+            HStack(spacing: 0) {
+                list.frame(maxWidth: 420)
+                Divider()
+                if let selected {
+                    CategoryLedgerPage(row: selected, month: month, entries: entries, calendar: calendar)
+                        .id(Pick(category: selected.category))
+                } else {
+                    Color.clear
+                }
+            }
+        } else {
+            list
+        }
     }
 
     private var displayedMonth: Date {
@@ -118,7 +156,8 @@ struct CategoryBreakdownView: View {
 
 private struct CategoryRowView: View {
     let row: CategorySpendCalculator.Row
-    let total: Decimal
+    /// What this category usually comes to in a month, from earlier months; nil with too little history.
+    var usual: Decimal?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -128,9 +167,12 @@ private struct CategoryRowView: View {
                 Text(row.amount.formatted(.currency(code: "USD")))
                     .monospacedDigit()
             }
-            ProgressView(value: share)
+            UsualBar(amount: row.amount, usual: usual)
             HStack {
                 Text("\(row.count) \(row.count == 1 ? "charge" : "charges")")
+                if let usual {
+                    Text("· usual \(usual.wholeDollarText)")
+                }
                 Spacer()
                 changeLabel
             }
@@ -138,11 +180,6 @@ private struct CategoryRowView: View {
             .foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .combine)
-    }
-
-    private var share: Double {
-        guard total > 0 else { return 0 }
-        return NSDecimalNumber(decimal: row.amount / total).doubleValue
     }
 
     @ViewBuilder private var changeLabel: some View {
@@ -173,5 +210,80 @@ struct CalloutRowView: View {
                 .foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// A category's spend as a bar with a tick at its usual month, both on one scale (the larger of
+/// the two fills the track). Without a usual it is just the bar.
+private struct UsualBar: View {
+    let amount: Decimal
+    let usual: Decimal?
+
+    var body: some View {
+        GeometryReader { proxy in
+            let scale = max(amount, usual ?? 0)
+            let width = proxy.size.width
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color("ReservoirDropletTrack"))
+                Capsule().fill(Color("ReservoirAccent"))
+                    .frame(width: width * fraction(amount, of: scale))
+                if let usual, usual > 0 {
+                    Rectangle()
+                        .fill(Color("ReservoirTextPrimary"))
+                        .frame(width: 2, height: 12)
+                        .offset(x: max(width * fraction(usual, of: scale) - 1, 0))
+                }
+            }
+            .frame(maxHeight: .infinity)
+        }
+        .frame(height: 12)
+        .accessibilityHidden(true)
+    }
+
+    private func fraction(_ value: Decimal, of scale: Decimal) -> CGFloat {
+        guard scale > 0 else { return 0 }
+        return CGFloat(NSDecimalNumber(decimal: value / scale).doubleValue)
+    }
+}
+
+/// The right-hand page of the wide layout (reservoir-wrx): one category's month, its usual, and
+/// the charges behind it, with a link to the full trend. Replaces pushing a screen.
+private struct CategoryLedgerPage: View {
+    let row: CategorySpendCalculator.Row
+    let month: Date
+    let entries: [CategorySpendCalculator.Entry]
+    let calendar: Calendar
+
+    var body: some View {
+        let usual = CategorySpendCalculator.usualMonthly(for: row.category, before: month, entries: entries, calendar: calendar)?.average
+        VStack(spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.name)
+                        .font(.title3.weight(.semibold))
+                    Text(subtitle(usual: usual))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                NavigationLink {
+                    CategoryTrendView(category: row.category, month: month)
+                } label: {
+                    Label("Trend", systemImage: "chart.bar")
+                }
+                .accessibilityIdentifier("categories.ledger.trend")
+            }
+            .padding()
+            .background(Color("ReservoirBackground"))
+            CategoryChargesView(title: row.name, category: row.category, month: month, isEmbedded: true)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("categories.ledger")
+    }
+
+    private func subtitle(usual: Decimal?) -> String {
+        var text = row.amount.wholeDollarText
+        if let usual { text += " · usual \(usual.wholeDollarText) a month" }
+        return text
     }
 }

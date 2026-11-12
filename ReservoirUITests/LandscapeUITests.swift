@@ -1,7 +1,8 @@
 import XCTest
 
-/// The wide-screen layouts (reservoir-h2k) reached by rotating a phone: Transactions' detail
-/// pane, and that the forms stay usable on a landscape phone's short screen.
+/// The wide-screen layouts (reservoir-h2k, reservoir-wrx) reached by rotating a phone: the stock tab bar,
+/// Today's tank, Transactions' detail pane, the category ledger
+/// spread, and that the forms stay usable on a landscape phone's short screen.
 final class LandscapeUITests: XCTestCase {
 
     override func tearDown() {
@@ -51,5 +52,30 @@ final class LandscapeUITests: XCTestCase {
         app.buttons["transactions.addTransaction"].tap()
         XCTAssertTrue(app.otherElements["transactions.addTransactionSheet"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Cancel"].isHittable)
+    }
+
+    func testLandscapeKeepsTheStockTabBar() {
+        let app = launchedApp(scenario: "budgetSeeded", seedAccount: true)
+        XCTAssertTrue(app.tabBars.buttons["Today"].waitForExistence(timeout: 5))
+        app.tabBars.buttons["Plans"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["budget.card"].waitForExistence(timeout: 5))
+    }
+
+    func testTodayDrawsTheBudgetAsATankWithTheDaysPurchases() {
+        let app = launchedApp(scenario: "budgetSeeded", seedAccount: true)
+        XCTAssertTrue(app.descendants(matching: .any)["today.tank"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["today.tank.remaining"].exists)
+        XCTAssertTrue(app.staticTexts["Budget Coffee"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["today.budgetHero"].exists, "the tank replaces the number hero")
+    }
+
+    func testCategoryLedgerShowsTheChargesBesideTheList() {
+        let app = launchedApp(scenario: "categorizedSpend")
+        let card = app.descendants(matching: .any)["today.categoryCard"]
+        XCTAssertTrue(card.waitForExistence(timeout: 5))
+        card.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["categories.ledger"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Concert Hall"].waitForExistence(timeout: 5), "the biggest category's charges are open")
+        XCTAssertTrue(app.buttons["categories.ledger.trend"].exists)
     }
 }
