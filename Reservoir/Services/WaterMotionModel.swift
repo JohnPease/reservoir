@@ -46,7 +46,7 @@ struct WaterMotionModel: Equatable {
     /// The sensor's frame is not the same on every device: the foldable reports gravity along its
     /// x axis when held upright. From one reading taken while the phone is held the way the screen
     /// is turned (the interface follows the device), picks the quarter turn that makes it read
-    /// level. Nil while the phone is flat, or tilted too far to tell the turns apart.
+    /// level. Nil while the phone is flat, or tilted more than about 20 degrees off upright.
     static func calibratedSensorFrame(gravity: (x: Double, y: Double), orientation: Orientation) -> Orientation? {
         guard (gravity.x * gravity.x + gravity.y * gravity.y).squareRoot() > 0.85 else { return nil }
         let candidates: [Orientation] = [.portrait, .landscapeRight, .portraitUpsideDown, .landscapeLeft]
@@ -55,7 +55,7 @@ struct WaterMotionModel: Equatable {
                 < abs(targetAngle(gravity: gravity, orientation: orientation, sensorFrame: $1))
         }
         guard let best,
-              abs(targetAngle(gravity: gravity, orientation: orientation, sensorFrame: best)) < 0.5 * gain else { return nil }
+              abs(targetAngle(gravity: gravity, orientation: orientation, sensorFrame: best)) < 0.35 * gain else { return nil }
         return best
     }
 

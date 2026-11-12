@@ -20,11 +20,13 @@ final class WaterMotion {
     /// The sensor's turn is a fact about the device, so once found it is kept for the life of the
     /// app; recalibrating on every appearance left the water 90 degrees off until the phone moved.
     private static var sensorFrame: WaterMotionModel.Orientation?
+    private var pending: (frame: WaterMotionModel.Orientation, orientation: WaterMotionModel.Orientation, count: Int)?
     private var lastTimestamp: TimeInterval?
 
     func start() {
         guard manager.isDeviceMotionAvailable, !manager.isDeviceMotionActive else { return }
         lastTimestamp = nil
+        pending = nil
         manager.deviceMotionUpdateInterval = 1.0 / 60.0
         manager.startDeviceMotionUpdates(to: .main) { [weak self] motion, _ in
             guard let self, let motion else { return }
@@ -32,9 +34,7 @@ final class WaterMotion {
             self.lastTimestamp = motion.timestamp
             let orientation = Self.interfaceOrientation
             if Self.sensorFrame == nil {
-                Self.sensorFrame = WaterMotionModel.calibratedSensorFrame(
-                    gravity: (motion.gravity.x, motion.gravity.y), orientation: orientation
-                )
+                self.calibrate(gravity: (motion.gravity.x, motion.gravity.y), orientation: orientation)
             }
             // Until the sensor's turn is known the water sits level rather than guessing wrong.
             let target = Self.sensorFrame.map {
@@ -57,6 +57,21 @@ final class WaterMotion {
             self.splash.step(dt: dt)
             self.drops = self.splash.drops
         }
+    }
+
+    /// Commits the sensor's turn only after half a second of readings that all agree, so one
+    /// stray sample (a launch in mid-rotation, a bump) can never fix a wrong answer for good.
+    private func calibrate(gravity: (x: Double, y: Double), orientation: WaterMotionModel.Orientation) {
+        guard let candidate = WaterMotionModel.calibratedSensorFrame(gravity: gravity, orientation: orientation) else {
+            pending = nil
+            return
+        }
+        if pending?.frame == candidate, pending?.orientation == orientation {
+            pending?.count += 1
+        } else {
+            pending = (candidate, orientation, 1)
+        }
+        if let pending, pending.count >= 30 { Self.sensorFrame = pending.frame }
     }
 
     func stop() {
