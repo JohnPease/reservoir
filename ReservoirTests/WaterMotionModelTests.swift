@@ -11,8 +11,10 @@ final class WaterMotionModelTests: XCTestCase {
     }
 
     func testTiltingRightTipsTheSurfaceClockwise() {
-        XCTAssertEqual(target(0.5, -0.866), .pi / 6, accuracy: 1e-3)
-        XCTAssertEqual(target(-0.5, -0.866), -.pi / 6, accuracy: 1e-3)
+        // 10 degrees of real tilt is drawn exaggerated by the gain.
+        let tenDegrees = 10.0 * .pi / 180
+        XCTAssertEqual(target(sin(tenDegrees), -cos(tenDegrees)), tenDegrees * WaterMotionModel.gain, accuracy: 1e-6)
+        XCTAssertEqual(target(-sin(tenDegrees), -cos(tenDegrees)), -tenDegrees * WaterMotionModel.gain, accuracy: 1e-6)
     }
 
     func testAngleIsClampedBeforeTheWaterLeavesTheDrop() {

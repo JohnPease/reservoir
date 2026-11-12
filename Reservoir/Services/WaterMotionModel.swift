@@ -12,6 +12,9 @@ struct WaterMotionModel: Equatable {
 
     /// Largest tilt drawn, in radians (about 50 degrees); past that the water would leave the drop.
     static let maxAngle = 0.87
+    /// How much the drawn surface exaggerates the phone's real tilt, so a small lean reads clearly on a
+    /// drop only a couple of hundred points wide.
+    static let gain = 2.5
     /// Spring tuning: a lively but short slosh (underdamped, roughly two swings).
     static let stiffness = 120.0
     static let damping = 5.0
@@ -32,7 +35,7 @@ struct WaterMotionModel: Equatable {
         let screen = screenFrame(effective, orientation)
         // Upright, gravity is straight down the screen (0, -1) and the surface is level.
         guard screen.x != 0 || screen.y != 0 else { return 0 }
-        let raw = atan2(screen.x, -screen.y)
+        let raw = atan2(screen.x, -screen.y) * gain
         return min(max(raw, -maxAngle), maxAngle)
     }
 
