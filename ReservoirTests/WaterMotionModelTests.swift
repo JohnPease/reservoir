@@ -61,6 +61,15 @@ final class WaterMotionModelTests: XCTestCase {
         XCTAssertEqual(model.velocity, 0, accuracy: 0.01)
     }
 
+    func testRippleBuildsWhileSwingingAndFadesOnceSettled() {
+        var model = WaterMotionModel()
+        XCTAssertEqual(model.ripple, 0)
+        for _ in 0..<12 { model.step(toward: 0.8, dt: 1.0 / 60.0) }
+        XCTAssertGreaterThan(model.ripple, 0.3)
+        for _ in 0..<900 { model.step(toward: 0.8, dt: 1.0 / 60.0) }
+        XCTAssertLessThan(model.ripple, 0.01)
+    }
+
     func testALongFrameStaysStable() {
         var model = WaterMotionModel()
         model.step(toward: 0.5, dt: 5)

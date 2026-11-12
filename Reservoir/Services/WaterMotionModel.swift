@@ -22,6 +22,9 @@ struct WaterMotionModel: Equatable {
     /// Surface rotation in radians, positive clockwise on screen.
     private(set) var angle = 0.0
     private(set) var velocity = 0.0
+    /// 0...1: how disturbed the surface is, from how fast it is swinging. Smoothed so ripples build
+    /// quickly and fade over about half a second.
+    private(set) var ripple = 0.0
 
     /// The surface angle gravity asks for. `gravity` is Core Motion's device-frame gravity
     /// (x right, y up the portrait device, in g) and `userAcceleration` the push of the hand, so
@@ -79,5 +82,7 @@ struct WaterMotionModel: Equatable {
             remaining -= h
         }
         angle = min(max(angle, -Self.maxAngle), Self.maxAngle)
+        let disturbed = min(abs(velocity) / 2.5, 1)
+        ripple += (disturbed - ripple) * min(1, (disturbed > ripple ? 12 : 3) * min(max(dt, 0), 0.1))
     }
 }
