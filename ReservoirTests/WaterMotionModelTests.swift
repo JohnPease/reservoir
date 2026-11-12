@@ -22,6 +22,13 @@ final class WaterMotionModelTests: XCTestCase {
         XCTAssertEqual(target(-1, 0.2), -WaterMotionModel.maxAngle)
     }
 
+    func testTiltFadesOutAsThePhoneGoesFlat() {
+        let leaning = target(0.02, -0.1)
+        let upright = target(0.2, -1.0)
+        XCTAssertLessThan(abs(leaning), abs(upright), "same direction, less gravity in the screen")
+        XCTAssertEqual(target(0.01, -0.01), 0, accuracy: 0.1)
+    }
+
     func testFlatOnTheTableIsLevel() {
         XCTAssertEqual(target(0, 0), 0)
     }
@@ -41,6 +48,7 @@ final class WaterMotionModelTests: XCTestCase {
         XCTAssertEqual(frame(-1, 0.05), .landscapeRight, "foldable: gravity along -x while upright")
         XCTAssertEqual(frame(0.3, -0.95), .portrait, "tilted a little still reads as upright")
         XCTAssertEqual(frame(-1, 0, .landscapeRight), .portrait, "ordinary phone held in landscape")
+        XCTAssertEqual(frame(-0.47, 0.004), .landscapeRight, "foldable leaning back, little gravity in the screen")
         XCTAssertNil(frame(0.05, -0.1), "flat on a table")
     }
 

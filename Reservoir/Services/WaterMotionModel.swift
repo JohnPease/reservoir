@@ -38,8 +38,12 @@ struct WaterMotionModel: Equatable {
         let effective = (x: gravity.x - userAcceleration.x, y: gravity.y - userAcceleration.y)
         let screen = screenFrame(screenFrame(effective, sensorFrame), orientation)
         // Upright, gravity is straight down the screen (0, -1) and the surface is level.
-        guard screen.x != 0 || screen.y != 0 else { return 0 }
-        let raw = atan2(screen.x, -screen.y) * gain
+        let inPlane = (screen.x * screen.x + screen.y * screen.y).squareRoot()
+        guard inPlane > 0 else { return 0 }
+        // Held nearly flat, almost no gravity lies in the screen and its direction is just noise, so
+        // the tilt fades out below 0.3 g rather than jittering.
+        let weight = min(inPlane / 0.3, 1)
+        let raw = atan2(screen.x, -screen.y) * gain * weight
         return min(max(raw, -maxAngle), maxAngle)
     }
 
@@ -48,7 +52,7 @@ struct WaterMotionModel: Equatable {
     /// is turned (the interface follows the device), picks the quarter turn that makes it read
     /// level. Nil while the phone is flat, or tilted more than about 20 degrees off upright.
     static func calibratedSensorFrame(gravity: (x: Double, y: Double), orientation: Orientation) -> Orientation? {
-        guard (gravity.x * gravity.x + gravity.y * gravity.y).squareRoot() > 0.85 else { return nil }
+        guard (gravity.x * gravity.x + gravity.y * gravity.y).squareRoot() > 0.25 else { return nil }
         let candidates: [Orientation] = [.portrait, .landscapeRight, .portraitUpsideDown, .landscapeLeft]
         let best = candidates.min {
             abs(targetAngle(gravity: gravity, orientation: orientation, sensorFrame: $0))
