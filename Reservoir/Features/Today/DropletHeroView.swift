@@ -43,10 +43,18 @@ struct DropletHeroView: View {
                     let lineY = Self.dropSize.height * (1 - CGFloat(displayFill))
                     ZStack {
                         // A paler wave behind the main one gives the surface some depth.
-                        DropletShape().fill(waterColor.opacity(0.4))
+                        DropletShape().fill(waterColor.opacity(0.55))
                             .mask { WaterSurfaceShape(level: lineY - 5, water: water, phaseOffset: 2.1) }
                         DropletShape().fill(waterColor)
                             .mask { WaterSurfaceShape(level: lineY, water: water) }
+                        SplashView(
+                            water: water,
+                            pivot: CGPoint(x: Self.dropSize.width / 2, y: lineY),
+                            scale: 1,
+                            color: waterColor
+                        )
+                        .frame(width: Self.dropSize.width, height: Self.dropSize.height)
+                        .clipShape(DropletShape())
                     }
                 }
                 // A soft highlight on the glass, upper left of the bulb.

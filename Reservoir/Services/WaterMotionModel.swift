@@ -15,9 +15,9 @@ struct WaterMotionModel: Equatable {
     /// How much the drawn surface exaggerates the phone's real tilt, so a small lean reads clearly on a
     /// drop only a couple of hundred points wide.
     static let gain = 2.5
-    /// Spring tuning: a lively but short slosh (underdamped, roughly two swings).
-    static let stiffness = 120.0
-    static let damping = 5.0
+    /// Spring tuning: a thick, heavy slosh (underdamped, about one swing past the mark).
+    static let stiffness = 70.0
+    static let damping = 7.5
 
     /// Surface rotation in radians, positive clockwise on screen.
     private(set) var angle = 0.0

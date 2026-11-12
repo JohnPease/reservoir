@@ -1158,7 +1158,7 @@ with one rule. Screens read it through a `GeometryReader`:
 - **Moving water** (`WaterMotion`, `WaterMotionModel`): both droplets tilt their water surface with the phone using
   Core Motion gravity plus the push of the hand, through a damped spring so it sloshes and settles. The
   angle follows the interface orientation, is clamped to about 50 degrees, runs only while a droplet is on
-  screen, ripples more the faster it swings (two travelling waves plus a paler one behind, and a highlight on the glass), and stays level under Reduce Motion or with no motion hardware (the simulator).
+  screen, ripples more the faster it swings (two travelling waves plus a paler one behind, and a highlight on the glass), throws droplets off the surface on a hard shake (`SplashModel`), moves like a thick liquid (heavily damped, slow waves), and stays level under Reduce Motion or with no motion hardware (the simulator).
 - **Spending by category** shows each row's spend against its usual month (a tick on the bar, from
   `CategorySpendCalculator.usualMonthly`). When wide it becomes a **ledger spread**: the list on the left,
   and on the right the selected category's usual and charges (`CategoryChargesView`, embedded) with a Trend

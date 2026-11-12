@@ -62,9 +62,16 @@ struct TodayTankView: View {
             TiltingWater { water in
                 ZStack(alignment: .topLeading) {
                     WaterSurfaceShape(level: size.height - waterHeight - 4, water: water, phaseOffset: 2.1)
-                        .fill(waterColor.opacity(0.4))
+                        .fill(waterColor.opacity(0.55))
                     WaterSurfaceShape(level: size.height - waterHeight, water: water)
                         .fill(waterColor)
+                    SplashView(
+                        water: water,
+                        pivot: CGPoint(x: size.width / 2, y: size.height - waterHeight),
+                        scale: size.width / 170,
+                        color: waterColor
+                    )
+                    .frame(width: size.width, height: size.height)
                     // The purchase bands are oversized sideways and turn with the water about the
                     // middle of its line.
                     ZStack(alignment: .topLeading) {
