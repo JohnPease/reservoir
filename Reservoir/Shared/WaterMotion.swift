@@ -17,30 +17,34 @@ final class WaterMotion {
 
     private var model = WaterMotionModel()
     private let manager = CMMotionManager()
-    private var sensorFrame: WaterMotionModel.Orientation?
+    /// The sensor's turn is a fact about the device, so once found it is kept for the life of the
+    /// app; recalibrating on every appearance left the water 90 degrees off until the phone moved.
+    private static var sensorFrame: WaterMotionModel.Orientation?
     private var lastTimestamp: TimeInterval?
 
     func start() {
         guard manager.isDeviceMotionAvailable, !manager.isDeviceMotionActive else { return }
         lastTimestamp = nil
-        sensorFrame = nil
         manager.deviceMotionUpdateInterval = 1.0 / 60.0
         manager.startDeviceMotionUpdates(to: .main) { [weak self] motion, _ in
             guard let self, let motion else { return }
             let dt = self.lastTimestamp.map { motion.timestamp - $0 } ?? 1.0 / 60.0
             self.lastTimestamp = motion.timestamp
             let orientation = Self.interfaceOrientation
-            if self.sensorFrame == nil {
-                self.sensorFrame = WaterMotionModel.calibratedSensorFrame(
+            if Self.sensorFrame == nil {
+                Self.sensorFrame = WaterMotionModel.calibratedSensorFrame(
                     gravity: (motion.gravity.x, motion.gravity.y), orientation: orientation
                 )
             }
-            let target = WaterMotionModel.targetAngle(
-                gravity: (motion.gravity.x, motion.gravity.y),
-                userAcceleration: (motion.userAcceleration.x, motion.userAcceleration.y),
-                orientation: orientation,
-                sensorFrame: self.sensorFrame ?? .portrait
-            )
+            // Until the sensor's turn is known the water sits level rather than guessing wrong.
+            let target = Self.sensorFrame.map {
+                WaterMotionModel.targetAngle(
+                    gravity: (motion.gravity.x, motion.gravity.y),
+                    userAcceleration: (motion.userAcceleration.x, motion.userAcceleration.y),
+                    orientation: orientation,
+                    sensorFrame: $0
+                )
+            } ?? 0
             self.model.step(toward: target, dt: dt)
             self.angle = self.model.angle
             self.ripple = self.model.ripple
