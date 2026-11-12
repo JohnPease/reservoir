@@ -54,14 +54,14 @@ struct RootTabView: View {
         GeometryReader { proxy in
             let showsRail = ScreenLayout.layout(for: proxy.size) == .panes
             HStack(spacing: 0) {
+                tabs(hidesTabBar: showsRail)
                 if showsRail {
+                    Divider()
                     SideRail(
                         selection: Bindable(tabSelection).selected,
                         settingsNeedsAttention: importService?.needsAttention == true
                     )
-                    Divider()
                 }
-                tabs(hidesTabBar: showsRail)
             }
         }
         .background(Color("ReservoirBackground").ignoresSafeArea())
@@ -186,7 +186,7 @@ struct RootTabView: View {
 }
 
 /// The landscape replacement for the tab bar (reservoir-wrx): the same four destinations in a
-/// narrow column at the left edge, so the full height goes to the screen's content.
+/// narrow column at the right edge, laid out like the stock tab bar (icon over label, tint for the selected item), so the full height goes to the screen's content.
 private struct SideRail: View {
     @Binding var selection: AppTab
     let settingsNeedsAttention: Bool
@@ -200,6 +200,7 @@ private struct SideRail: View {
 
     var body: some View {
         VStack(spacing: 6) {
+            Spacer()
             ForEach(Self.items, id: \.tab) { item in
                 let isSelected = selection == item.tab
                 Button { selection = item.tab } label: {
@@ -219,7 +220,6 @@ private struct SideRail: View {
                     .foregroundStyle(isSelected ? Color("ReservoirAccent") : Color("ReservoirTextMuted"))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 10)
-                    .background(isSelected ? Color("ReservoirSurfaceAccent") : .clear, in: RoundedRectangle(cornerRadius: 12))
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
