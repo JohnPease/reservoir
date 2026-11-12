@@ -48,23 +48,31 @@ struct RootTabView: View {
     @State private var widgetPublisher: WidgetSnapshotPublishing = WidgetSnapshotPublisher.makeDefault()
 
     var body: some View {
-        // Wide and short (landscape on either display): a side rail replaces the tab bar, which
-        // would cost a sixth of a 466 pt tall screen (reservoir-wrx). The `TabView` stays in the
-        // same place in the tree either way, so each tab keeps its state across a rotation or fold.
-        GeometryReader { proxy in
-            let showsRail = ScreenLayout.layout(for: proxy.size) == .panes
-            HStack(spacing: 0) {
-                tabs(hidesTabBar: showsRail)
-                if showsRail {
-                    Divider()
-                    SideRail(
-                        selection: Bindable(tabSelection).selected,
-                        settingsNeedsAttention: importService?.needsAttention == true
-                    )
-                }
-            }
+        TabView(selection: Bindable(tabSelection).selected) {
+            TodayView()
+                .tabItem { Label("Today", systemImage: "sun.max") }
+                .tag(AppTab.today)
+
+            GoalsView()
+                .tabItem { Label("Plans", systemImage: "target") }
+                .tag(AppTab.goals)
+
+            TransactionsView()
+                .tabItem { Label("Transactions", systemImage: "list.bullet") }
+                .tag(AppTab.transactions)
+
+            SettingsView()
+                .tabItem { Label("Settings", systemImage: "gearshape") }
+                .tag(AppTab.settings)
+                // A broken bank connection (adq.6.5's needsAttention) now surfaces as a
+                // native tab-bar badge instead of a separate gear-icon overlay on the
+                // Today screen (code review follow-up, reservoir-adq.7) — Settings already
+                // has its own tab-bar entry point, so a second, redundant navigation
+                // affordance on Today added nothing; only the status signal itself was
+                // worth keeping, and a badge on the tab that actually owns this state is
+                // the more direct place for it.
+                .badge(importService?.needsAttention == true ? "!" : nil)
         }
-        .background(Color("ReservoirBackground").ignoresSafeArea())
         // §3.6: active tab icon/label tinted ReservoirAccent (`.tint` colors whichever
         // tab item is currently selected); inactive tabs' `ReservoirTextMuted` tint is
         // set once via `UITabBar.appearance()` in `.task` below — SwiftUI's `TabView`
@@ -129,38 +137,6 @@ struct RootTabView: View {
         }
     }
 
-    private func tabs(hidesTabBar: Bool) -> some View {
-        TabView(selection: Bindable(tabSelection).selected) {
-            TodayView()
-                .toolbar(hidesTabBar ? .hidden : .automatic, for: .tabBar)
-                .tabItem { Label("Today", systemImage: "sun.max") }
-                .tag(AppTab.today)
-
-            GoalsView()
-                .toolbar(hidesTabBar ? .hidden : .automatic, for: .tabBar)
-                .tabItem { Label("Plans", systemImage: "target") }
-                .tag(AppTab.goals)
-
-            TransactionsView()
-                .toolbar(hidesTabBar ? .hidden : .automatic, for: .tabBar)
-                .tabItem { Label("Transactions", systemImage: "list.bullet") }
-                .tag(AppTab.transactions)
-
-            SettingsView()
-                .toolbar(hidesTabBar ? .hidden : .automatic, for: .tabBar)
-                .tabItem { Label("Settings", systemImage: "gearshape") }
-                .tag(AppTab.settings)
-                // A broken bank connection (adq.6.5's needsAttention) now surfaces as a
-                // native tab-bar badge instead of a separate gear-icon overlay on the
-                // Today screen (code review follow-up, reservoir-adq.7) — Settings already
-                // has its own tab-bar entry point, so a second, redundant navigation
-                // affordance on Today added nothing; only the status signal itself was
-                // worth keeping, and a badge on the tab that actually owns this state is
-                // the more direct place for it.
-                .badge(importService?.needsAttention == true ? "!" : nil)
-        }
-    }
-
     private func requestWidgetRefresh() {
         widgetPublisher.requestRefresh(
             modelContext: modelContext,
@@ -182,57 +158,5 @@ struct RootTabView: View {
             get: { importService?.pendingMergeDecision },
             set: { _ in }
         )
-    }
-}
-
-/// The landscape replacement for the tab bar (reservoir-wrx): the same four destinations in a
-/// narrow column at the right edge, laid out like the stock tab bar (icon over label, tint for the selected item), so the full height goes to the screen's content.
-private struct SideRail: View {
-    @Binding var selection: AppTab
-    let settingsNeedsAttention: Bool
-
-    private static let items: [(tab: AppTab, title: String, symbol: String, id: String)] = [
-        (.today, "Today", "sun.max", "rail.today"),
-        (.goals, "Plans", "target", "rail.plans"),
-        (.transactions, "Transactions", "list.bullet", "rail.transactions"),
-        (.settings, "Settings", "gearshape", "rail.settings")
-    ]
-
-    var body: some View {
-        VStack(spacing: 6) {
-            Spacer()
-            ForEach(Self.items, id: \.tab) { item in
-                let isSelected = selection == item.tab
-                Button { selection = item.tab } label: {
-                    VStack(spacing: 4) {
-                        Image(systemName: item.symbol)
-                            .font(.title3)
-                            .overlay(alignment: .topTrailing) {
-                                if item.tab == .settings && settingsNeedsAttention {
-                                    Circle().fill(Color("ReservoirDeficit")).frame(width: 9, height: 9).offset(x: 5, y: -3)
-                                }
-                            }
-                        Text(item.title)
-                            .font(.caption2)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.8)
-                    }
-                    .foregroundStyle(isSelected ? Color("ReservoirAccent") : Color("ReservoirTextMuted"))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(item.tab == .settings && settingsNeedsAttention ? "Settings, needs attention" : item.title)
-                .accessibilityAddTraits(isSelected ? .isSelected : [])
-                .accessibilityIdentifier(item.id)
-            }
-            Spacer()
-        }
-        .padding(8)
-        .frame(width: 96)
-        .background(Color("ReservoirBackground"))
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("rail")
     }
 }

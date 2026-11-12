@@ -7,7 +7,7 @@ Static HTML mockups (open them in a browser) with full-page PNG renders beside e
   portrait and landscape, with the layout rules. This is the design the adaptive layouts follow.
 - `concepts.html`: four further concepts (the tank, the month strip, now and next, the ledger spread).
 
-Built (reservoir-h2k, reservoir-wrx): the month strip (Plans), the side rail in wide landscape, the tank
+Built (reservoir-h2k, reservoir-wrx): the month strip (Plans), (the side rail was tried and dropped for the stock tab bar), the tank
 (landscape Today, budget only), Now / Next (inner display held upright) and the ledger spread
 (Spending by category when wide). Not built: the tank as the whole cover screen in portrait, and the
 cover's one-line "Next up" preview; narrow portrait keeps the original column.

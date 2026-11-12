@@ -1155,10 +1155,6 @@ with one rule. Screens read it through a `GeometryReader`:
   carry no time of day). In every other layout the budget hero is **the number in the drop**
   (`DropletHeroView`): the amount left printed inside a large droplet with the water rising behind it. Both
   are for the budget only; the savings-goal hero is unchanged.
-- **Side rail** (`SideRail` in `RootTabView`): in panes the tab bar is hidden and a narrow rail at the right
-  edge, styled like the stock tab bar, holds the same four destinations (ids `rail.today`, `rail.plans`, `rail.transactions`,
-  `rail.settings`), with a dot on Settings when a bank connection needs attention. The `TabView` keeps its
-  place in the tree, so tab state survives a rotation.
 - **Spending by category** shows each row's spend against its usual month (a tick on the bar, from
   `CategorySpendCalculator.usualMonthly`). When wide it becomes a **ledger spread**: the list on the left,
   and on the right the selected category's usual and charges (`CategoryChargesView`, embedded) with a Trend
