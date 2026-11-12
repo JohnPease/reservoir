@@ -39,10 +39,19 @@ struct DropletHeroView: View {
             }
             ZStack {
                 DropletShape().fill(Color("ReservoirDropletTrack"))
-                DropletShape().fill(waterColor)
-                    .mask(alignment: .bottom) {
-                        Rectangle().frame(height: Self.dropSize.height * CGFloat(displayFill))
-                    }
+                TiltingWater { angle in
+                    let size = Self.dropSize
+                    let lineY = size.height * (1 - CGFloat(displayFill))
+                    DropletShape().fill(waterColor)
+                        .mask(alignment: .topLeading) {
+                            // Oversized so a tilted surface never uncovers a corner; it turns about
+                            // the middle of the water line.
+                            Rectangle()
+                                .frame(width: size.width * 3, height: size.height * 3)
+                                .rotationEffect(angle, anchor: UnitPoint(x: 0.5, y: 0))
+                                .offset(x: -size.width, y: lineY)
+                        }
+                }
                 VStack(spacing: 0) {
                     Text(abs(summary.remaining), format: .currency(code: "USD"))
                         .font(.system(size: 34, weight: .bold))

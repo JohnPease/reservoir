@@ -59,20 +59,25 @@ struct TodayTankView: View {
         return ZStack(alignment: .topLeading) {
             DropletShape().fill(Color("ReservoirDropletTrack"))
                 .frame(width: size.width, height: size.height)
-            ZStack(alignment: .topLeading) {
+            TiltingWater { angle in
+              ZStack(alignment: .topLeading) {
+                // Everything is oversized sideways and downward so a tilted surface never
+                // uncovers a corner, and the group turns about the middle of the water line.
                 Rectangle().fill(waterColor)
-                    .frame(width: size.width, height: waterHeight)
-                    .offset(y: size.height - waterHeight)
+                    .frame(width: size.width * 3, height: waterHeight + size.height * 2)
+                    .offset(x: -size.width, y: size.height - waterHeight)
                 ForEach(Array(DayStepsCalculator.slices(for: day).enumerated()), id: \.offset) { index, slice in
                     let top = size.height * (1 - DayStepsCalculator.fill(level: slice.upper, limit: limit))
                     let bottom = size.height * (1 - DayStepsCalculator.fill(level: slice.lower, limit: limit))
                     Rectangle().fill(waterColor.opacity(index.isMultiple(of: 2) ? 0.16 : 0.26))
-                        .frame(width: size.width, height: bottom - top)
-                        .offset(y: top)
+                        .frame(width: size.width * 3, height: bottom - top)
+                        .offset(x: -size.width, y: top)
                 }
+              }
+              .frame(width: size.width, height: size.height, alignment: .topLeading)
+              .rotationEffect(angle, anchor: UnitPoint(x: 0.5, y: 1 - waterHeight / size.height))
+              .clipShape(DropletShape())
             }
-            .frame(width: size.width, height: size.height, alignment: .topLeading)
-            .clipShape(DropletShape())
             if limit > summary.dailyBase, summary.dailyBase > 0 {
                 Rectangle()
                     .stroke(Color("ReservoirTextPrimary"), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))

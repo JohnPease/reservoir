@@ -1155,6 +1155,10 @@ with one rule. Screens read it through a `GeometryReader`:
   carry no time of day). In every other layout the budget hero is **the number in the drop**
   (`DropletHeroView`): the amount left printed inside a large droplet with the water rising behind it. Both
   are for the budget only; the savings-goal hero is unchanged.
+- **Moving water** (`WaterMotion`, `WaterMotionModel`): both droplets tilt their water surface with the phone using
+  Core Motion gravity plus the push of the hand, through a damped spring so it sloshes and settles. The
+  angle follows the interface orientation, is clamped to about 50 degrees, runs only while a droplet is on
+  screen, and stays level under Reduce Motion or with no motion hardware (the simulator).
 - **Spending by category** shows each row's spend against its usual month (a tick on the bar, from
   `CategorySpendCalculator.usualMonthly`). When wide it becomes a **ledger spread**: the list on the left,
   and on the right the selected category's usual and charges (`CategoryChargesView`, embedded) with a Trend
