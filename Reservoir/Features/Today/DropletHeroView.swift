@@ -57,13 +57,6 @@ struct DropletHeroView: View {
                         .clipShape(DropletShape())
                     }
                 }
-                // A soft highlight on the glass, upper left of the bulb.
-                Capsule()
-                    .fill(.white.opacity(0.28))
-                    .frame(width: 9, height: 38)
-                    .rotationEffect(.degrees(24))
-                    .offset(x: -50, y: 22)
-                    .accessibilityHidden(true)
                 VStack(spacing: 0) {
                     Text(abs(summary.remaining), format: .currency(code: "USD"))
                         .font(.system(size: 34, weight: .bold))
