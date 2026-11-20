@@ -17,10 +17,12 @@ final class WaterMotion {
 
     private var model = WaterMotionModel()
     private let manager = CMMotionManager()
-    /// The sensor's turn is a fact about the device, so once found it is kept for the life of the
-    /// app; recalibrating on every appearance left the water 90 degrees off until the phone moved.
-    private static var sensorFrame: WaterMotionModel.Orientation?
+    /// The sensor's turn relative to a screen, kept for the life of the app so recalibrating on every
+    /// appearance cannot leave the water 90 degrees off. Keyed by screen because a foldable's cover
+    /// and inner displays sit differently against the one sensor.
+    private static var sensorFrames: [String: WaterMotionModel.Orientation] = [:]
     private var pending: (frame: WaterMotionModel.Orientation, orientation: WaterMotionModel.Orientation, count: Int)?
+    private var pendingScreenKey = ""
     private var lastTimestamp: TimeInterval?
 
     func start() {
@@ -32,12 +34,17 @@ final class WaterMotion {
             guard let self, let motion else { return }
             let dt = self.lastTimestamp.map { motion.timestamp - $0 } ?? 1.0 / 60.0
             self.lastTimestamp = motion.timestamp
-            let orientation = Self.interfaceOrientation
-            if Self.sensorFrame == nil {
-                self.calibrate(gravity: (motion.gravity.x, motion.gravity.y), orientation: orientation)
+            let (orientation, screenKey) = Self.screenState
+            if self.pendingScreenKey != screenKey {
+                self.pending = nil
+                self.pendingScreenKey = screenKey
+            }
+            // An empty key means the scene is mid-transition (a fold opening); wait for a real display.
+            if !screenKey.isEmpty, Self.sensorFrames[screenKey] == nil {
+                self.calibrate(gravity: (motion.gravity.x, motion.gravity.y), orientation: orientation, screenKey: screenKey)
             }
             // Until the sensor's turn is known the water sits level rather than guessing wrong.
-            let target = Self.sensorFrame.map {
+            let target = Self.sensorFrames[screenKey].map {
                 WaterMotionModel.targetAngle(
                     gravity: (motion.gravity.x, motion.gravity.y),
                     userAcceleration: (motion.userAcceleration.x, motion.userAcceleration.y),
@@ -61,7 +68,7 @@ final class WaterMotion {
 
     /// Commits the sensor's turn only after half a second of readings that all agree, so one
     /// stray sample (a launch in mid-rotation, a bump) can never fix a wrong answer for good.
-    private func calibrate(gravity: (x: Double, y: Double), orientation: WaterMotionModel.Orientation) {
+    private func calibrate(gravity: (x: Double, y: Double), orientation: WaterMotionModel.Orientation, screenKey: String) {
         guard let candidate = WaterMotionModel.calibratedSensorFrame(gravity: gravity, orientation: orientation) else {
             pending = nil
             return
@@ -71,7 +78,7 @@ final class WaterMotion {
         } else {
             pending = (candidate, orientation, 1)
         }
-        if let pending, pending.count >= 30 { Self.sensorFrame = pending.frame }
+        if let pending, pending.count >= 30 { Self.sensorFrames[screenKey] = pending.frame }
     }
 
     func stop() {
@@ -83,14 +90,23 @@ final class WaterMotion {
         ripple = 0
     }
 
-    private static var interfaceOrientation: WaterMotionModel.Orientation {
+    /// The interface orientation and an identity for the display it is on. The identity ignores
+    /// rotation, so the cover display and the inner display get their own calibration.
+    private static var screenState: (WaterMotionModel.Orientation, String) {
         let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        let orientation: WaterMotionModel.Orientation
         switch scene?.interfaceOrientation {
-        case .portraitUpsideDown: return .portraitUpsideDown
-        case .landscapeLeft: return .landscapeLeft
-        case .landscapeRight: return .landscapeRight
-        default: return .portrait
+        case .portraitUpsideDown: orientation = .portraitUpsideDown
+        case .landscapeLeft: orientation = .landscapeLeft
+        case .landscapeRight: orientation = .landscapeRight
+        default: orientation = .portrait
         }
+        let native = scene?.screen.nativeBounds.size ?? .zero
+        let points = scene?.coordinateSpace.bounds.size ?? .zero
+        guard native.width > 0, points.width > 0 else { return (orientation, "") }
+        let key = "\(Int(min(native.width, native.height)))x\(Int(max(native.width, native.height)))"
+            + "/\(Int(min(points.width, points.height)))x\(Int(max(points.width, points.height)))"
+        return (orientation, key)
     }
 }
 
