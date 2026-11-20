@@ -11,10 +11,11 @@ final class WaterMotionModelTests: XCTestCase {
     }
 
     func testTiltingRightTipsTheSurfaceClockwise() {
-        // 10 degrees of real tilt is drawn exaggerated by the gain.
-        let tenDegrees = 10.0 * .pi / 180
-        XCTAssertEqual(target(sin(tenDegrees), -cos(tenDegrees)), tenDegrees * WaterMotionModel.gain, accuracy: 1e-6)
-        XCTAssertEqual(target(-sin(tenDegrees), -cos(tenDegrees)), -tenDegrees * WaterMotionModel.gain, accuracy: 1e-6)
+        // 30 degrees of real tilt: the dead zone comes off, the rest is exaggerated by the gain.
+        let thirty = 30.0 * .pi / 180
+        let expected = (thirty - WaterMotionModel.deadZone) * WaterMotionModel.gain
+        XCTAssertEqual(target(sin(thirty), -cos(thirty)), expected, accuracy: 1e-6)
+        XCTAssertEqual(target(-sin(thirty), -cos(thirty)), -expected, accuracy: 1e-6)
     }
 
     func testAngleIsClampedBeforeTheWaterLeavesTheDrop() {
@@ -23,10 +24,16 @@ final class WaterMotionModelTests: XCTestCase {
     }
 
     func testTiltFadesOutAsThePhoneGoesFlat() {
-        let leaning = target(0.02, -0.1)
-        let upright = target(0.2, -1.0)
+        let leaning = target(0.04, -0.1)
+        let upright = target(0.4, -1.0)
         XCTAssertLessThan(abs(leaning), abs(upright), "same direction, less gravity in the screen")
         XCTAssertEqual(target(0.01, -0.01), 0, accuracy: 0.1)
+    }
+
+    func testSmallLeansDoNotMoveTheWater() {
+        let fiveDegrees = 5.0 * .pi / 180
+        XCTAssertEqual(target(sin(fiveDegrees), -cos(fiveDegrees)), 0)
+        XCTAssertEqual(target(-sin(fiveDegrees), -cos(fiveDegrees)), 0)
     }
 
     func testFlatOnTheTableIsLevel() {

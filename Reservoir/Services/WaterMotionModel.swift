@@ -12,9 +12,10 @@ struct WaterMotionModel: Equatable {
 
     /// Largest tilt drawn, in radians (about 50 degrees); past that the water would leave the drop.
     static let maxAngle = 0.87
-    /// How much the drawn surface exaggerates the phone's real tilt, so a small lean reads clearly on a
-    /// drop only a couple of hundred points wide.
-    static let gain = 2.5
+    /// How much the drawn surface exaggerates the phone's real tilt beyond the dead zone.
+    static let gain = 1.6
+    /// Real lean, in radians (about 10 degrees), the phone can have before the water starts to move.
+    static let deadZone = 0.17
     /// Spring tuning: a thick, heavy slosh (underdamped, about one swing past the mark).
     static let stiffness = 70.0
     static let damping = 7.5
@@ -26,25 +27,41 @@ struct WaterMotionModel: Equatable {
     /// quickly and fade over about half a second.
     private(set) var ripple = 0.0
 
-    /// The surface angle gravity asks for. `gravity` is Core Motion's device-frame gravity
-    /// (x right, y up the portrait device, in g) and `userAcceleration` the push of the hand, so
-    /// a quick shove sideways tips the water the way it would in a real glass.
+    /// The surface angle gravity asks for: the phone's real tilt past a small dead zone, exaggerated
+    /// by `gain`. `gravity` is Core Motion's device-frame gravity (x right, y up the portrait
+    /// device, in g) and `userAcceleration` the push of the hand, so a quick shove sideways tips
+    /// the water the way it would in a real glass.
     static func targetAngle(
         gravity: (x: Double, y: Double),
         userAcceleration: (x: Double, y: Double) = (0, 0),
         orientation: Orientation,
         sensorFrame: Orientation = .portrait
     ) -> Double {
-        let effective = (x: gravity.x - userAcceleration.x, y: gravity.y - userAcceleration.y)
-        let screen = screenFrame(screenFrame(effective, sensorFrame), orientation)
-        // Upright, gravity is straight down the screen (0, -1) and the surface is level.
-        let inPlane = (screen.x * screen.x + screen.y * screen.y).squareRoot()
-        guard inPlane > 0 else { return 0 }
+        let (tilt, inPlane) = realTilt(
+            gravity: gravity, userAcceleration: userAcceleration, orientation: orientation, sensorFrame: sensorFrame
+        )
         // Held nearly flat, almost no gravity lies in the screen and its direction is just noise, so
         // the tilt fades out below 0.3 g rather than jittering.
         let weight = min(inPlane / 0.3, 1)
-        let raw = atan2(screen.x, -screen.y) * gain * weight
-        return min(max(raw, -maxAngle), maxAngle)
+        let beyondDeadZone = max(abs(tilt) - deadZone, 0) * (tilt < 0 ? -1 : 1)
+        let scaled = beyondDeadZone * gain * weight
+        return min(max(scaled, -maxAngle), maxAngle)
+    }
+
+    /// The phone's actual lean from upright in the screen's frame, in radians (positive is
+    /// clockwise), and how much gravity lies in the screen plane. Upright, gravity is straight
+    /// down the screen (0, -1) and the lean is 0.
+    private static func realTilt(
+        gravity: (x: Double, y: Double),
+        userAcceleration: (x: Double, y: Double) = (0, 0),
+        orientation: Orientation,
+        sensorFrame: Orientation
+    ) -> (tilt: Double, inPlane: Double) {
+        let effective = (x: gravity.x - userAcceleration.x, y: gravity.y - userAcceleration.y)
+        let screen = screenFrame(screenFrame(effective, sensorFrame), orientation)
+        let inPlane = (screen.x * screen.x + screen.y * screen.y).squareRoot()
+        guard inPlane > 0 else { return (0, 0) }
+        return (atan2(screen.x, -screen.y), inPlane)
     }
 
     /// The sensor's frame is not the same on every device: the foldable reports gravity along its
@@ -54,12 +71,10 @@ struct WaterMotionModel: Equatable {
     static func calibratedSensorFrame(gravity: (x: Double, y: Double), orientation: Orientation) -> Orientation? {
         guard (gravity.x * gravity.x + gravity.y * gravity.y).squareRoot() > 0.25 else { return nil }
         let candidates: [Orientation] = [.portrait, .landscapeRight, .portraitUpsideDown, .landscapeLeft]
-        let best = candidates.min {
-            abs(targetAngle(gravity: gravity, orientation: orientation, sensorFrame: $0))
-                < abs(targetAngle(gravity: gravity, orientation: orientation, sensorFrame: $1))
+        func lean(_ frame: Orientation) -> Double {
+            abs(realTilt(gravity: gravity, orientation: orientation, sensorFrame: frame).tilt)
         }
-        guard let best,
-              abs(targetAngle(gravity: gravity, orientation: orientation, sensorFrame: best)) < 0.35 * gain else { return nil }
+        guard let best = candidates.min(by: { lean($0) < lean($1) }), lean(best) < 0.35 else { return nil }
         return best
     }
 
