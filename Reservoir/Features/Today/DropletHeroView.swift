@@ -39,10 +39,24 @@ struct DropletHeroView: View {
             }
             ZStack {
                 DropletShape().fill(Color("ReservoirDropletTrack"))
-                DropletShape().fill(waterColor)
-                    .mask(alignment: .bottom) {
-                        Rectangle().frame(height: Self.dropSize.height * CGFloat(displayFill))
+                TiltingWater { water in
+                    let lineY = Self.dropSize.height * (1 - CGFloat(displayFill))
+                    ZStack {
+                        // A paler wave behind the main one gives the surface some depth.
+                        DropletShape().fill(waterColor.opacity(0.55))
+                            .mask { WaterSurfaceShape(level: lineY - 5, water: water, phaseOffset: 2.1) }
+                        DropletShape().fill(waterColor)
+                            .mask { WaterSurfaceShape(level: lineY, water: water) }
+                        SplashView(
+                            water: water,
+                            pivot: CGPoint(x: Self.dropSize.width / 2, y: lineY),
+                            scale: 1,
+                            color: waterColor
+                        )
+                        .frame(width: Self.dropSize.width, height: Self.dropSize.height)
+                        .clipShape(DropletShape())
                     }
+                }
                 VStack(spacing: 0) {
                     Text(abs(summary.remaining), format: .currency(code: "USD"))
                         .font(.system(size: 34, weight: .bold))
