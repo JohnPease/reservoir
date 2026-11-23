@@ -92,6 +92,11 @@ enum UITestScenario: String {
     /// in a few days. No goal or budget.
     case categorizedSpend
 
+    /// Two charges today on the seeded card account ("uitest-account-2"), $40 and $25, for the card
+    /// statements view (reservoir-17g). Pair with `UITEST_SEED_LINKED_ACCOUNT`,
+    /// `UITEST_SEED_SECOND_LINKED_ACCOUNT` and `UITEST_SEED_CARD_CYCLE`.
+    case cardStatements
+
     static var current: UITestScenario? {
         ProcessInfo.processInfo.environment["UITEST_SCENARIO"].flatMap(UITestScenario.init(rawValue:))
     }
@@ -478,7 +483,14 @@ enum UITestScenario: String {
         if environment["UITEST_SEED_LINKED_ACCOUNT"] == "1" || environment["UITEST_RESET_PLAID_LINKED_ITEMS"] == "1" {
             UserDefaults.standard.removeObject(forKey: "plaid.linkedAccounts")
         }
+        if environment["UITEST_SEED_LINKED_ACCOUNT"] == "1" || environment["UITEST_RESET_PLAID_LINKED_ITEMS"] == "1" {
+            CardCycleStore().clear()
+        }
         guard environment["UITEST_SEED_LINKED_ACCOUNT"] == "1" else { return }
+        // "closingDay,dueDay" for the second (card) account, so the statements view opens filled in.
+        if let cycle = environment["UITEST_SEED_CARD_CYCLE"]?.split(separator: ",").compactMap({ Int($0) }), cycle.count == 2 {
+            CardCycleStore().save(CardCycleSettings(closingDay: cycle[0], dueDay: cycle[1]), accountID: "uitest-account-2")
+        }
         if environment["UITEST_SEED_SECOND_LINKED_ACCOUNT"] == "1" {
             LinkedAccountStore().upsert([
                 LinkedAccount(
@@ -566,6 +578,20 @@ enum UITestScenario: String {
                     plaidTransactionID: "uitest-budget-txn-\(index)",
                     plaidItemID: "uitest-item",
                     plaidAccountID: entry.0
+                ))
+            }
+
+        case .cardStatements:
+            for (index, amount) in [Decimal(40), Decimal(25)].enumerated() {
+                context.insert(SpendTransaction(
+                    amount: amount,
+                    date: .now,
+                    merchantName: "Card Merchant \(index)",
+                    type: .variable,
+                    entryMethod: .imported,
+                    plaidTransactionID: "uitest-card-txn-\(index)",
+                    plaidItemID: "uitest-item",
+                    plaidAccountID: "uitest-account-2"
                 ))
             }
 
