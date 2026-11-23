@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xcrun xcresulttool get *)",
+      "Bash(bd show *)",
+      "Bash(bd list *)",
+      "Bash(bd ready *)",
+      "Bash(bd search *)",
+      "Bash(plutil -p *)",
+      "Bash(xcrun devicectl list devices *)",
+      "Bash(xcrun devicectl device info *)",
+      "Bash(xcrun simctl list *)"
+    ]
+  }
+}
