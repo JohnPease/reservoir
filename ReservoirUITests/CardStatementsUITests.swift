@@ -1,0 +1,60 @@
+import XCTest
+
+/// The card statements view tab (reservoir-17g).
+final class CardStatementsUITests: XCTestCase {
+    private func launchedApp(cycle: String?) -> XCUIApplication {
+        let app = XCUIApplication.reservoirApp()
+        app.launchEnvironment["UITEST_SCENARIO"] = "cardStatements"
+        app.launchEnvironment["UITEST_RESET_PLAID_LINKED_ITEMS"] = "1"
+        app.launchEnvironment["UITEST_SEED_LINKED_ACCOUNT"] = "1"
+        app.launchEnvironment["UITEST_SEED_SECOND_LINKED_ACCOUNT"] = "1"
+        if let cycle { app.launchEnvironment["UITEST_SEED_CARD_CYCLE"] = cycle }
+        app.launch()
+        app.tabBars.buttons["Statements"].tap()
+        return app
+    }
+
+    func testOpenCycleTotalsTheCardsChargesAndExcludesOtherAccounts() {
+        let app = launchedApp(cycle: "28,16")
+        let open = app.descendants(matching: .any)["statements.open.uitest-account-2"]
+        XCTAssertTrue(open.waitForExistence(timeout: 5))
+        XCTAssertTrue(open.label.contains("$65.00"), "got: \(open.label)")
+        XCTAssertTrue(open.label.contains("Card ••1111"), "the bar names the card by name and mask")
+    }
+
+    func testACardWithNoClosingDayAsksForOne() {
+        let app = launchedApp(cycle: nil)
+        XCTAssertTrue(app.staticTexts["statements.prompt.uitest-account-2"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.descendants(matching: .any)["statements.open.uitest-account-2"].exists)
+    }
+
+    func testTappingAPeriodListsItsCharges() {
+        let app = launchedApp(cycle: "28,16")
+        let open = app.descendants(matching: .any)["statements.open.uitest-account-2"]
+        XCTAssertTrue(open.waitForExistence(timeout: 5))
+        open.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["statements.charges"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Card Merchant 0"].exists || app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Card Merchant'")).count > 0)
+    }
+
+    func testChargesCanBeGroupedByCategory() {
+        let app = launchedApp(cycle: "28,16")
+        let open = app.descendants(matching: .any)["statements.open.uitest-account-2"]
+        XCTAssertTrue(open.waitForExistence(timeout: 5))
+        open.tap()
+        app.buttons["statements.charges.options"].tap()
+        app.buttons["Group by category"].tap()
+        XCTAssertTrue(app.staticTexts["Uncategorized"].waitForExistence(timeout: 5))
+    }
+
+    func testTappingTheSelectedBarAgainHidesItsCharges() {
+        let app = launchedApp(cycle: "28,16")
+        let open = app.descendants(matching: .any)["statements.open.uitest-account-2"]
+        XCTAssertTrue(open.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.descendants(matching: .any)["statements.charges"].exists)
+        open.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["statements.charges"].waitForExistence(timeout: 5))
+        open.tap()
+        XCTAssertFalse(app.descendants(matching: .any)["statements.charges"].waitForExistence(timeout: 1))
+    }
+}
