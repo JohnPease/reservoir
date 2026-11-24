@@ -99,6 +99,13 @@ struct CardStatementsView: View {
                     withAnimation { selection = selection == tapped ? nil : tapped }
                 }
             )
+            HStack(spacing: 4) {
+                Image(systemName: "arrowtriangle.down.fill").font(.system(size: 9))
+                Text("Payment due")
+            }
+            .font(.caption2)
+            .foregroundStyle(Color("ReservoirTextSecondary"))
+            .accessibilityHidden(true)
             ForEach(data.filter { $0.cycles.isEmpty }, id: \.card.accountID) { lane in
                 Text("Choose the day \(lane.title) closes its statement (gear, top right).")
                     .font(.footnote)
