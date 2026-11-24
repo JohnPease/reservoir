@@ -9,7 +9,7 @@ import UIKit
 /// native `.badge(_:)` (code review follow-up on reservoir-adq.7), so `TodayView` no longer
 /// consumes this — `RootTabView`'s own `selection:` binding is the sole remaining consumer.
 enum AppTab: Hashable {
-    case today, goals, transactions, settings
+    case today, goals, transactions, statements, settings
 }
 
 /// The one shared, `@Observable` tab-selection binding — owned by `RootTabView`, injected
@@ -60,6 +60,10 @@ struct RootTabView: View {
             TransactionsView()
                 .tabItem { Label("Transactions", systemImage: "list.bullet") }
                 .tag(AppTab.transactions)
+
+            NavigationStack { CardStatementsView() }
+                .tabItem { Label("Statements", systemImage: "creditcard") }
+                .tag(AppTab.statements)
 
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gearshape") }

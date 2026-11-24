@@ -592,7 +592,7 @@ appears anywhere in the app. It owns two responsibilities:
   when under a week remains or the result rounds to under a day. Read-only: there is no
   way to change a category yet.
 
-  **Card statements (reservoir-17g)**: the card icon in Transactions' top bar opens a view of each linked
+  **Card statements (reservoir-17g)**: the Statements tab shows a view of each linked
   credit card (account `type` "credit") showing what it will bill. You choose the day each card's statement
   closes and the day its payment is due (stored per account by `CardCycleStore` in `UserDefaults`, beside the
   linked accounts, so no SwiftData migration). `StatementCycleCalculator` builds the cycles: a cycle runs from

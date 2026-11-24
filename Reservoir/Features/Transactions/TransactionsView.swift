@@ -245,15 +245,6 @@ struct TransactionsView: View {
                     }
                     .accessibilityIdentifier("transactions.merchantRulesLink")
                 }
-                ToolbarItem(placement: .topBarLeading) {
-                    NavigationLink {
-                        CardStatementsView()
-                    } label: {
-                        Image(systemName: "creditcard")
-                    }
-                    .accessibilityLabel("Card statements")
-                    .accessibilityIdentifier("transactions.statementsLink")
-                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         isShowingAddTransaction = true

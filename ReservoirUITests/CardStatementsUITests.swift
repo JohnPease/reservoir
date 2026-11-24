@@ -1,6 +1,6 @@
 import XCTest
 
-/// The card statements view under Transactions (reservoir-17g).
+/// The card statements view tab (reservoir-17g).
 final class CardStatementsUITests: XCTestCase {
     private func launchedApp(cycle: String?) -> XCUIApplication {
         let app = XCUIApplication.reservoirApp()
@@ -10,8 +10,7 @@ final class CardStatementsUITests: XCTestCase {
         app.launchEnvironment["UITEST_SEED_SECOND_LINKED_ACCOUNT"] = "1"
         if let cycle { app.launchEnvironment["UITEST_SEED_CARD_CYCLE"] = cycle }
         app.launch()
-        app.tabBars.buttons["Transactions"].tap()
-        app.buttons["transactions.statementsLink"].tap()
+        app.tabBars.buttons["Statements"].tap()
         return app
     }
 
