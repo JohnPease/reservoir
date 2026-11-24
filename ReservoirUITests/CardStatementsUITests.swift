@@ -27,4 +27,13 @@ final class CardStatementsUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["statements.prompt.uitest-account-2"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.descendants(matching: .any)["statements.open.uitest-account-2"].exists)
     }
+
+    func testTappingAPeriodListsItsCharges() {
+        let app = launchedApp(cycle: "28,16")
+        let open = app.descendants(matching: .any)["statements.open.uitest-account-2"]
+        XCTAssertTrue(open.waitForExistence(timeout: 5))
+        open.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["statements.charges"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Card Merchant 0"].exists || app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Card Merchant'")).count > 0)
+    }
 }

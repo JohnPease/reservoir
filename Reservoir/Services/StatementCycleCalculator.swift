@@ -44,10 +44,16 @@ enum StatementCycleCalculator {
 
     /// The charges on `accountID` inside `cycle`, closing day included. Counts everything the
     /// card was charged, fixed charges too, because the bill does.
-    static func total(of cycle: Cycle, accountID: String, in transactions: [SpendTransaction], calendar: Calendar = .current) -> Decimal {
+    /// The card's transactions inside the cycle, newest first.
+    static func transactions(in cycle: Cycle, accountID: String, from transactions: [SpendTransaction], calendar: Calendar = .current) -> [SpendTransaction] {
         let end = calendar.date(byAdding: .day, value: 1, to: cycle.closing) ?? cycle.closing
         return transactions
             .filter { $0.plaidAccountID == accountID && $0.date >= cycle.start && $0.date < end }
+            .sorted { $0.date > $1.date }
+    }
+
+    static func total(of cycle: Cycle, accountID: String, in transactions: [SpendTransaction], calendar: Calendar = .current) -> Decimal {
+        self.transactions(in: cycle, accountID: accountID, from: transactions, calendar: calendar)
             .reduce(Decimal.zero) { $0 + $1.amount }
     }
 

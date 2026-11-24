@@ -88,20 +88,26 @@ private struct CardStatementsSection: View {
                     closingDay: closingDay, dueDay: settings.dueDay, asOf: now, count: 4
                 )
                 if let due = StatementCycleCalculator.billDue(in: cycles, asOf: now), let dueDate = due.dueDate {
-                    row("Bill due \(dueDate.formatted(.dateTime.month(.abbreviated).day()))", detail: range(due), value: total(due), emphasized: true)
-                        .accessibilityIdentifier("statements.due.\(card.accountID)")
+                    chargesLink(due) {
+                        row("Bill due \(dueDate.formatted(.dateTime.month(.abbreviated).day()))", detail: range(due), value: total(due), emphasized: true)
+                    }
+                    .accessibilityIdentifier("statements.due.\(card.accountID)")
                 }
                 if let open = cycles.first {
-                    row("This cycle so far", detail: "\(range(open)) · closes \(open.closing.formatted(.dateTime.month(.abbreviated).day()))", value: total(open), emphasized: false)
-                        .accessibilityIdentifier("statements.open.\(card.accountID)")
+                    chargesLink(open) {
+                        row("This cycle so far", detail: "\(range(open)) · closes \(open.closing.formatted(.dateTime.month(.abbreviated).day()))", value: total(open), emphasized: false)
+                    }
+                    .accessibilityIdentifier("statements.open.\(card.accountID)")
                 }
                 ForEach(Array(cycles.dropFirst()), id: \.closing) { cycle in
-                    row(
-                        range(cycle),
-                        detail: cycle.dueDate.map { "due \($0.formatted(.dateTime.month(.abbreviated).day()))" },
-                        value: total(cycle),
-                        emphasized: false
-                    )
+                    chargesLink(cycle) {
+                        row(
+                            range(cycle),
+                            detail: cycle.dueDate.map { "due \($0.formatted(.dateTime.month(.abbreviated).day()))" },
+                            value: total(cycle),
+                            emphasized: false
+                        )
+                    }
                     .foregroundStyle(Color("ReservoirTextSecondary"))
                 }
             } else {
@@ -113,6 +119,18 @@ private struct CardStatementsSection: View {
             dayPicker("Payment due", selection: $settings.dueDay, identifier: "statements.duePicker.\(card.accountID)")
         } header: {
             Text(title)
+        }
+    }
+
+    private func chargesLink<Row: View>(_ cycle: StatementCycleCalculator.Cycle, @ViewBuilder row: () -> Row) -> some View {
+        NavigationLink {
+            CardCycleChargesView(
+                title: range(cycle),
+                accountID: card.accountID,
+                cycle: cycle
+            )
+        } label: {
+            row()
         }
     }
 
@@ -146,5 +164,41 @@ private struct CardStatementsSection: View {
         let formatter = NumberFormatter()
         formatter.numberStyle = .ordinal
         return "the " + (formatter.string(from: NSNumber(value: day)) ?? "\(day)")
+    }
+}
+
+/// Every charge inside one statement period (reservoir-17g), newest first, read-only.
+struct CardCycleChargesView: View {
+    let title: String
+    let accountID: String
+    let cycle: StatementCycleCalculator.Cycle
+
+    @Query private var transactions: [SpendTransaction]
+    @Environment(TodayClock.self) private var todayClock
+
+    var body: some View {
+        let charges = StatementCycleCalculator.transactions(in: cycle, accountID: accountID, from: transactions)
+        let outliers = CategorySpendCalculator.outliers(in: transactions, now: todayClock.referenceDate)
+        List {
+            if charges.isEmpty {
+                Text("No charges in this period").foregroundStyle(.secondary)
+                    .accessibilityIdentifier("statements.charges.empty")
+            } else {
+                Section {
+                    ForEach(charges, id: \.persistentModelID) { transaction in
+                        TransactionRowView(transaction: transaction, showDate: true, usualAmount: outliers[transaction.persistentModelID])
+                            .listRowBackground(Color("ReservoirBackground"))
+                    }
+                } footer: {
+                    let total = charges.reduce(Decimal(0)) { $0 + $1.amount }
+                    Text("\(charges.count) \(charges.count == 1 ? "charge" : "charges"), \(total.formatted(.currency(code: "USD")))")
+                }
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .background(Color("ReservoirBackground"))
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+        .accessibilityIdentifier("statements.charges")
     }
 }

@@ -80,6 +80,19 @@ final class StatementCycleCalculatorTests: XCTestCase {
         XCTAssertEqual(StatementCycleCalculator.total(of: cycle, accountID: "card", in: transactions, calendar: calendar), 55)
     }
 
+    func testTransactionsInCycleAreThisCardsNewestFirst() {
+        let cycle = cycles(closing: 25, asOf: day(2026, 11, 22))[0]
+        func txn(_ name: String, _ date: Date, account: String = "card") -> SpendTransaction {
+            SpendTransaction(amount: 1, date: date, merchantName: name, type: .variable, entryMethod: .imported, plaidAccountID: account)
+        }
+        let transactions = [
+            txn("old", day(2026, 10, 25)), txn("a", day(2026, 10, 27)), txn("c", day(2026, 11, 20)),
+            txn("other", day(2026, 11, 1), account: "x"), txn("b", day(2026, 11, 2))
+        ]
+        let result = StatementCycleCalculator.transactions(in: cycle, accountID: "card", from: transactions, calendar: calendar)
+        XCTAssertEqual(result.map(\.merchantName), ["c", "b", "a"])
+    }
+
     func testBillDueIsTheNewestClosedStatementNotYetPastItsDueDate() {
         let asOf = day(2026, 11, 22)
         let result = cycles(closing: 25, due: 16, asOf: asOf, count: 4)
