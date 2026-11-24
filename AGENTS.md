@@ -149,5 +149,14 @@ For more details, see README.md and docs/QUICKSTART.md.
 
 <!-- END BEADS INTEGRATION -->
 
+## Run on the phone after every change
+
+JP wants to see each change on their own device. After every code change that builds
+(feature, fix, tweak), once the targeted tests pass, run `scripts/install-on-phone.sh` from the
+branch being worked on, without asking. It builds, installs and launches the app on JP's iPhone.
+This replaces the earlier "only install when asked" rule. Say which branch the installed build is
+from. Do not skip it for small edits, and do not install a build that fails to compile or whose
+tests fail.
+
 ## Development standards
 See STANDARDS.md for branching, commits, code quality, testing, and README requirements. All agents (orchestrator, product-lead, engineer, tester) follow it in full — this is not optional guidance.
