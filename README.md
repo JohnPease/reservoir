@@ -599,8 +599,8 @@ appears anywhere in the app. It owns two responsibilities:
   the day after the previous closing to the closing day inclusive, a closing or due day past the end of a short
   month is clamped, and the due date is the first due day after the closing. The lanes show each
   statement as a bar over its dates with a flag at its due date and a line for today; tapping a bar selects
-  it, and its summary (range, open or due status, total) links to every charge inside it, which can be sorted by
-  date or amount and grouped by category. The bill due soonest is selected first. A statement's total is every imported charge on that card in the cycle,
+  it and shows its summary (range, open or due status, total) with every charge inside it listed below, which
+  can be sorted by date or amount and grouped by category; tapping the bar again hides them. A statement's total is every imported charge on that card in the cycle,
   fixed charges included because the bill includes them; refunds and credits are not imported, so a bill with
   refunds will be a little lower. There is no Plaid Liabilities lookup.
 

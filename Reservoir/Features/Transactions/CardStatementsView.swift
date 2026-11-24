@@ -41,6 +41,7 @@ struct CardStatementsView: View {
                             now: now,
                             laneIndex: selected.laneIndex
                         )
+                        CardCycleChargesList(accountID: selected.card.accountID, cycle: selected.cycle)
                     }
                     Text("Totals are the charges imported for each card between its closing dates. Refunds and credits are not imported, so a bill with refunds on it will be a little lower.")
                         .font(.footnote)
@@ -92,8 +93,11 @@ struct CardStatementsView: View {
                 lanes: data,
                 transactions: transactions,
                 now: now,
-                selection: selection ?? defaultSelection(in: data),
-                onSelect: { selection = Selection(accountID: $0, closing: $1) }
+                selection: selection,
+                onSelect: { accountID, closing in
+                    let tapped = Selection(accountID: accountID, closing: closing)
+                    withAnimation { selection = selection == tapped ? nil : tapped }
+                }
             )
             ForEach(data.filter { $0.cycles.isEmpty }, id: \.card.accountID) { lane in
                 Text("Choose the day \(lane.title) closes its statement (gear, top right).")
@@ -106,21 +110,9 @@ struct CardStatementsView: View {
         .reservoirCardBackground()
     }
 
-    /// The bill due soonest, otherwise the first open statement.
-    private func defaultSelection(in lanes: [StatementLanes.Lane]) -> Selection? {
-        let due = lanes.compactMap { lane -> (Selection, Date)? in
-            guard let cycle = StatementCycleCalculator.billDue(in: lane.cycles, asOf: now), let dueDate = cycle.dueDate else { return nil }
-            return (Selection(accountID: lane.card.accountID, closing: cycle.closing), dueDate)
-        }.min { $0.1 < $1.1 }
-        if let due { return due.0 }
-        return lanes.compactMap { lane in
-            lane.cycles.first.map { Selection(accountID: lane.card.accountID, closing: $0.closing) }
-        }.first
-    }
-
     private var selectedStatement: (card: LinkedAccount, cycle: StatementCycleCalculator.Cycle, laneIndex: Int)? {
         let data = laneData
-        guard let current = selection ?? defaultSelection(in: data),
+        guard let current = selection,
               let lane = data.first(where: { $0.card.accountID == current.accountID }),
               let cycle = lane.cycles.first(where: { $0.closing == current.closing })
         else { return nil }
@@ -304,46 +296,34 @@ private struct StatementSummary: View {
     var body: some View {
         let total = charges.reduce(Decimal.zero) { $0 + $1.amount }
         let status = status
-        NavigationLink {
-            CardCycleChargesView(title: StatementFormatting.range(cycle), accountID: card.accountID, cycle: cycle)
-        } label: {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(StatementFormatting.range(cycle))
-                        .font(.title3.weight(.bold))
-                        .foregroundStyle(Color("ReservoirTextPrimary"))
-                    Spacer()
-                    Text(status.text)
-                        .font(.caption.weight(.semibold))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 2)
-                        .background(status.isDue ? Color("ReservoirDeficit") : Color("ReservoirSurfaceAccent"), in: Capsule())
-                        .foregroundStyle(status.isDue ? Color("ReservoirOnAccent") : Color("ReservoirAccent"))
-                }
-                HStack(alignment: .firstTextBaseline) {
-                    Text(card.mask.map { "\(card.name) ••\($0)" } ?? card.name)
-                        .font(.subheadline)
-                        .foregroundStyle(Color("ReservoirTextSecondary"))
-                    Spacer()
-                    Text(total, format: .currency(code: "USD"))
-                        .font(.title3.weight(.semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(Color("ReservoirTextPrimary"))
-                }
-                HStack {
-                    Text("See \(charges.count) \(charges.count == 1 ? "charge" : "charges")")
-                        .font(.subheadline.weight(.semibold))
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                }
-                .foregroundStyle(Color("ReservoirAccent"))
-                .padding(.top, 4)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(StatementFormatting.range(cycle))
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(Color("ReservoirTextPrimary"))
+                Spacer()
+                Text(status.text)
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 2)
+                    .background(status.isDue ? Color("ReservoirDeficit") : Color("ReservoirSurfaceAccent"), in: Capsule())
+                    .foregroundStyle(status.isDue ? Color("ReservoirOnAccent") : Color("ReservoirAccent"))
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .reservoirCardBackground()
+            HStack(alignment: .firstTextBaseline) {
+                Text(card.mask.map { "\(card.name) ••\($0)" } ?? card.name)
+                    .font(.subheadline)
+                    .foregroundStyle(Color("ReservoirTextSecondary"))
+                Spacer()
+                Text(total, format: .currency(code: "USD"))
+                    .font(.title3.weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(Color("ReservoirTextPrimary"))
+            }
         }
-        .buttonStyle(.plain)
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .reservoirCardBackground()
+        .accessibilityElement(children: .combine)
         .accessibilityIdentifier("statements.summary")
     }
 }
@@ -396,9 +376,9 @@ struct CardCycleSettingsView: View {
     }
 }
 
-/// Every charge inside one statement period (reservoir-17g), newest first, read-only.
-struct CardCycleChargesView: View {
-    let title: String
+/// Every charge inside the selected statement (reservoir-17g), shown under its summary, with
+/// the same sort and group-by-category choices the Transactions list offers.
+struct CardCycleChargesList: View {
     let accountID: String
     let cycle: StatementCycleCalculator.Cycle
 
@@ -410,35 +390,13 @@ struct CardCycleChargesView: View {
     var body: some View {
         let charges = StatementCycleCalculator.transactions(in: cycle, accountID: accountID, from: transactions)
         let outliers = CategorySpendCalculator.outliers(in: transactions, now: todayClock.referenceDate)
-        List {
-            if charges.isEmpty {
-                Text("No charges in this period").foregroundStyle(.secondary)
-                    .accessibilityIdentifier("statements.charges.empty")
-            } else {
-                if groupByCategory {
-                    ForEach(StatementCycleCalculator.grouped(charges, by: sort), id: \.name) { group in
-                        Section {
-                            rows(group.charges, outliers: outliers)
-                        } header: {
-                            HStack {
-                                Text(group.name)
-                                Spacer()
-                                Text(group.total.formatted(.currency(code: "USD"))).monospacedDigit()
-                            }
-                        }
-                    }
-                    summary(charges)
-                } else {
-                    Section {
-                        rows(StatementCycleCalculator.sorted(charges, by: sort), outliers: outliers)
-                    } footer: {
-                        summaryText(charges)
-                    }
-                }
-            }
-        }
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                let total = charges.reduce(Decimal(0)) { $0 + $1.amount }
+                Text("\(charges.count) \(charges.count == 1 ? "charge" : "charges"), \(total.formatted(.currency(code: "USD")))")
+                    .font(.subheadline)
+                    .foregroundStyle(Color("ReservoirTextSecondary"))
+                Spacer()
                 Menu {
                     Picker("Sort by", selection: $sort) {
                         ForEach(StatementCycleCalculator.ChargeSort.allCases, id: \.self) { Text($0.rawValue).tag($0) }
@@ -450,27 +408,41 @@ struct CardCycleChargesView: View {
                 .accessibilityLabel("Sort and group")
                 .accessibilityIdentifier("statements.charges.options")
             }
+            if charges.isEmpty {
+                Text("No charges in this period")
+                    .foregroundStyle(Color("ReservoirTextSecondary"))
+                    .accessibilityIdentifier("statements.charges.empty")
+            } else if groupByCategory {
+                ForEach(StatementCycleCalculator.grouped(charges, by: sort), id: \.name) { group in
+                    VStack(alignment: .leading, spacing: 0) {
+                        HStack {
+                            Text(group.name)
+                            Spacer()
+                            Text(group.total.formatted(.currency(code: "USD"))).monospacedDigit()
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color("ReservoirTextSecondary"))
+                        .padding(.vertical, 6)
+                        rows(group.charges, outliers: outliers)
+                    }
+                }
+            } else {
+                rows(StatementCycleCalculator.sorted(charges, by: sort), outliers: outliers)
+            }
         }
-        .scrollContentBackground(.hidden)
-        .background(Color("ReservoirBackground"))
-        .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("statements.charges")
     }
 
     private func rows(_ charges: [SpendTransaction], outliers: [PersistentIdentifier: Decimal]) -> some View {
-        ForEach(charges, id: \.persistentModelID) { transaction in
-            TransactionRowView(transaction: transaction, showDate: true, usualAmount: outliers[transaction.persistentModelID])
-                .listRowBackground(Color("ReservoirBackground"))
+        VStack(spacing: 0) {
+            ForEach(Array(charges.enumerated()), id: \.element.persistentModelID) { index, transaction in
+                if index > 0 { Divider() }
+                TransactionRowView(transaction: transaction, showDate: true, usualAmount: outliers[transaction.persistentModelID])
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+            }
         }
-    }
-
-    private func summaryText(_ charges: [SpendTransaction]) -> Text {
-        let total = charges.reduce(Decimal(0)) { $0 + $1.amount }
-        return Text("\(charges.count) \(charges.count == 1 ? "charge" : "charges"), \(total.formatted(.currency(code: "USD")))")
-    }
-
-    private func summary(_ charges: [SpendTransaction]) -> some View {
-        Section {} footer: { summaryText(charges) }
+        .reservoirCardBackground()
     }
 }
