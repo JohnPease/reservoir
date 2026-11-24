@@ -93,6 +93,25 @@ final class StatementCycleCalculatorTests: XCTestCase {
         XCTAssertEqual(result.map(\.merchantName), ["c", "b", "a"])
     }
 
+    func testSortAndGroupCharges() {
+        func txn(_ name: String, _ amount: Decimal, _ date: Date, _ category: String?) -> SpendTransaction {
+            SpendTransaction(amount: amount, date: date, merchantName: name, type: .variable, entryMethod: .imported, plaidAccountID: "card", category: category)
+        }
+        let all = [
+            txn("a", 10, day(2026, 11, 1), "FOOD_AND_DRINK"),
+            txn("b", 50, day(2026, 11, 3), "TRAVEL"),
+            txn("c", 30, day(2026, 11, 5), "FOOD_AND_DRINK"),
+            txn("d", 5, day(2026, 11, 4), nil)
+        ]
+        XCTAssertEqual(StatementCycleCalculator.sorted(all, by: .amount).map(\.merchantName), ["b", "c", "a", "d"])
+        XCTAssertEqual(StatementCycleCalculator.sorted(all, by: .date).map(\.merchantName), ["c", "d", "b", "a"])
+        let byAmount = StatementCycleCalculator.grouped(all, by: .amount)
+        XCTAssertEqual(byAmount.map(\.name), ["Travel", "Food and drink", "Uncategorized"])
+        XCTAssertEqual(byAmount[1].charges.map(\.merchantName), ["c", "a"])
+        let byDate = StatementCycleCalculator.grouped(all, by: .date)
+        XCTAssertEqual(byDate.map(\.name), ["Food and drink", "Uncategorized", "Travel"])
+    }
+
     func testBillDueIsTheNewestClosedStatementNotYetPastItsDueDate() {
         let asOf = day(2026, 11, 22)
         let result = cycles(closing: 25, due: 16, asOf: asOf, count: 4)

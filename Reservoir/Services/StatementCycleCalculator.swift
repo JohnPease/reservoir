@@ -85,4 +85,38 @@ enum StatementCycleCalculator {
         let month = calendar.dateInterval(of: .month, for: date)?.start ?? date
         return calendar.date(byAdding: .month, value: months, to: month) ?? month
     }
+
+    enum ChargeSort: String, CaseIterable {
+        case date = "Date"
+        case amount = "Amount"
+    }
+
+    struct ChargeGroup {
+        let name: String
+        let charges: [SpendTransaction]
+        var total: Decimal { charges.reduce(Decimal.zero) { $0 + $1.amount } }
+    }
+
+    /// Orders charges newest first or largest first (ties fall back to newest first).
+    static func sorted(_ charges: [SpendTransaction], by sort: ChargeSort) -> [SpendTransaction] {
+        switch sort {
+        case .date:
+            return charges.sorted { $0.date > $1.date }
+        case .amount:
+            return charges.sorted { ($0.amount, $0.date) > ($1.amount, $1.date) }
+        }
+    }
+
+    /// Charges grouped by Plaid category, each group sorted by `sort`. Groups run largest total
+    /// first, or most recent charge first when sorting by date. Uncategorized charges form one group.
+    static func grouped(_ charges: [SpendTransaction], by sort: ChargeSort) -> [ChargeGroup] {
+        let byName = Dictionary(grouping: charges) { CategorySpendCalculator.displayName(for: $0.category) }
+        let groups = byName.map { ChargeGroup(name: $0.key, charges: sorted($0.value, by: sort)) }
+        switch sort {
+        case .amount:
+            return groups.sorted { ($0.total, $1.name) > ($1.total, $0.name) }
+        case .date:
+            return groups.sorted { ($0.charges[0].date, $1.name) > ($1.charges[0].date, $0.name) }
+        }
+    }
 }

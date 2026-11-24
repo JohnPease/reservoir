@@ -175,6 +175,8 @@ struct CardCycleChargesView: View {
 
     @Query private var transactions: [SpendTransaction]
     @Environment(TodayClock.self) private var todayClock
+    @State private var sort: StatementCycleCalculator.ChargeSort = .date
+    @State private var groupByCategory = false
 
     var body: some View {
         let charges = StatementCycleCalculator.transactions(in: cycle, accountID: accountID, from: transactions)
@@ -184,15 +186,40 @@ struct CardCycleChargesView: View {
                 Text("No charges in this period").foregroundStyle(.secondary)
                     .accessibilityIdentifier("statements.charges.empty")
             } else {
-                Section {
-                    ForEach(charges, id: \.persistentModelID) { transaction in
-                        TransactionRowView(transaction: transaction, showDate: true, usualAmount: outliers[transaction.persistentModelID])
-                            .listRowBackground(Color("ReservoirBackground"))
+                if groupByCategory {
+                    ForEach(StatementCycleCalculator.grouped(charges, by: sort), id: \.name) { group in
+                        Section {
+                            rows(group.charges, outliers: outliers)
+                        } header: {
+                            HStack {
+                                Text(group.name)
+                                Spacer()
+                                Text(group.total.formatted(.currency(code: "USD"))).monospacedDigit()
+                            }
+                        }
                     }
-                } footer: {
-                    let total = charges.reduce(Decimal(0)) { $0 + $1.amount }
-                    Text("\(charges.count) \(charges.count == 1 ? "charge" : "charges"), \(total.formatted(.currency(code: "USD")))")
+                    summary(charges)
+                } else {
+                    Section {
+                        rows(StatementCycleCalculator.sorted(charges, by: sort), outliers: outliers)
+                    } footer: {
+                        summaryText(charges)
+                    }
                 }
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Picker("Sort by", selection: $sort) {
+                        ForEach(StatementCycleCalculator.ChargeSort.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }
+                    Toggle("Group by category", isOn: $groupByCategory)
+                } label: {
+                    Image(systemName: "arrow.up.arrow.down")
+                }
+                .accessibilityLabel("Sort and group")
+                .accessibilityIdentifier("statements.charges.options")
             }
         }
         .scrollContentBackground(.hidden)
@@ -200,5 +227,21 @@ struct CardCycleChargesView: View {
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("statements.charges")
+    }
+
+    private func rows(_ charges: [SpendTransaction], outliers: [PersistentIdentifier: Decimal]) -> some View {
+        ForEach(charges, id: \.persistentModelID) { transaction in
+            TransactionRowView(transaction: transaction, showDate: true, usualAmount: outliers[transaction.persistentModelID])
+                .listRowBackground(Color("ReservoirBackground"))
+        }
+    }
+
+    private func summaryText(_ charges: [SpendTransaction]) -> Text {
+        let total = charges.reduce(Decimal(0)) { $0 + $1.amount }
+        return Text("\(charges.count) \(charges.count == 1 ? "charge" : "charges"), \(total.formatted(.currency(code: "USD")))")
+    }
+
+    private func summary(_ charges: [SpendTransaction]) -> some View {
+        Section {} footer: { summaryText(charges) }
     }
 }
