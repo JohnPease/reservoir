@@ -1,10 +1,11 @@
 import SwiftData
 import SwiftUI
 
-/// What each credit card will bill (reservoir-17g): the charges between its statement closing
-/// dates, so the payment can be seen coming. The user enters each card's closing and due days;
-/// there is no Plaid Liabilities lookup. Refunds and credits are not imported, so a bill with
-/// refunds on it comes in a little under what is shown.
+/// What each credit card will bill (reservoir-17g): every statement drawn as a bar spanning the
+/// dates it covers, one lane per card, so the cards' billing cycles read side by side. Tapping a
+/// bar selects that statement; its summary sits below with a link to the charges inside it. The
+/// user enters each card's closing and due days; there is no Plaid Liabilities lookup. Refunds and
+/// credits are not imported, so a bill with refunds on it comes in a little under what is shown.
 struct CardStatementsView: View {
     @Query private var transactions: [SpendTransaction]
     @Environment(TodayClock.self) private var todayClock
@@ -14,32 +15,56 @@ struct CardStatementsView: View {
 
     @State private var settings: [String: CardCycleSettings] = [:]
     @State private var cards: [LinkedAccount] = []
+    @State private var selection: Selection?
+
+    struct Selection: Equatable {
+        let accountID: String
+        let closing: Date
+    }
+
+    private var now: Date { todayClock.referenceDate }
 
     var body: some View {
-        List {
-            if cards.isEmpty {
-                Section {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                if cards.isEmpty {
                     Text("Link a credit card in Settings to see what each one will bill.")
                         .foregroundStyle(Color("ReservoirTextSecondary"))
                         .accessibilityIdentifier("statements.empty")
+                } else {
+                    lanes
+                    if let selected = selectedStatement {
+                        StatementSummary(
+                            card: selected.card,
+                            cycle: selected.cycle,
+                            transactions: transactions,
+                            now: now,
+                            laneIndex: selected.laneIndex
+                        )
+                    }
+                    Text("Totals are the charges imported for each card between its closing dates. Refunds and credits are not imported, so a bill with refunds on it will be a little lower.")
+                        .font(.footnote)
+                        .foregroundStyle(Color("ReservoirTextSecondary"))
                 }
             }
-            ForEach(cards, id: \.accountID) { card in
-                CardStatementsSection(
-                    card: card,
-                    settings: binding(for: card),
-                    transactions: transactions,
-                    now: todayClock.referenceDate
-                )
-            }
+            .padding()
+        }
+        .background(Color("ReservoirBackground"))
+        .navigationTitle("Statements")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
             if !cards.isEmpty {
-                Section {} footer: {
-                    Text("Totals are the charges imported for each card between its closing dates. Refunds and credits are not imported, so a bill with refunds on it will be a little lower.")
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink {
+                        CardCycleSettingsView(cards: cards, settings: $settings, store: cycleStore)
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .accessibilityLabel("Statement days")
+                    .accessibilityIdentifier("statements.settingsLink")
                 }
             }
         }
-        .navigationTitle("Card statements")
-        .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("statements.list")
         .onAppear {
             cards = linkedAccountStore.loadAll().filter { $0.type == "credit" }
@@ -47,107 +72,311 @@ struct CardStatementsView: View {
         }
     }
 
-    private func binding(for card: LinkedAccount) -> Binding<CardCycleSettings> {
+    // MARK: - Lanes
+
+    private var laneData: [StatementLanes.Lane] {
+        cards.enumerated().map { index, card in
+            let cycles = settings[card.accountID]?.closingDay.map {
+                StatementCycleCalculator.cycles(
+                    closingDay: $0, dueDay: settings[card.accountID]?.dueDay, asOf: now, count: 6
+                )
+            } ?? []
+            return StatementLanes.Lane(card: card, index: index, cycles: cycles)
+        }
+    }
+
+    private var lanes: some View {
+        let data = laneData
+        return VStack(alignment: .leading, spacing: 10) {
+            StatementLanes(
+                lanes: data,
+                transactions: transactions,
+                now: now,
+                selection: selection ?? defaultSelection(in: data),
+                onSelect: { selection = Selection(accountID: $0, closing: $1) }
+            )
+            ForEach(data.filter { $0.cycles.isEmpty }, id: \.card.accountID) { lane in
+                Text("Choose the day \(lane.title) closes its statement (gear, top right).")
+                    .font(.footnote)
+                    .foregroundStyle(Color("ReservoirTextSecondary"))
+                    .accessibilityIdentifier("statements.prompt.\(lane.card.accountID)")
+            }
+        }
+        .padding(12)
+        .reservoirCardBackground()
+    }
+
+    /// The bill due soonest, otherwise the first open statement.
+    private func defaultSelection(in lanes: [StatementLanes.Lane]) -> Selection? {
+        let due = lanes.compactMap { lane -> (Selection, Date)? in
+            guard let cycle = StatementCycleCalculator.billDue(in: lane.cycles, asOf: now), let dueDate = cycle.dueDate else { return nil }
+            return (Selection(accountID: lane.card.accountID, closing: cycle.closing), dueDate)
+        }.min { $0.1 < $1.1 }
+        if let due { return due.0 }
+        return lanes.compactMap { lane in
+            lane.cycles.first.map { Selection(accountID: lane.card.accountID, closing: $0.closing) }
+        }.first
+    }
+
+    private var selectedStatement: (card: LinkedAccount, cycle: StatementCycleCalculator.Cycle, laneIndex: Int)? {
+        let data = laneData
+        guard let current = selection ?? defaultSelection(in: data),
+              let lane = data.first(where: { $0.card.accountID == current.accountID }),
+              let cycle = lane.cycles.first(where: { $0.closing == current.closing })
+        else { return nil }
+        return (lane.card, cycle, lane.index)
+    }
+}
+
+/// Palette for the lanes, in card order.
+enum StatementLanePalette {
+    static func color(_ index: Int) -> Color {
+        [Color("ReservoirAccent"), Color("ReservoirDropletDeficit"), Color("ReservoirTextSecondary")][index % 3]
+    }
+}
+
+/// The drawing: months along the top, one lane per card, a bar per statement, a flag where each
+/// bill is due and a line for today. Bars are buttons.
+struct StatementLanes: View {
+    struct Lane {
+        let card: LinkedAccount
+        let index: Int
+        let cycles: [StatementCycleCalculator.Cycle]
+        var title: String { card.mask.map { "\(card.name) ••\($0)" } ?? card.name }
+    }
+
+    let lanes: [Lane]
+    let transactions: [SpendTransaction]
+    let now: Date
+    let selection: CardStatementsView.Selection?
+    let onSelect: (String, Date) -> Void
+
+    private let calendar = Calendar.current
+    private static let laneHeight: CGFloat = 62
+    private static let headerHeight: CGFloat = 16
+
+    /// From the first of the month two back to the end of next month, so a closed statement or
+    /// two shows behind today and the next bill ahead of it.
+    private var window: (start: Date, end: Date) {
+        let today = calendar.startOfDay(for: now)
+        let monthStart = calendar.dateInterval(of: .month, for: today)?.start ?? today
+        let start = calendar.date(byAdding: .month, value: -2, to: monthStart) ?? monthStart
+        let end = calendar.date(byAdding: .month, value: 2, to: monthStart) ?? monthStart
+        return (start, end)
+    }
+
+    var body: some View {
+        let window = window
+        let span = window.end.timeIntervalSince(window.start)
+        GeometryReader { proxy in
+            let width = proxy.size.width
+            let x: (Date) -> CGFloat = { date in
+                CGFloat(date.timeIntervalSince(window.start) / span) * width
+            }
+            ZStack(alignment: .topLeading) {
+                months(window: window, x: x, width: width)
+                ForEach(lanes, id: \.card.accountID) { lane in
+                    laneView(lane, x: x, window: window)
+                        .offset(y: Self.headerHeight + CGFloat(lane.index) * Self.laneHeight)
+                }
+                let todayX = x(calendar.startOfDay(for: now))
+                Rectangle()
+                    .fill(Color("ReservoirDeficit"))
+                    .frame(width: 1.5, height: totalHeight - Self.headerHeight + 4)
+                    .offset(x: todayX, y: Self.headerHeight - 2)
+                    .accessibilityHidden(true)
+                Text("Today")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(Color("ReservoirDeficit"))
+                    .position(x: min(max(todayX, 18), width - 18), y: totalHeight + 6)
+            }
+        }
+        .frame(height: totalHeight + 16)
+    }
+
+    private var totalHeight: CGFloat { Self.headerHeight + CGFloat(lanes.count) * Self.laneHeight }
+
+    private func months(window: (start: Date, end: Date), x: @escaping (Date) -> CGFloat, width: CGFloat) -> some View {
+        let starts = stride(from: 0, to: 4, by: 1).compactMap { calendar.date(byAdding: .month, value: $0, to: window.start) }
+        return ZStack(alignment: .topLeading) {
+            ForEach(starts, id: \.self) { month in
+                Rectangle().fill(Color("ReservoirDropletTrack")).frame(width: 1, height: totalHeight - 4).offset(x: x(month))
+                Text(month.formatted(.dateTime.month(.abbreviated)))
+                    .font(.caption2)
+                    .foregroundStyle(Color("ReservoirTextSecondary"))
+                    .offset(x: x(month) + 3, y: -1)
+            }
+        }
+        .accessibilityHidden(true)
+    }
+
+    private func laneView(_ lane: Lane, x: @escaping (Date) -> CGFloat, window: (start: Date, end: Date)) -> some View {
+        let color = StatementLanePalette.color(lane.index)
+        return ZStack(alignment: .topLeading) {
+            Text(lane.title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(color)
+                .offset(x: 2, y: 2)
+                .accessibilityHidden(true)
+            ForEach(lane.cycles, id: \.closing) { cycle in
+                let end = calendar.date(byAdding: .day, value: 1, to: cycle.closing) ?? cycle.closing
+                let left = max(x(cycle.start), 0)
+                let right = x(end)
+                if right > 0, left < x(window.end) {
+                    bar(lane: lane, cycle: cycle, color: color, left: left, width: max(right - left - 1.5, 2))
+                }
+                if let due = cycle.dueDate, due >= window.start, due < window.end {
+                    Image(systemName: "arrowtriangle.down.fill")
+                        .font(.system(size: 9))
+                        .foregroundStyle(color)
+                        .position(x: x(due), y: 46)
+                        .accessibilityHidden(true)
+                }
+            }
+        }
+    }
+
+    private func bar(lane: Lane, cycle: StatementCycleCalculator.Cycle, color: Color, left: CGFloat, width: CGFloat) -> some View {
+        let total = StatementCycleCalculator.total(of: cycle, accountID: lane.card.accountID, in: transactions)
+        let isSelected = selection == .init(accountID: lane.card.accountID, closing: cycle.closing)
+        let range = StatementFormatting.range(cycle)
+        let label = "\(lane.title), \(range), \(cycle.isOpen ? "open" : "closed"), \(total.formatted(.currency(code: "USD")))"
+        return Button {
+            onSelect(lane.card.accountID, cycle.closing)
+        } label: {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(color.opacity(cycle.isOpen ? 1 : 0.55))
+                .overlay {
+                    if width > 46 {
+                        Text(total.formatted(.currency(code: "USD").precision(.fractionLength(0))))
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(Color("ReservoirOnAccent"))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                    }
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color("ReservoirTextPrimary"), lineWidth: isSelected ? 2 : 0)
+                }
+        }
+        .buttonStyle(.plain)
+        .frame(width: width, height: 28)
+        .offset(x: left, y: 16)
+        .accessibilityLabel(label)
+        .accessibilityIdentifier(cycle.isOpen ? "statements.open.\(lane.card.accountID)" : "statements.bar.\(lane.card.accountID).\(Int(cycle.closing.timeIntervalSince1970))")
+    }
+}
+
+enum StatementFormatting {
+    static func range(_ cycle: StatementCycleCalculator.Cycle) -> String {
+        let format = Date.FormatStyle().month(.abbreviated).day()
+        return "\(cycle.start.formatted(format)) – \(cycle.closing.formatted(format))"
+    }
+}
+
+/// The selected statement: its range, status, total, and the way into its charges.
+private struct StatementSummary: View {
+    let card: LinkedAccount
+    let cycle: StatementCycleCalculator.Cycle
+    let transactions: [SpendTransaction]
+    let now: Date
+    let laneIndex: Int
+
+    private let calendar = Calendar.current
+
+    private var charges: [SpendTransaction] {
+        StatementCycleCalculator.transactions(in: cycle, accountID: card.accountID, from: transactions)
+    }
+
+    private var status: (text: String, isDue: Bool) {
+        let today = calendar.startOfDay(for: now)
+        if cycle.isOpen {
+            let days = calendar.dateComponents([.day], from: today, to: cycle.closing).day ?? 0
+            return (days <= 0 ? "Open · closes today" : "Open · closes in \(days) \(days == 1 ? "day" : "days")", false)
+        }
+        if let due = cycle.dueDate, due >= today {
+            return ("Due \(due.formatted(.dateTime.month(.abbreviated).day()))", true)
+        }
+        return ("Closed", false)
+    }
+
+    var body: some View {
+        let total = charges.reduce(Decimal.zero) { $0 + $1.amount }
+        let status = status
+        NavigationLink {
+            CardCycleChargesView(title: StatementFormatting.range(cycle), accountID: card.accountID, cycle: cycle)
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(StatementFormatting.range(cycle))
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(Color("ReservoirTextPrimary"))
+                    Spacer()
+                    Text(status.text)
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(status.isDue ? Color("ReservoirDeficit") : Color("ReservoirSurfaceAccent"), in: Capsule())
+                        .foregroundStyle(status.isDue ? Color("ReservoirOnAccent") : Color("ReservoirAccent"))
+                }
+                HStack(alignment: .firstTextBaseline) {
+                    Text(card.mask.map { "\(card.name) ••\($0)" } ?? card.name)
+                        .font(.subheadline)
+                        .foregroundStyle(Color("ReservoirTextSecondary"))
+                    Spacer()
+                    Text(total, format: .currency(code: "USD"))
+                        .font(.title3.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(Color("ReservoirTextPrimary"))
+                }
+                HStack {
+                    Text("See \(charges.count) \(charges.count == 1 ? "charge" : "charges")")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                }
+                .foregroundStyle(Color("ReservoirAccent"))
+                .padding(.top, 4)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .reservoirCardBackground()
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("statements.summary")
+    }
+}
+
+/// Each card's statement closing day and payment due day.
+struct CardCycleSettingsView: View {
+    let cards: [LinkedAccount]
+    @Binding var settings: [String: CardCycleSettings]
+    let store: CardCycleStore
+
+    var body: some View {
+        List {
+            ForEach(cards, id: \.accountID) { card in
+                Section {
+                    dayPicker("Statement closes", selection: binding(card).closingDay, identifier: "statements.closingPicker.\(card.accountID)")
+                    dayPicker("Payment due", selection: binding(card).dueDay, identifier: "statements.duePicker.\(card.accountID)")
+                } header: {
+                    Text(card.mask.map { "\(card.name) ••\($0)" } ?? card.name)
+                }
+            }
+        }
+        .navigationTitle("Statement days")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func binding(_ card: LinkedAccount) -> Binding<CardCycleSettings> {
         Binding(
             get: { settings[card.accountID] ?? CardCycleSettings() },
             set: { newValue in
                 settings[card.accountID] = newValue
-                cycleStore.save(newValue, accountID: card.accountID)
+                store.save(newValue, accountID: card.accountID)
             }
         )
-    }
-}
-
-private struct CardStatementsSection: View {
-    let card: LinkedAccount
-    @Binding var settings: CardCycleSettings
-    let transactions: [SpendTransaction]
-    let now: Date
-
-    private var title: String {
-        card.mask.map { "\(card.name) ••\($0)" } ?? card.name
-    }
-
-    private func amount(_ value: Decimal) -> String {
-        value.formatted(.currency(code: "USD"))
-    }
-
-    private func total(_ cycle: StatementCycleCalculator.Cycle) -> Decimal {
-        StatementCycleCalculator.total(of: cycle, accountID: card.accountID, in: transactions)
-    }
-
-    private func range(_ cycle: StatementCycleCalculator.Cycle) -> String {
-        let format = Date.FormatStyle().month(.abbreviated).day()
-        return "\(cycle.start.formatted(format)) – \(cycle.closing.formatted(format))"
-    }
-
-    var body: some View {
-        Section {
-            if let closingDay = settings.closingDay {
-                let cycles = StatementCycleCalculator.cycles(
-                    closingDay: closingDay, dueDay: settings.dueDay, asOf: now, count: 4
-                )
-                if let due = StatementCycleCalculator.billDue(in: cycles, asOf: now), let dueDate = due.dueDate {
-                    chargesLink(due) {
-                        row("Bill due \(dueDate.formatted(.dateTime.month(.abbreviated).day()))", detail: range(due), value: total(due), emphasized: true)
-                    }
-                    .accessibilityIdentifier("statements.due.\(card.accountID)")
-                }
-                if let open = cycles.first {
-                    chargesLink(open) {
-                        row("This cycle so far", detail: "\(range(open)) · closes \(open.closing.formatted(.dateTime.month(.abbreviated).day()))", value: total(open), emphasized: false)
-                    }
-                    .accessibilityIdentifier("statements.open.\(card.accountID)")
-                }
-                ForEach(Array(cycles.dropFirst()), id: \.closing) { cycle in
-                    chargesLink(cycle) {
-                        row(
-                            range(cycle),
-                            detail: cycle.dueDate.map { "due \($0.formatted(.dateTime.month(.abbreviated).day()))" },
-                            value: total(cycle),
-                            emphasized: false
-                        )
-                    }
-                    .foregroundStyle(Color("ReservoirTextSecondary"))
-                }
-            } else {
-                Text("Choose the day each statement closes to see this card's bill.")
-                    .foregroundStyle(Color("ReservoirTextSecondary"))
-                    .accessibilityIdentifier("statements.prompt.\(card.accountID)")
-            }
-            dayPicker("Statement closes", selection: $settings.closingDay, identifier: "statements.closingPicker.\(card.accountID)")
-            dayPicker("Payment due", selection: $settings.dueDay, identifier: "statements.duePicker.\(card.accountID)")
-        } header: {
-            Text(title)
-        }
-    }
-
-    private func chargesLink<Row: View>(_ cycle: StatementCycleCalculator.Cycle, @ViewBuilder row: () -> Row) -> some View {
-        NavigationLink {
-            CardCycleChargesView(
-                title: range(cycle),
-                accountID: card.accountID,
-                cycle: cycle
-            )
-        } label: {
-            row()
-        }
-    }
-
-    private func row(_ title: String, detail: String?, value: Decimal, emphasized: Bool) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(emphasized ? .headline : .body)
-                if let detail {
-                    Text(detail).font(.caption).foregroundStyle(Color("ReservoirTextSecondary"))
-                }
-            }
-            Spacer()
-            Text(amount(value))
-                .font(emphasized ? .headline : .body)
-                .monospacedDigit()
-        }
-        .accessibilityElement(children: .combine)
     }
 
     private func dayPicker(_ label: String, selection: Binding<Int?>, identifier: String) -> some View {

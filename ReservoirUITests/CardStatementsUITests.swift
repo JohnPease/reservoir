@@ -19,7 +19,7 @@ final class CardStatementsUITests: XCTestCase {
         let open = app.descendants(matching: .any)["statements.open.uitest-account-2"]
         XCTAssertTrue(open.waitForExistence(timeout: 5))
         XCTAssertTrue(open.label.contains("$65.00"), "got: \(open.label)")
-        XCTAssertTrue(app.staticTexts["Card ••1111"].exists, "the card is listed by name and mask")
+        XCTAssertTrue(open.label.contains("Card ••1111"), "the bar names the card by name and mask")
     }
 
     func testACardWithNoClosingDayAsksForOne() {
@@ -33,6 +33,7 @@ final class CardStatementsUITests: XCTestCase {
         let open = app.descendants(matching: .any)["statements.open.uitest-account-2"]
         XCTAssertTrue(open.waitForExistence(timeout: 5))
         open.tap()
+        app.buttons["statements.summary"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["statements.charges"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Card Merchant 0"].exists || app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Card Merchant'")).count > 0)
     }
@@ -42,6 +43,7 @@ final class CardStatementsUITests: XCTestCase {
         let open = app.descendants(matching: .any)["statements.open.uitest-account-2"]
         XCTAssertTrue(open.waitForExistence(timeout: 5))
         open.tap()
+        app.buttons["statements.summary"].tap()
         app.buttons["statements.charges.options"].tap()
         app.buttons["Group by category"].tap()
         XCTAssertTrue(app.staticTexts["Uncategorized"].waitForExistence(timeout: 5))
