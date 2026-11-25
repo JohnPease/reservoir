@@ -1,9 +1,8 @@
 import Foundation
 
-/// Budget recovery and month warnings (reservoir-nka.1): how long until a budget that is behind
-/// gets its full daily limit back at the user's usual pace, a shorter "keep to" target, and one
-/// month-level warning (tracking over, hard to recover, point of no return), composed into an
-/// at-most-two-line banner for Today. Pure: no SwiftData, no SwiftUI, nothing persisted; every
+/// Budget recovery and month warnings (reservoir-nka.1): how many no-spend days a budget that is
+/// behind needs before its full daily limit is back, and one month-level warning (tracking over,
+/// hard to recover, point of no return), composed into an at-most-two-section banner for Today. Pure: no SwiftData, no SwiftUI, nothing persisted; every
 /// input is a plain value resolved by `BudgetSummaryCalculator.insights`, which runs this only
 /// when the caller passes `includeRecovery: true` (Today; the widget will with reservoir-nka.2).
 ///
@@ -13,58 +12,33 @@ import Foundation
 ///   month has `C = 0` naturally.
 /// - `available = windowBudget + C`; `daysLeft = daysInMonth - dayOfMonth` (from tomorrow).
 /// - Debt `D = -remaining` is tomorrow's opening debt; the recovery block shows only when
-///   `D >= tolerance`. The *payoff day* is the day whose spending at the usual pace clears it;
-///   the full limit is back the day after (the *full-limit day*), which is what the copy names.
-/// - Usual pace `U` = mean counted daily spend over the last 14 completed days (today excluded,
-///   zero days included, floored at the budget start, each day capped at 2x its base); `nil`
-///   with fewer than 7 completed days.
+///   `D >= tolerance`. Each no-spend day from tomorrow adds that day's base back, so the count is
+///   the fewest days whose bases sum to `D`; the full limit is back the day after the last one
+///   (the *full-limit day*), which is what the copy names.
 enum BudgetRecoveryCalculator {
 
-    static let usualPaceLookbackDays = 14
-    static let usualPaceMinimumDays = 7
-    /// Each day's spend counts at most this multiple of that day's base toward `U`, so one big
-    /// purchase doesn't make the usual pace look permanently high.
-    static let usualPaceDailyCapMultiple: Decimal = 2
     static let lowTypicalLookbackDays = 90
     static let lowTypicalMinimumDays = 28
     static let lowTypicalWindowDays = 7
     /// Nearest-rank percentile of the rolling weekly averages used as "almost any week".
     static let lowTypicalPercentile = 10
-    /// Forward walk cap for carry-mode recovery.
+    /// Forward walk cap for the no-spend count (only reached with a zero base).
     static let recoveryHorizonDays = 366
-    static let targetDayRange = 3...7
 
     // MARK: - Output types
 
     enum Outcome: Codable, Equatable {
-        /// The full limit is back on the given day (the day after the payoff day), `Int` days
-        /// from today, so at least 2: tomorrow still opens with the debt. In reset mode a payoff
-        /// on the month's last day gives the next 1st (where the limit is full anyway).
-        case days(Int, on: Date)
-        /// Carry mode: the usual pace never pays the debt down (within the walk cap).
-        case never
-        /// Reset mode: still behind when the month resets on this day (the next 1st).
-        case resetsOnFirst(Date)
-        /// Too little history for a usual pace.
-        case unavailable
-    }
-
-    struct Target: Codable, Equatable {
-        /// Whole dollars, rounded down.
-        var daily: Decimal
-        /// The horizon: keep to `daily` for this many days from tomorrow.
-        var days: Int
-        /// The full-limit day: the day after the horizon's last day.
-        var by: Date
+        /// `days` no-spend days from tomorrow (at least 1) put the full limit back on `backOn`,
+        /// the day after the last of them. Carry mode may run into later months.
+        case noSpend(days: Int, backOn: Date)
+        /// Reset mode: the full-limit day would be on or after the next 1st, so the reset on
+        /// `resetsOn` clears the debt first. `days` is still the count it would take.
+        case resetClears(days: Int, resetsOn: Date)
     }
 
     struct Recovery: Codable, Equatable {
         var debt: Decimal
-        var usualDaily: Decimal?
         var outcome: Outcome
-        /// Carry mode only: the full-limit day falls in a later month than today.
-        var crossesMonth: Bool
-        var target: Target?
     }
 
     struct Warning: Codable, Equatable {
@@ -81,12 +55,30 @@ enum BudgetRecoveryCalculator {
         var overBy: Decimal?
     }
 
-    /// Up to two lines, each in the progress sentence's shape; only a level-3 line sets
-    /// `deficitPhrase` (the one phrase a view colors).
-    struct Banner: Codable, Equatable {
-        var lines: [BudgetSummaryCalculator.ProgressSentence]
+    /// One titled part of the banner: the daily limit (recovery) or the month (warning).
+    struct Section: Codable, Equatable {
+        enum Kind: String, Codable { case dailyLimit, month }
+        var kind: Kind
+        /// "Daily limit" / "November budget".
+        var title: String
+        /// The month section's warning state ("Tracking over", ...); `nil` for the daily limit.
+        var status: String?
+        var sentence: BudgetSummaryCalculator.ProgressSentence
+    }
 
+    /// Up to two sections, daily limit first; only a level-3 sentence sets `deficitPhrase` (the one
+    /// phrase a view colors).
+    struct Banner: Codable, Equatable {
+        var sections: [Section]
+
+        var lines: [BudgetSummaryCalculator.ProgressSentence] { sections.map(\.sentence) }
         var text: String { lines.map(\.text).joined(separator: " ") }
+        /// Titles included, for VoiceOver.
+        var accessibilityText: String {
+            sections.map { section in
+                ([section.title, section.status].compactMap { $0 }.joined(separator: ", ")) + ". " + section.sentence.text
+            }.joined(separator: " ")
+        }
         /// Unused by Today's view today; intentional API for reservoir-nka.3/nka.4.
         var isDeficit: Bool { lines.contains { $0.deficitPhrase != nil } }
     }
@@ -129,42 +121,24 @@ enum BudgetRecoveryCalculator {
         let nextMonthStart = calendar.dateInterval(of: .month, for: today)?.end ?? today
         let tomorrow = BudgetCalculator.nextDayStart(after: today, calendar: calendar)
         let daysLeft = max(0, input.daysInMonth - input.dayOfMonth)
-        let carries = input.monthBoundary == .carry
         let carryIn = carryIn(remaining: input.remaining, paceDelta: input.paceDelta, boundary: input.monthBoundary)
         let schedule = BaseSchedule.monthly(input.monthlyAmount)
 
         // Recovery block.
         var recovery: Recovery?
         let debt = -input.remaining
-        if debt >= tolerance {
-            let usual = usualDailySpend(
-                spentByDay: input.spentByDay, today: today, budgetStartDay: input.budgetStartDay,
-                schedule: schedule, calendar: calendar
-            )
-            let outcome = recoveryOutcome(
-                debt: debt, usualDaily: usual, tomorrow: tomorrow, nextMonthStart: nextMonthStart,
-                boundary: input.monthBoundary, schedule: schedule, monthlyAmount: input.monthlyAmount, calendar: calendar
-            )
-            var crosses = false
-            if carries, case .days(_, let day) = outcome { crosses = day >= nextMonthStart }
-            recovery = Recovery(
-                debt: debt,
-                usualDaily: usual,
-                outcome: outcome,
-                crossesMonth: crosses,
-                target: target(
-                    debt: debt, outcome: outcome, tomorrow: tomorrow, daysLeft: daysLeft,
-                    boundary: input.monthBoundary, schedule: schedule, calendar: calendar
-                )
-            )
+        if debt >= tolerance, let outcome = recoveryOutcome(
+            debt: debt, tomorrow: tomorrow, nextMonthStart: nextMonthStart,
+            boundary: input.monthBoundary, schedule: schedule, calendar: calendar
+        ) {
+            recovery = Recovery(debt: debt, outcome: outcome)
         }
 
         let warning = warning(input, carryIn: carryIn, daysLeft: daysLeft, calendar: calendar)
 
         let banner = banner(
-            recovery: recovery, warning: warning, carryIn: carryIn, carries: carries,
-            today: today, tomorrow: tomorrow, nextMonthStart: nextMonthStart, daysLeft: daysLeft,
-            schedule: schedule, calendar: calendar
+            recovery: recovery, warning: warning, carryIn: carryIn, carries: input.monthBoundary == .carry,
+            today: today, daysLeft: daysLeft, schedule: schedule, calendar: calendar
         )
 
         return Result(monthStart: monthStart, carryIn: carryIn, recovery: recovery, warning: warning, banner: banner)
@@ -178,7 +152,7 @@ enum BudgetRecoveryCalculator {
         boundary == .carry ? remaining - paceDelta : 0
     }
 
-    // MARK: - Usual pace
+    // MARK: - Lookback days
 
     /// Completed day starts in `[today - lookback, today)`, floored at `floor`, stepped
     /// DST-safely with `BudgetCalculator.nextDayStart`.
@@ -193,83 +167,32 @@ enum BudgetRecoveryCalculator {
         return days
     }
 
-    static func usualDailySpend(
-        spentByDay: [Date: Decimal],
-        today: Date,
-        budgetStartDay: Date,
-        schedule: BaseSchedule,
-        calendar: Calendar
-    ) -> Decimal? {
-        let days = completedDays(lookback: usualPaceLookbackDays, before: today, notBefore: budgetStartDay, calendar: calendar)
-        guard days.count >= usualPaceMinimumDays else { return nil }
-        let total = days.reduce(Decimal(0)) { total, day in
-            let cap = usualPaceDailyCapMultiple * schedule.base(on: day, calendar: calendar)
-            return total + min(spentByDay[day] ?? 0, cap)
-        }
-        return total / Decimal(days.count)
-    }
-
     // MARK: - Recovery
 
-    /// Walks payoff days from tomorrow adding `base(d) - U`; the outcome names the day after the
-    /// payoff day (the full-limit day). Reset mode only walks payoff days within the month.
+    /// Walks no-spend days from tomorrow adding `base(d)` until the sum reaches the debt; the
+    /// outcome names the day after the last one. Bases follow the schedule into later months in
+    /// either mode, so a reset-mode count past the 1st is the count it would take without the
+    /// reset. `nil` only when the bases never reach the debt (a zero budget).
     static func recoveryOutcome(
         debt: Decimal,
-        usualDaily: Decimal?,
         tomorrow: Date,
         nextMonthStart: Date,
         boundary: MonthBoundary,
         schedule: BaseSchedule,
-        monthlyAmount: Decimal,
         calendar: Calendar
-    ) -> Outcome {
-        guard let usual = usualDaily else { return .unavailable }
-        let resets = boundary == .reset
-        // The largest base any day can have is a 28-day February's share.
-        if !resets && usual >= monthlyAmount / 28 { return .never }
-
+    ) -> Outcome? {
         var total: Decimal = 0
         var day = tomorrow
         for count in 1...recoveryHorizonDays {
-            if resets && day >= nextMonthStart { break }
-            total += schedule.base(on: day, calendar: calendar) - usual
+            total += schedule.base(on: day, calendar: calendar)
+            let next = BudgetCalculator.nextDayStart(after: day, calendar: calendar)
             if total >= debt {
-                // `count` payoff days from tomorrow; the full limit returns the day after.
-                return .days(count + 1, on: BudgetCalculator.nextDayStart(after: day, calendar: calendar))
+                if boundary == .reset && next >= nextMonthStart { return .resetClears(days: count, resetsOn: nextMonthStart) }
+                return .noSpend(days: count, backOn: next)
             }
-            day = BudgetCalculator.nextDayStart(after: day, calendar: calendar)
+            day = next
         }
-        return resets ? .resetsOnFirst(nextMonthStart) : .never
-    }
-
-    /// `n` = usual-pace payoff days; `N = ceil(n/2)` clamped to 3...7 (7 when there is no
-    /// usual-pace day count). `T = (baseSum(tomorrow, N) - D) / N`, rounded down; keeping to it
-    /// for `N` days pays the debt off, so `by` is the day after the horizon. Reset mode caps `N`
-    /// at `daysLeft - 1` so `by` stays within the month (the limit is full on the 1st anyway).
-    /// Hidden when `T < $1` or when `N >= n` (not nearer than the usual pace; payoff-day counts
-    /// on both sides).
-    static func target(
-        debt: Decimal,
-        outcome: Outcome,
-        tomorrow: Date,
-        daysLeft: Int,
-        boundary: MonthBoundary,
-        schedule: BaseSchedule,
-        calendar: Calendar
-    ) -> Target? {
-        var usualPayoffDays: Int?
-        if case .days(let count, _) = outcome { usualPayoffDays = count - 1 }
-        var days = usualPayoffDays.map { min(max((($0 + 1) / 2), targetDayRange.lowerBound), targetDayRange.upperBound) }
-            ?? targetDayRange.upperBound
-        if boundary == .reset { days = min(days, daysLeft - 1) }
-        guard days > 0 else { return nil }
-        if let usualPayoffDays, days >= usualPayoffDays { return nil }
-
-        let daily = (BudgetSummaryCalculator.baseSum(schedule, from: tomorrow, days: days, calendar: calendar) - debt) / Decimal(days)
-        guard daily >= BudgetSummaryCalculator.rightOnTolerance else { return nil }
-        var by = tomorrow
-        for _ in 0..<days { by = BudgetCalculator.nextDayStart(after: by, calendar: calendar) }
-        return Target(daily: BudgetSummaryCalculator.wholeDollars(daily, mode: .down), days: days, by: by)
+        return nil
     }
 
     // MARK: - Warnings
@@ -341,83 +264,59 @@ enum BudgetRecoveryCalculator {
 
     // MARK: - Banner
 
-    /// Behind: line 1 = recovery headline (or the target when there is no usual pace), line 2 =
-    /// the month warning, else the target. Not behind: the month warning alone. Neither: `nil`.
+    /// Daily-limit section when behind, then the month section when warned; `nil` when neither.
     static func banner(
         recovery: Recovery?,
         warning: Warning,
         carryIn: Decimal,
         carries: Bool,
         today: Date,
-        tomorrow: Date,
-        nextMonthStart: Date,
         daysLeft: Int,
         schedule: BaseSchedule,
         calendar: Calendar
     ) -> Banner? {
-        let warningLine = warningLine(warning, carryIn: carryIn, carries: carries, today: today, nextMonthStart: nextMonthStart, calendar: calendar)
-        var lines: [BudgetSummaryCalculator.ProgressSentence] = []
+        var sections: [Section] = []
         if let recovery {
-            let targetLine = recovery.target.map { plain(targetText($0, calendar: calendar)) }
-            let headline = recoveryHeadline(
-                recovery, carries: carries, tomorrow: tomorrow, nextMonthStart: nextMonthStart, daysLeft: daysLeft,
-                schedule: schedule, calendar: calendar
-            ).map(plain)
-            var usedTarget = false
-            if let headline {
-                lines.append(headline)
-            } else if let targetLine {
-                lines.append(targetLine)
-                usedTarget = true
-            }
-            if let warningLine {
-                lines.append(warningLine)
-            } else if let targetLine, !usedTarget {
-                lines.append(targetLine)
-            }
-        } else if let warningLine {
-            lines.append(warningLine)
+            sections.append(Section(
+                kind: .dailyLimit, title: "Daily limit", status: nil,
+                sentence: plain(recoveryText(recovery, daysLeft: daysLeft, schedule: schedule, calendar: calendar))
+            ))
         }
-        return lines.isEmpty ? nil : Banner(lines: lines)
+        let nextMonthStart = calendar.dateInterval(of: .month, for: today)?.end ?? today
+        if let sentence = warningLine(warning, carryIn: carryIn, carries: carries, today: today, nextMonthStart: nextMonthStart, calendar: calendar) {
+            sections.append(Section(
+                kind: .month, title: "\(monthName(today, calendar: calendar)) budget", status: status(warning.level),
+                sentence: sentence
+            ))
+        }
+        return sections.isEmpty ? nil : Banner(sections: sections)
+    }
+
+    static func status(_ level: BudgetWarningLevel) -> String? {
+        switch level {
+        case .none: return nil
+        case .trackingOver: return "Tracking over"
+        case .hardToRecover: return "Hard to recover"
+        case .pointOfNoReturn: return "Over budget"
+        }
     }
 
     private static func plain(_ text: String) -> BudgetSummaryCalculator.ProgressSentence {
         BudgetSummaryCalculator.ProgressSentence(lead: text, deficitPhrase: nil, tail: "")
     }
 
-    /// `nil` when there is no usual pace (the target line stands in). Names the full-limit day;
-    /// "tomorrow" never applies because tomorrow still opens with the debt.
-    static func recoveryHeadline(
-        _ recovery: Recovery,
-        carries: Bool,
-        tomorrow: Date,
-        nextMonthStart: Date,
-        daysLeft: Int,
-        schedule: BaseSchedule,
-        calendar: Calendar
-    ) -> String? {
-        guard let usual = recovery.usualDaily else { return nil }
-        let lead = "At your usual \(BudgetSummaryCalculator.whole(usual)) a day, "
+    /// Quotes the base on the full-limit day (next month's when the count runs past the 1st).
+    static func recoveryText(_ recovery: Recovery, daysLeft: Int, schedule: BaseSchedule, calendar: Calendar) -> String {
         switch recovery.outcome {
-        case .days(let count, let day):
-            let limit = BudgetSummaryCalculator.whole(schedule.base(on: day, calendar: calendar))
-            // Reset mode, paid off on the last day: the limit is full on the 1st either way.
-            if !carries && day >= nextMonthStart { return lead + "your full \(limit) limit is back on the 1st." }
-            let when = "in \(count) days (\(weekdayMonthDay(day, calendar: calendar)))"
-            let crossing = recovery.crossesMonth ? ", carrying into \(monthName(day, calendar: calendar))" : ""
-            return lead + "your full \(limit) limit is back \(when)\(crossing)."
-        case .never:
-            let limit = BudgetSummaryCalculator.whole(schedule.base(on: tomorrow, calendar: calendar))
-            return lead + "you won't catch up. Your limit stays below \(limit) until you spend less."
-        case .resetsOnFirst:
-            return lead + "you'll still be behind when your limit resets \(daysLeft == 0 ? "tomorrow" : "on the 1st")."
-        case .unavailable:
-            return nil
+        case .noSpend(let days, let backOn):
+            let limit = BudgetSummaryCalculator.whole(schedule.base(on: backOn, calendar: calendar))
+            let lead = days == 1 ? "1 no-spend day (tomorrow) gets" : "\(days) no-spend days from tomorrow get"
+            return "\(lead) your full \(limit) limit back on \(weekdayMonthDay(backOn, calendar: calendar))."
+        case .resetClears(let days, let resetsOn):
+            let need = days == 1 ? "1 no-spend day" : "\(days) no-spend days"
+            let when = daysLeft == 0 ? "tomorrow" : "on \(BudgetSummaryCalculator.monthDay(resetsOn, calendar: calendar))"
+            return "You'd need \(need) to catch up, but your limit resets to full \(when)."
         }
-    }
-
-    static func targetText(_ target: Target, calendar: Calendar) -> String {
-        "Keep to \(BudgetSummaryCalculator.whole(target.daily)) a day to have your full limit back by \(weekdayMonthDay(target.by, calendar: calendar))."
     }
 
     /// `carryIn` is 0 in reset mode, so the carry clause is empty there; `carries` only picks
@@ -454,7 +353,8 @@ enum BudgetRecoveryCalculator {
                 tail: " More spending this month carries into \(monthName(nextMonthStart, calendar: calendar))."
             )
         case .trackingOver, .hardToRecover:
-            let heading = "Heading about \(BudgetSummaryCalculator.whole(warning.headingOver ?? 0)) over for \(month)\(clause.isEmpty ? "" : "," + clause). "
+            // The section title names the month, so the sentence doesn't.
+            let heading = "Heading about \(BudgetSummaryCalculator.whole(warning.headingOver ?? 0)) over\(clause.isEmpty ? "" : "," + clause). "
             let finish = carries ? "even" : "on budget"
             // Within the $1 tolerance of level 3 the raw need can be zero or negative.
             let needed = warning.neededDaily ?? 0

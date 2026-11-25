@@ -97,7 +97,7 @@ enum BudgetSummaryCalculator {
         /// `nil` when hidden (a single selected account).
         var breakdown: Breakdown?
         var monthResult: MonthResult
-        /// Recovery at the usual pace, the month warning, and the Today banner (reservoir-nka.1).
+        /// No-spend days to recover, the month warning, and the Today banner (reservoir-nka.1).
         /// `nil` unless the caller passed `includeRecovery: true` (Today does; Plans and the
         /// widget don't, though the widget will opt in with reservoir-nka.2).
         var recovery: BudgetRecoveryCalculator.Result?

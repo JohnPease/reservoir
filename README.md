@@ -306,17 +306,13 @@ the month and `budget.startDate`; `spent` is counted spend
   into the month `C = remaining - paceDelta` (carry mode; an exact identity with the
   carry walk, so no new walk, which is why a passed-in `summary` must match the same
   reference date and transactions) or 0 (reset); the carry-aware projection computes
-  it either way. When today's remaining is at least $1 negative, it shows when the full
-  limit is back at the usual pace (mean counted daily spend over the last 14 completed
-  days, zero days included, each day capped at 2x its base, needing 7 days of history):
-  it walks forward from tomorrow with each month's base to the *payoff day* whose
-  spending clears the debt, and names the day after it, so the soonest is "in 2 days"
-  (carry mode up to 366 days, ", carrying into December" when that day is in a later
-  month, "won't catch up" when the pace never pays it down; reset mode stops at month
-  end, "is back on the 1st" when the payoff is the last day, else "still behind when
-  your limit resets"). A nearer "Keep to $X a day to have your full limit back by ..."
-  target keeps to `T` for 3-7 days (rounded down; reset mode ends the horizon before the
-  last day) and names the day after. One month warning at a time (`BudgetWarningLevel`,
+  it either way. When today's remaining is at least $1 negative, it counts the no-spend
+  days needed to get the full daily limit back: from tomorrow it adds each day's base
+  (following the schedule into later months) until the sum covers the debt, and names
+  the day after the last one ("3 no-spend days from tomorrow get your full $100 limit
+  back on Sat, Nov 14."). In reset mode, when that day would be on or after the 1st it
+  says the reset clears it instead ("You'd need 8 no-spend days to catch up, but your
+  limit resets to full on Dec 1."). One month warning at a time (`BudgetWarningLevel`,
   highest wins): *tracking over* (projection + carry at least $1 over), *hard to
   recover* (finishing even needs less a day than the 10th-percentile rolling 7-day
   average of the last 90 days, computed only once tracking over holds; needs 28 days of
@@ -325,8 +321,10 @@ the month and `budget.startDate`; `spent` is counted spend
   budget can't cover the $300 you started behind, $50 over."). Within $1 of that point
   the other warnings say "Finishing even means no more spending this month." or "Keep
   to under $1 a day". In carry mode the warnings count the carried-over surplus or debt.
-  Rendered by `Features/Today/BudgetRecoveryBannerView.swift` (at most two lines, id
-  `today.recoveryBanner`) under the hero or tank in every Today layout.
+  Rendered by `Features/Today/BudgetRecoveryBannerView.swift` as a card (id
+  `today.recoveryBanner`) under the hero or tank in every Today layout, with up to two
+  sections split by a divider: "Daily limit" (the no-spend count) and "November budget"
+  with a status chip (Tracking over / Hard to recover / Over budget) and the warning.
 - *Per-account breakdown* (Plans card only): this month's counted spend per
   selected account, highest first, zero-spend accounts included; names/masks come
   from `LinkedAccountStore` ("Unknown account" if the account's item is still
@@ -1331,9 +1329,9 @@ spend today on the home screen (small, medium) and lock screen
   spend breakdown. See
   "Monthly budget" under Architecture above.
 - **Budget recovery and month warnings** (reservoir-nka.1, implemented): when
-  today's budget is overspent, Today says when the full daily limit is back at
-  the usual pace (or that it won't catch up / will still be behind at the reset)
-  and a nearer "keep to $X a day" target; and one month warning when the month
+  today's budget is overspent, Today says how many no-spend days get the full
+  daily limit back (or, in reset mode, that the reset on the 1st clears it first);
+  and one month warning when the month
   is tracking over, hard to recover, or already spent. In Carry over mode the
   warnings and the Plans projection count what was carried over or started
   behind. The pace sentence is now neutral text; only the point-of-no-return phrase

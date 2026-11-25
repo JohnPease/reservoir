@@ -2,8 +2,8 @@ import XCTest
 import SwiftData
 @testable import Reservoir
 
-/// reservoir-nka.1: recovery at the usual pace, the target line, month warnings and the Today
-/// banner. Most cases drive the pure `BudgetRecoveryCalculator.result` with hand-built inputs; a
+/// reservoir-nka.1: the no-spend days until the full daily limit is back, month warnings and the
+/// Today banner. Most cases drive the pure `BudgetRecoveryCalculator.result` with hand-built inputs; a
 /// few go through `BudgetSummaryCalculator.insights` with an in-memory container so the carry-in
 /// identity and the lookback wiring are checked against the real carry walk.
 final class BudgetRecoveryCalculatorTests: XCTestCase {
@@ -51,7 +51,7 @@ final class BudgetRecoveryCalculatorTests: XCTestCase {
 
     /// A consistent input for `today`: `paceDelta = budgeted - spent`, where `budgeted` is the
     /// month's bases through today. `remaining` is `-debt` when `debt` is given, else
-    /// `carryIn + paceDelta` (carry) / `paceDelta` (reset). `usual` seeds 14 history days.
+    /// `carryIn + paceDelta` (carry) / `paceDelta` (reset).
     private func input(
         today: Date,
         monthly: Decimal = 3000,
@@ -61,7 +61,6 @@ final class BudgetRecoveryCalculatorTests: XCTestCase {
         windowBudget: Decimal? = nil,
         projectedDelta: Decimal? = nil,
         debt: Decimal? = nil,
-        usual: Decimal? = nil,
         spentByDay: [Date: Decimal]? = nil,
         start: Date? = nil,
         cal: Calendar? = nil
@@ -85,7 +84,7 @@ final class BudgetRecoveryCalculatorTests: XCTestCase {
             projectedDelta: projectedDelta,
             dayOfMonth: dayOfMonth,
             daysInMonth: daysInMonth,
-            spentByDay: spentByDay ?? usual.map { history($0, days: 14, before: today, cal: cal) } ?? [:],
+            spentByDay: spentByDay ?? [:],
             budgetStartDay: start ?? date(2025, 1, 1, in: cal)
         )
     }
@@ -174,8 +173,8 @@ final class BudgetRecoveryCalculatorTests: XCTestCase {
     // MARK: - Debt
 
     func testDebtThresholdIsOneDollar() {
-        XCTAssertNil(result(input(today: date(2026, 11, 10), debt: Decimal(string: "0.99")!, usual: 40)).recovery)
-        let owed = result(input(today: date(2026, 11, 10), debt: 1, usual: 40)).recovery
+        XCTAssertNil(result(input(today: date(2026, 11, 10), debt: Decimal(string: "0.99")!)).recovery)
+        let owed = result(input(today: date(2026, 11, 10), debt: 1)).recovery
         XCTAssertEqual(owed?.debt, 1)
     }
 
@@ -190,45 +189,7 @@ final class BudgetRecoveryCalculatorTests: XCTestCase {
         XCTAssertEqual(recovery.debt, 110)
     }
 
-    // MARK: - Usual pace
-
-    private func usual(_ spentByDay: [Date: Decimal], today: Date, start: Date? = nil, monthly: Decimal = 3000) -> Decimal? {
-        Calc.usualDailySpend(
-            spentByDay: spentByDay, today: today, budgetStartDay: start ?? date(2025, 1, 1),
-            schedule: .monthly(monthly), calendar: calendar
-        )
-    }
-
-    func testUsualPaceCountsZeroDaysAndExcludesToday() {
-        let today = date(2026, 11, 20)
-        var days: [Date: Decimal] = [date(2026, 11, 12): 140]
-        days[today] = 1000
-        XCTAssertEqual(usual(days, today: today), 10)
-    }
-
-    func testUsualPaceIsFlooredAtTheBudgetStart() {
-        let today = date(2026, 11, 20)
-        XCTAssertEqual(usual(history(70, days: 14, before: today), today: today, start: date(2026, 11, 13)), 70)
-    }
-
-    func testUsualPaceNeedsSevenCompletedDays() {
-        let today = date(2026, 11, 20)
-        XCTAssertNil(usual(history(70, days: 14, before: today), today: today, start: date(2026, 11, 14)))
-        XCTAssertEqual(usual(history(70, days: 14, before: today), today: today, start: date(2026, 11, 13)), 70)
-    }
-
-    func testUsualPaceIgnoresFutureDatedSpendAndOlderDays() {
-        let today = date(2026, 11, 20)
-        var days = history(28, days: 14, before: today)
-        days[date(2026, 11, 22)] = 5000
-        days[date(2026, 11, 5)] = 5000 // 15 days back: outside the window
-        XCTAssertEqual(usual(days, today: today), 28)
-    }
-
-    func testUsualPaceCapsEachDayAtTwiceItsBase() {
-        let today = date(2026, 11, 20)
-        XCTAssertEqual(usual([date(2026, 11, 15): 1000], today: today), Decimal(200) / 14)
-    }
+    // MARK: - Counted spend and opt-in
 
     func testCountedSpendByDayIgnoresFixedAndUnselectedAccounts() {
         let b = budget(start: date(2026, 11, 1))
@@ -261,240 +222,65 @@ final class BudgetRecoveryCalculatorTests: XCTestCase {
         XCTAssertEqual(opted.projection, plain.projection)
     }
 
-    func testUsualPaceThroughInsightsIgnoresFixedUnselectedAndToday() throws {
-        let b = budget(start: date(2026, 11, 1))
-        var t = (6...19).map { txn(150, date(2026, 11, $0)) }
-        t += [txn(900, date(2026, 11, 12), type: .fixed), txn(900, date(2026, 11, 12), account: "other"), txn(400, date(2026, 11, 20))]
-        let recovery = try XCTUnwrap(try recoveryResult(b, t, on: date(2026, 11, 20)).recovery)
-        XCTAssertEqual(recovery.usualDaily, 150)
-    }
-
     // MARK: - Recovery
 
     private func outcome(_ input: Calc.Input, cal: Calendar? = nil) -> Calc.Outcome? {
         result(input, cal: cal).recovery?.outcome
     }
 
-    func testRecoveryWithinTheMonthIsTheCeilingOfDebtOverDailyGain() {
-        // Nov: base 100, usual 40 => +60/day. 300 is paid off by Nov 15's spending (5 payoff
-        // days), so the full limit is back on Nov 16, 6 days from today.
-        XCTAssertEqual(outcome(input(today: date(2026, 11, 10), debt: 300, usual: 40)), .days(6, on: date(2026, 11, 16)))
-        XCTAssertEqual(outcome(input(today: date(2026, 11, 10), debt: 310, usual: 40)), .days(7, on: date(2026, 11, 17)))
+    func testNoSpendDaysAreTheFewestBasesThatCoverTheDebt() {
+        // Nov base 100: 300 takes Nov 11-13, so the full limit is back Nov 14.
+        let today = date(2026, 11, 10)
+        XCTAssertEqual(outcome(input(today: today, debt: 300)), .noSpend(days: 3, backOn: date(2026, 11, 14)))
+        XCTAssertEqual(outcome(input(today: today, debt: 301)), .noSpend(days: 4, backOn: date(2026, 11, 15)))
+        XCTAssertEqual(outcome(input(today: today, debt: 1)), .noSpend(days: 1, backOn: date(2026, 11, 12)))
+        XCTAssertEqual(result(input(today: today, debt: 300)).banner?.lines.first?.text,
+                       "3 no-spend days from tomorrow get your full $100 limit back on Sat, Nov 14.")
+        XCTAssertEqual(result(input(today: today, debt: 50)).banner?.lines.first?.text,
+                       "1 no-spend day (tomorrow) gets your full $100 limit back on Thu, Nov 12.")
     }
 
-    func testRecoveryNeverWhenUsualPaceMatchesOrExceedsTheBase() {
-        // Feb 2027 at 2800/month: base 100 = amount / 28, the largest any day gets.
-        XCTAssertEqual(outcome(input(today: date(2027, 2, 10), monthly: 2800, debt: 50, usual: 100)), .never)
-        XCTAssertEqual(outcome(input(today: date(2026, 11, 10), debt: 50, usual: 110)), .never)
-        // U == Nov's base: later months net to zero at best, so never.
-        XCTAssertEqual(outcome(input(today: date(2026, 11, 24), debt: 50, usual: 100)), .never)
-        // Reset mode: the same pace resets on the 1st.
-        XCTAssertEqual(outcome(input(today: date(2026, 11, 24), boundary: .reset, debt: 50, usual: 100)), .resetsOnFirst(date(2026, 12, 1)))
+    func testCarryCountRunsIntoTheNextMonthAtItsBase() {
+        // Nov 29-30 give 200, Dec 1 96.77 (296.77), Dec 2 covers 300 => back Dec 3 at $97.
+        let value = result(input(today: date(2026, 11, 28), debt: 300))
+        XCTAssertEqual(value.recovery?.outcome, .noSpend(days: 4, backOn: date(2026, 12, 3)))
+        XCTAssertEqual(value.banner?.lines.first?.text, "4 no-spend days from tomorrow get your full $97 limit back on Thu, Dec 3.")
+        // December into January: Dec 31 + Jan 1 => back Jan 2.
+        XCTAssertEqual(outcome(input(today: date(2026, 12, 30), debt: 150)), .noSpend(days: 2, backOn: date(2027, 1, 2)))
     }
 
-    func testUsualPaceBetweenThirtyFirstAndTwentyEighthCatchesUpInFebruary() {
-        // Jan 2027 base 96.77 < U 100 < Feb base 107.14: Jan 16-31 lose 51.61, Feb gains 7.14/day.
-        let from = input(today: date(2027, 1, 15), debt: 50, usual: 100)
-        let recovery = result(from).recovery
-        XCTAssertEqual(recovery?.outcome, .days(32, on: date(2027, 2, 16)))
-        XCTAssertEqual(recovery?.crossesMonth, true)
-        XCTAssertEqual(outcome(input(today: date(2027, 1, 15), debt: 1000, usual: 100)), .never)
-    }
-
-    func testRecoveryCarriesAcrossA31To30DayMonth() {
-        // Oct 29-31 +46.77 each, then Nov +50/day: 140.32 + 4 * 50 >= 300 by Nov 4 => back Nov 5.
-        let value = result(input(today: date(2026, 10, 28), debt: 300, usual: 50))
-        XCTAssertEqual(value.recovery?.outcome, .days(8, on: date(2026, 11, 5)))
-        XCTAssertEqual(value.recovery?.crossesMonth, true)
-        XCTAssertEqual(value.banner?.lines.first?.text, "At your usual $50 a day, your full $100 limit is back in 8 days (Thu, Nov 5), carrying into November.")
-    }
-
-    func testRecoveryCarriesFromDecemberIntoJanuary() {
-        let value = result(input(today: date(2026, 12, 30), debt: 200, usual: 50))
-        XCTAssertEqual(value.recovery?.outcome, .days(6, on: date(2027, 1, 5)))
-        XCTAssertEqual(value.banner?.lines.first?.text, "At your usual $50 a day, your full $97 limit is back in 6 days (Tue, Jan 5), carrying into January.")
-    }
-
-    func testSpecExampleCrossingIntoDecember() {
-        // 2500/month: Nov base 83.33 (+22.33/day), Dec 80.65; usual 61. Paid off Dec 1 => back Dec 2.
-        let value = result(input(today: date(2026, 11, 24), monthly: 2500, debt: 150, usual: 61))
-        XCTAssertEqual(value.recovery?.outcome, .days(8, on: date(2026, 12, 2)))
-        XCTAssertEqual(value.banner?.lines.first?.text, "At your usual $61 a day, your full $81 limit is back in 8 days (Wed, Dec 2), carrying into December.")
-    }
-
-    func testCarryPayoffOnTheLastDayIsBackOnTheFirstAndCrossesTheMonth() {
-        // Nov 25-30 gain 134 >= 130: paid off by Nov 30's spending, so the full limit (December's
-        // base, $81) is back Dec 1, a later month.
-        let value = result(input(today: date(2026, 11, 24), monthly: 2500, debt: 130, usual: 61))
-        XCTAssertEqual(value.recovery?.outcome, .days(7, on: date(2026, 12, 1)))
-        XCTAssertEqual(value.recovery?.crossesMonth, true)
-        XCTAssertEqual(value.banner?.lines.first?.text, "At your usual $61 a day, your full $81 limit is back in 7 days (Tue, Dec 1), carrying into December.")
-    }
-
-    func testDebtCarriedIntoTheFirstShowsRecoveryWithUsualPaceFromLastMonth() throws {
-        // Nov: base 100, spent 150 every day => C into Dec = -1500. Dec 1, nothing spent yet.
-        let b = budget(start: date(2026, 11, 1))
-        let t = (1...30).map { txn(150, date(2026, 11, $0)) }
-        let value = try recoveryResult(b, t, on: date(2026, 12, 1))
-        XCTAssertEqual(value.carryIn, -1500)
-        let recovery = try XCTUnwrap(value.recovery)
-        XCTAssertEqual(recovery.usualDaily, 150)
-        XCTAssertEqual(recovery.outcome, .never)
-        XCTAssertNil(recovery.target)
-        XCTAssertEqual(value.warning.level, .none)
-        XCTAssertEqual(value.banner?.text, "At your usual $150 a day, you won't catch up. Your limit stays below $97 until you spend less.")
-    }
-
-    func testResetModeStillBehindAtMonthEnd() {
-        // Target horizon capped at daysLeft - 1 = 5 (Nov 25-29), so it's back by Nov 30.
-        let value = result(input(today: date(2026, 11, 24), boundary: .reset, debt: 300, usual: 90))
-        XCTAssertEqual(value.recovery?.outcome, .resetsOnFirst(date(2026, 12, 1)))
-        XCTAssertEqual(value.recovery?.target, Calc.Target(daily: 40, days: 5, by: date(2026, 11, 30)))
-        XCTAssertEqual(value.banner?.lines.map(\.text), [
-            "At your usual $90 a day, you'll still be behind when your limit resets on the 1st.",
-            "Keep to $40 a day to have your full limit back by Mon, Nov 30.",
-        ])
-    }
-
-    func testResetModePayoffOnTheLastDayReadsBackOnTheFirst() {
-        // Paid off by Nov 30's spending: the limit is full on Dec 1, which is the reset anyway.
-        let value = result(input(today: date(2026, 11, 24), boundary: .reset, debt: 300, usual: 50))
-        XCTAssertEqual(value.recovery?.outcome, .days(7, on: date(2026, 12, 1)))
-        XCTAssertEqual(value.recovery?.crossesMonth, false)
-        XCTAssertEqual(value.banner?.text, "At your usual $50 a day, your full $97 limit is back on the 1st.")
-    }
-
-    func testResetModePayoffBeforeTheLastDayIsBackWithinTheMonth() {
-        let value = result(input(today: date(2026, 11, 24), boundary: .reset, debt: 250, usual: 50))
-        XCTAssertEqual(value.recovery?.outcome, .days(6, on: date(2026, 11, 30)))
-        XCTAssertEqual(value.banner?.lines.first?.text, "At your usual $50 a day, your full $100 limit is back in 6 days (Mon, Nov 30).")
-    }
-
-    func testResetModeDebtOnTheLastDayResetsTomorrow() {
-        let value = result(input(today: date(2026, 11, 30), boundary: .reset, debt: 50, usual: 50))
-        XCTAssertEqual(value.recovery?.outcome, .resetsOnFirst(date(2026, 12, 1)))
-        XCTAssertNil(value.recovery?.target)
-        XCTAssertEqual(value.banner?.text, "At your usual $50 a day, you'll still be behind when your limit resets tomorrow.")
-    }
-
-    func testShortestRecoveryIsTwoDaysBecauseTomorrowOpensWithTheDebt() {
-        // Paid off by tomorrow's spending; the full limit is back the day after.
-        let value = result(input(today: date(2026, 11, 10), debt: 50, usual: 40))
-        XCTAssertEqual(value.recovery?.outcome, .days(2, on: date(2026, 11, 12)))
-        XCTAssertEqual(value.banner?.text, "At your usual $40 a day, your full $100 limit is back in 2 days (Thu, Nov 12).")
-        XCTAssertFalse(value.banner?.text.contains("tomorrow") ?? true)
-        // Even the smallest debt that shows ($1) takes two days.
-        XCTAssertEqual(result(input(today: date(2026, 11, 10), debt: 1, usual: 0)).recovery?.outcome, .days(2, on: date(2026, 11, 12)))
-
-        let crossing = result(input(today: date(2026, 11, 30), debt: 50, usual: 40))
-        XCTAssertEqual(crossing.recovery?.outcome, .days(2, on: date(2026, 12, 2)))
-        XCTAssertEqual(crossing.banner?.lines.first?.text, "At your usual $40 a day, your full $97 limit is back in 2 days (Wed, Dec 2), carrying into December.")
-        // Debt on the last day of a carry month is always past the month's budget too.
-        XCTAssertEqual(crossing.warning.level, .pointOfNoReturn)
-    }
-
-    func testPayoffTomorrowOnTheLastDayButOne() {
-        // Carry: paid off Nov 30 => back Dec 1 at December's base, carrying into December.
-        let carry = result(input(today: date(2026, 11, 29), debt: 50, usual: 40))
-        XCTAssertEqual(carry.recovery?.outcome, .days(2, on: date(2026, 12, 1)))
-        XCTAssertEqual(carry.recovery?.crossesMonth, true)
-        XCTAssertEqual(carry.banner?.lines.first?.text, "At your usual $40 a day, your full $97 limit is back in 2 days (Tue, Dec 1), carrying into December.")
-        // Reset: the same payoff reads back on the 1st, with no "carrying into".
-        let reset = result(input(today: date(2026, 11, 29), boundary: .reset, debt: 50, usual: 40))
-        XCTAssertEqual(reset.recovery?.outcome, .days(2, on: date(2026, 12, 1)))
-        XCTAssertEqual(reset.recovery?.crossesMonth, false)
-        XCTAssertNil(reset.recovery?.target)
-        XCTAssertEqual(reset.banner?.text, "At your usual $40 a day, your full $97 limit is back on the 1st.")
-    }
-
-    func testRecoveryAtDaysLeftAndOneMore() {
+    func testResetModeSaysTheResetClearsItWhenTheCountRunsPastTheMonth() {
         let today = date(2026, 11, 24) // 6 days left
-        XCTAssertEqual(outcome(input(today: today, boundary: .reset, debt: 300, usual: 50)), .days(7, on: date(2026, 12, 1)))
-        XCTAssertEqual(outcome(input(today: today, boundary: .reset, debt: Decimal(string: "300.01")!, usual: 50)), .resetsOnFirst(date(2026, 12, 1)))
-        XCTAssertEqual(outcome(input(today: today, debt: Decimal(string: "300.01")!, usual: 50)), .days(8, on: date(2026, 12, 2)))
+        // 500 is covered by Nov 25-29: back Nov 30, inside the month.
+        XCTAssertEqual(outcome(input(today: today, boundary: .reset, debt: 500)), .noSpend(days: 5, backOn: date(2026, 11, 30)))
+        // 600 needs every day left, so the limit would be back Dec 1: the reset clears it first.
+        XCTAssertEqual(outcome(input(today: today, boundary: .reset, debt: 600)), .resetClears(days: 6, resetsOn: date(2026, 12, 1)))
+        XCTAssertEqual(outcome(input(today: today, debt: 600)), .noSpend(days: 6, backOn: date(2026, 12, 1)))
+        // 700 would take Dec 1-2 too (bases follow the schedule past the 1st).
+        let value = result(input(today: today, boundary: .reset, debt: 700))
+        XCTAssertEqual(value.recovery?.outcome, .resetClears(days: 8, resetsOn: date(2026, 12, 1)))
+        XCTAssertEqual(value.banner?.lines.first?.text, "You'd need 8 no-spend days to catch up, but your limit resets to full on Dec 1.")
     }
 
-    func testRecoveryUnavailableWithoutUsualPace() {
-        let value = result(input(today: date(2026, 11, 10), debt: 100, usual: 40, start: date(2026, 11, 5)))
-        XCTAssertEqual(value.recovery?.outcome, .unavailable)
-        XCTAssertNil(value.recovery?.usualDaily)
+    func testResetModeOnTheLastDayResetsTomorrow() {
+        let value = result(input(today: date(2026, 11, 30), boundary: .reset, debt: 50))
+        XCTAssertEqual(value.recovery?.outcome, .resetClears(days: 1, resetsOn: date(2026, 12, 1)))
+        XCTAssertEqual(value.banner?.lines.first?.text, "You'd need 1 no-spend day to catch up, but your limit resets to full tomorrow.")
     }
 
-    // MARK: - Target
-
-    private func target(_ input: Calc.Input) -> Calc.Target? {
-        result(input).recovery?.target
+    func testZeroBudgetHasNoRecovery() {
+        let value = result(input(today: date(2026, 11, 10), monthly: 0, debt: 50))
+        XCTAssertNil(value.recovery)
+        // The month warning still shows; there's just no daily-limit section.
+        XCTAssertEqual(value.banner?.sections.map(\.kind), [.month])
     }
 
-    func testTargetWithinTheMonth() {
-        // U 60 against base 100 => +40/day, n = 10 payoff days => N = 5, T = (500 - 400) / 5;
-        // the horizon is Nov 11-15, so the full limit is back Nov 16.
-        let value = result(input(today: date(2026, 11, 10), debt: 400, usual: 60))
-        XCTAssertEqual(value.recovery?.outcome, .days(11, on: date(2026, 11, 21)))
-        XCTAssertEqual(value.recovery?.target, Calc.Target(daily: 20, days: 5, by: date(2026, 11, 16)))
-        XCTAssertEqual(value.banner?.lines.last?.text, "Keep to $20 a day to have your full limit back by Mon, Nov 16.")
-    }
-
-    func testTargetCrossingTheFirstUsesEachMonthsBase() {
-        // n = 11 (Nov 28-30 +40, Dec +36.77) => N = 6, horizon Nov 28 - Dec 3.
-        let value = result(input(today: date(2026, 11, 27), debt: 400, usual: 60))
-        XCTAssertEqual(value.recovery?.outcome, .days(12, on: date(2026, 12, 9)))
-        let expected = BudgetSummaryCalculator.wholeDollars(
-            (BudgetSummaryCalculator.baseSum(.monthly(3000), from: date(2026, 11, 28), days: 6, calendar: calendar) - 400) / 6,
-            mode: .down
-        )
-        XCTAssertEqual(expected, 31)
-        XCTAssertEqual(value.recovery?.target, Calc.Target(daily: 31, days: 6, by: date(2026, 12, 4)))
-    }
-
-    func testTargetHiddenUnderOneDollar() {
-        // U 99 never pays down 695 => N = 7, T = (700 - 695) / 7 < 1.
-        let hidden = result(input(today: date(2026, 11, 10), debt: 695, usual: 99))
-        XCTAssertEqual(hidden.recovery?.outcome, .never)
-        XCTAssertNil(hidden.recovery?.target)
-        XCTAssertEqual(result(input(today: date(2026, 11, 10), debt: 693, usual: 99)).recovery?.target?.daily, 1)
-    }
-
-    func testTargetHiddenWhenNotNearerThanUsualPace() {
-        // n = 3 payoff days (back on day 4) => N = 3, not nearer: hidden.
-        XCTAssertEqual(result(input(today: date(2026, 11, 10), debt: 150, usual: 50)).recovery?.outcome, .days(4, on: date(2026, 11, 14)))
-        XCTAssertNil(target(input(today: date(2026, 11, 10), debt: 150, usual: 50)))
-        // n = 4 => N = max(2, 3) = 3 < 4: shown, back by Nov 14 vs the usual pace's Nov 15.
-        XCTAssertEqual(target(input(today: date(2026, 11, 10), debt: 200, usual: 50)), Calc.Target(daily: 33, days: 3, by: date(2026, 11, 14)))
-    }
-
-    func testTargetClampsToSevenDays() {
-        // n = 20 => ceil(20/2) = 10 => 7.
-        XCTAssertEqual(target(input(today: date(2026, 11, 10), debt: 200, usual: 90)), Calc.Target(daily: 71, days: 7, by: date(2026, 11, 18)))
-    }
-
-    func testTargetUsesSevenDaysWhenNeverAndRoundsDown() {
-        let value = result(input(today: date(2026, 11, 10), debt: 100, usual: 150))
-        XCTAssertEqual(value.recovery?.target, Calc.Target(daily: 85, days: 7, by: date(2026, 11, 18)))
-        XCTAssertEqual(value.banner?.lines.map(\.text), [
-            "At your usual $150 a day, you won't catch up. Your limit stays below $100 until you spend less.",
-            "Keep to $85 a day to have your full limit back by Wed, Nov 18.",
-        ])
-    }
-
-    func testUsualPaceUnavailableShowsTargetOnly() {
-        let value = result(input(today: date(2026, 11, 10), debt: 100, start: date(2026, 11, 5)))
-        XCTAssertEqual(value.recovery?.target, Calc.Target(daily: 85, days: 7, by: date(2026, 11, 18)))
-        XCTAssertEqual(value.banner?.lines.map(\.text), ["Keep to $85 a day to have your full limit back by Wed, Nov 18."])
-    }
-
-    func testResetModeCapsTheTargetSoItIsBackWithinTheMonth() {
-        // 3 days left: n = 3 payoff days => N = 3, capped at daysLeft - 1 = 2 (Nov 28-29), so the
-        // target is back by Nov 30 rather than on the 1st, where the limit resets anyway.
-        let value = result(input(today: date(2026, 11, 27), boundary: .reset, debt: 150, usual: 50))
-        XCTAssertEqual(value.recovery?.outcome, .days(4, on: date(2026, 12, 1)))
-        XCTAssertEqual(value.recovery?.target, Calc.Target(daily: 25, days: 2, by: date(2026, 11, 30)))
-        XCTAssertEqual(value.banner?.lines.map(\.text), [
-            "At your usual $50 a day, your full $97 limit is back on the 1st.",
-            "Keep to $25 a day to have your full limit back by Mon, Nov 30.",
-        ])
-        // One day left: no horizon fits before the last day.
-        XCTAssertNil(result(input(today: date(2026, 11, 29), boundary: .reset, debt: 150, usual: 90)).recovery?.target)
+    func testNoSpendDaysThroughInsights() throws {
+        // Started the 20th (limit 100), $400 today: 300 behind => Nov 21-23, back Nov 24.
+        let b = budget(start: date(2026, 11, 20))
+        let value = try recoveryResult(b, [txn(400, date(2026, 11, 20, hour: 9))], on: date(2026, 11, 20, hour: 15))
+        XCTAssertEqual(value.recovery?.debt, 300)
+        XCTAssertEqual(value.recovery?.outcome, .noSpend(days: 3, backOn: date(2026, 11, 24)))
     }
 
     // MARK: - Level 1: tracking over
@@ -518,7 +304,7 @@ final class BudgetRecoveryCalculatorTests: XCTestCase {
         XCTAssertEqual(value.warning.headingOver, 180)
         XCTAssertEqual(value.warning.neededDaily, Decimal(string: "59.75")!)
         XCTAssertEqual(value.banner?.lines.last?.text,
-                       "Heading about $180 over for November, counting the $300 you started behind. Keep to $59 a day from tomorrow to finish even.")
+                       "Heading about $180 over, counting the $300 you started behind. Keep to $59 a day from tomorrow to finish even.")
     }
 
     func testTrackingOverNeedsSevenCompletedDaysThroughInsights() throws {
@@ -529,7 +315,7 @@ final class BudgetRecoveryCalculatorTests: XCTestCase {
         XCTAssertEqual(eighth.warning.level, .trackingOver)
         // Projected 4650 against 3100: $1,550 over; (3100 - 1200) / 23 = 82.6 => $82.
         XCTAssertEqual(eighth.banner?.lines.last?.text,
-                       "Heading about $1,550 over for October. Keep to $82 a day from tomorrow to finish even.")
+                       "Heading about $1,550 over. Keep to $82 a day from tomorrow to finish even.")
     }
 
     func testTrackingOverForAMidMonthStart() throws {
@@ -664,8 +450,9 @@ final class BudgetRecoveryCalculatorTests: XCTestCase {
         XCTAssertEqual(value.carryIn, -3100)
         XCTAssertEqual(value.warning.level, .pointOfNoReturn)
         XCTAssertEqual(value.warning.overBy, 100)
+        // 3003.23 behind (Dec 1's base is in): Dec 2-31 and Jan 1-2 => back Jan 3.
         XCTAssertEqual(value.banner?.lines.map(\.text), [
-            "At your usual $14 a day, your full $97 limit is back in 38 days (Fri, Jan 8), carrying into January.",
+            "32 no-spend days from tomorrow get your full $97 limit back on Sun, Jan 3.",
             "December's budget can't cover the $3,100 you started behind, $100 over. More spending this month carries into January.",
         ])
         XCTAssertEqual(value.banner?.lines.last?.deficitPhrase,
@@ -689,20 +476,17 @@ final class BudgetRecoveryCalculatorTests: XCTestCase {
         }
     }
 
-    func testCarryPointOfNoReturnMeansRecoveryCrossesTheFirstOrNever() throws {
+    func testCarryPointOfNoReturnMeansTheCountCrossesTheFirst() throws {
+        // Over the month by >= $1 means the rest of the month's bases can't cover the debt.
         let today = date(2026, 11, 10)
-        for usual in [Decimal(0), 50, 99, 150] {
-            for carry in [Decimal(-500), 0, 400] {
-                for spent in [Decimal(3001), 3500, 4200, 6000] {
-                    let value = result(input(today: today, carryIn: carry, spent: spent, usual: usual))
-                    guard value.warning.level == .pointOfNoReturn else { continue }
-                    let recovery = try XCTUnwrap(value.recovery)
-                    if case .days = recovery.outcome {
-                        XCTAssertTrue(recovery.crossesMonth, "usual \(usual) carry \(carry) spent \(spent)")
-                    } else {
-                        XCTAssertEqual(recovery.outcome, .never)
-                    }
+        for carry in [Decimal(-500), 0, 400] {
+            for spent in [Decimal(3001), 3500, 4200, 6000] {
+                let value = result(input(today: today, carryIn: carry, spent: spent))
+                guard value.warning.level == .pointOfNoReturn else { continue }
+                guard case .noSpend(_, let backOn) = try XCTUnwrap(value.recovery).outcome else {
+                    return XCTFail("carry \(carry) spent \(spent)")
                 }
+                XCTAssertGreaterThan(backOn, date(2026, 12, 1), "carry \(carry) spent \(spent)")
             }
         }
     }
@@ -729,13 +513,13 @@ final class BudgetRecoveryCalculatorTests: XCTestCase {
 
     func testFebruaryLengthsAndThirtyAndThirtyOneDayMonths() {
         // Feb 2028 (29 days) at 2900: base 100; 2 days left from the 27th.
-        XCTAssertEqual(outcome(input(today: date(2028, 2, 27), monthly: 2900, boundary: .reset, debt: 100, usual: 50)),
-                       .days(3, on: date(2028, 3, 1)))
-        XCTAssertEqual(outcome(input(today: date(2028, 2, 27), monthly: 2900, boundary: .reset, debt: 50, usual: 50)),
-                       .days(2, on: date(2028, 2, 29)))
+        XCTAssertEqual(outcome(input(today: date(2028, 2, 27), monthly: 2900, boundary: .reset, debt: 100)),
+                       .noSpend(days: 1, backOn: date(2028, 2, 29)))
+        XCTAssertEqual(outcome(input(today: date(2028, 2, 27), monthly: 2900, boundary: .reset, debt: 150)),
+                       .resetClears(days: 2, resetsOn: date(2028, 3, 1)))
         // Feb 2027 (28 days) at 2800: 1 day left from the 27th.
-        XCTAssertEqual(outcome(input(today: date(2027, 2, 27), monthly: 2800, boundary: .reset, debt: 100, usual: 50)),
-                       .resetsOnFirst(date(2027, 3, 1)))
+        XCTAssertEqual(outcome(input(today: date(2027, 2, 27), monthly: 2800, boundary: .reset, debt: 100)),
+                       .resetClears(days: 1, resetsOn: date(2027, 3, 1)))
         XCTAssertEqual(Calc.rawNeededDaily(available: 100, spent: 0, daysLeft: 1), 100)
         // 30 vs 31: Nov 20 has 10 days left, Oct 20 has 11.
         XCTAssertEqual(result(input(today: date(2026, 11, 20), spent: 2000)).warning.neededDaily, 100)
@@ -755,20 +539,12 @@ final class BudgetRecoveryCalculatorTests: XCTestCase {
         let saoPauloStart = date(2018, 1, 1, in: cal)
         XCTAssertEqual(cal.component(.hour, from: skipped), 1)
 
-        let today = cal.startOfDay(for: date(2018, 11, 10, hour: 12, in: cal))
-        let lookback = history(40, days: 14, before: today, cal: cal)
-        XCTAssertNotNil(lookback[skipped])
-        XCTAssertEqual(Calc.usualDailySpend(spentByDay: lookback, today: today, budgetStartDay: date(2018, 1, 1, in: cal), schedule: .monthly(3000), calendar: cal), 40)
-
         let from = cal.startOfDay(for: date(2018, 11, 2, hour: 12, in: cal))
-        // Paid off Nov 3 => back on the skipped-midnight day.
-        XCTAssertEqual(outcome(input(today: from, debt: 50, usual: 50, start: saoPauloStart, cal: cal), cal: cal), .days(2, on: skipped))
-        // Paid off on the skipped day => back Nov 5.
-        XCTAssertEqual(outcome(input(today: from, debt: 100, usual: 50, start: saoPauloStart, cal: cal), cal: cal),
-                       .days(3, on: cal.startOfDay(for: date(2018, 11, 5, hour: 12, in: cal))))
-        // n = 5 => N = 3: the horizon Nov 1-3 puts the full limit back on the skipped-midnight day.
-        let crossing = result(input(today: cal.startOfDay(for: date(2018, 10, 31, hour: 12, in: cal)), debt: 250, usual: 50, start: saoPauloStart, cal: cal), cal: cal)
-        XCTAssertEqual(crossing.recovery?.target, Calc.Target(daily: 16, days: 3, by: skipped))
+        // One no-spend day (Nov 3) => back on the skipped-midnight day.
+        XCTAssertEqual(outcome(input(today: from, debt: 50, start: saoPauloStart, cal: cal), cal: cal), .noSpend(days: 1, backOn: skipped))
+        // Through the skipped day => back Nov 5.
+        XCTAssertEqual(outcome(input(today: from, debt: 150, start: saoPauloStart, cal: cal), cal: cal),
+                       .noSpend(days: 2, backOn: cal.startOfDay(for: date(2018, 11, 5, hour: 12, in: cal))))
     }
 
     func testNewYorkSpringForwardAndFallBack() {
@@ -776,15 +552,11 @@ final class BudgetRecoveryCalculatorTests: XCTestCase {
         func day(_ m: Int, _ d: Int) -> Date { cal.startOfDay(for: date(2026, m, d, hour: 12, in: cal)) }
 
         // March 8, 2026: clocks spring forward. Mar base 3100 / 31 = 100.
-        XCTAssertEqual(outcome(input(today: day(3, 6), monthly: 3100, debt: 200, usual: 50, cal: cal), cal: cal), .days(5, on: day(3, 11)))
-        XCTAssertEqual(Calc.usualDailySpend(spentByDay: history(50, days: 14, before: day(3, 16), cal: cal), today: day(3, 16),
-                                            budgetStartDay: day(1, 1), schedule: .monthly(3100), calendar: cal), 50)
+        XCTAssertEqual(outcome(input(today: day(3, 6), monthly: 3100, debt: 200, cal: cal), cal: cal), .noSpend(days: 2, backOn: day(3, 9)))
         XCTAssertEqual(Calc.completedDays(lookback: 14, before: day(3, 16), notBefore: day(1, 1), calendar: cal).count, 14)
 
-        // November 1, 2026: clocks fall back. Oct 31 +46.77, Nov +50/day.
-        let fall = result(input(today: day(10, 30), debt: 150, usual: 50, cal: cal), cal: cal)
-        XCTAssertEqual(fall.recovery?.outcome, .days(5, on: day(11, 4)))
-        XCTAssertEqual(fall.recovery?.crossesMonth, true)
+        // November 1, 2026: clocks fall back. Oct 31 96.77 + Nov 1 100 covers 150.
+        XCTAssertEqual(outcome(input(today: day(10, 30), debt: 150, cal: cal), cal: cal), .noSpend(days: 2, backOn: day(11, 2)))
         XCTAssertEqual(Calc.completedDays(lookback: 14, before: day(11, 3), notBefore: day(1, 1), calendar: cal).count, 14)
     }
 
@@ -792,9 +564,9 @@ final class BudgetRecoveryCalculatorTests: XCTestCase {
 
     func testResultRoundTripsThroughCodable() throws {
         let values = [
-            result(input(today: date(2026, 11, 10), debt: 300, usual: 40)),
-            result(input(today: date(2026, 11, 10), debt: 100, usual: 150)),
-            result(input(today: date(2026, 11, 24), boundary: .reset, debt: 300, usual: 90)),
+            result(input(today: date(2026, 11, 10), debt: 300)),
+            result(input(today: date(2026, 11, 10), debt: 100)),
+            result(input(today: date(2026, 11, 24), boundary: .reset, debt: 700)),
             result(input(today: date(2026, 11, 10), debt: 100, start: date(2026, 11, 5))),
             result(input(today: date(2026, 11, 1), carryIn: -300, spent: 2750)),
             result(input(today: date(2026, 11, 10))),
@@ -810,41 +582,54 @@ final class BudgetRecoveryCalculatorTests: XCTestCase {
         XCTAssertNil(result(input(today: date(2026, 11, 10))).banner)
     }
 
-    func testBehindWithNoTargetAndNoUsualPaceHasNoBanner() {
-        // U unavailable and T < $1 with no warning.
-        XCTAssertNil(result(input(today: date(2026, 11, 10), debt: 695, start: date(2026, 11, 5))).banner)
-    }
-
     func testNotBehindShowsTheMonthWarningAlone() {
         let value = result(input(today: date(2026, 11, 10), carryIn: 2000, spent: 1505, projectedDelta: -2180))
         XCTAssertNil(value.recovery)
-        XCTAssertEqual(value.banner?.lines.map(\.text), [
-            "Heading about $180 over for November, counting the $2,000 carried over. Keep to $174 a day from tomorrow to finish even.",
-        ])
+        let section = try? XCTUnwrap(value.banner?.sections.first)
+        XCTAssertEqual(value.banner?.sections.count, 1)
+        XCTAssertEqual(section?.kind, .month)
+        XCTAssertEqual(section?.title, "November budget")
+        XCTAssertEqual(section?.status, "Tracking over")
+        XCTAssertEqual(section?.sentence.text,
+                       "Heading about $180 over, counting the $2,000 carried over. Keep to $174 a day from tomorrow to finish even.")
         XCTAssertEqual(value.banner?.isDeficit, false)
     }
 
     func testBehindWithWarningShowsHeadlineThenWarning() {
-        let value = result(input(today: date(2026, 11, 10), spent: 3500, usual: 40))
-        XCTAssertEqual(value.banner?.lines.count, 2)
+        // 2500 behind: Nov 11-30 give 2000, Dec 1-6 the rest => back Dec 7.
+        let value = result(input(today: date(2026, 11, 10), spent: 3500))
+        XCTAssertEqual(value.recovery?.outcome, .noSpend(days: 26, backOn: date(2026, 12, 7)))
+        XCTAssertEqual(value.banner?.sections.map(\.kind), [.dailyLimit, .month])
+        XCTAssertEqual(value.banner?.sections.map(\.status), [nil, "Over budget"])
         XCTAssertEqual(value.banner?.lines.first?.deficitPhrase, nil)
         XCTAssertEqual(value.banner?.lines.last?.text, "November's budget is spent, $500 over. More spending this month carries into December.")
         XCTAssertEqual(value.banner?.isDeficit, true)
     }
 
-    func testBehindWithoutUsualPaceShowsTargetThenWarning() {
-        let value = result(input(today: date(2026, 11, 10), carryIn: -100, spent: 1000, projectedDelta: -50, start: date(2026, 11, 5)))
-        XCTAssertEqual(value.recovery?.outcome, .unavailable)
+    func testBehindAndTrackingOverShowsBothSections() {
+        let value = result(input(today: date(2026, 11, 10), carryIn: -100, spent: 1000, projectedDelta: -50))
+        XCTAssertEqual(value.recovery?.outcome, .noSpend(days: 1, backOn: date(2026, 11, 12)))
         XCTAssertEqual(value.banner?.lines.map(\.text), [
-            "Keep to $85 a day to have your full limit back by Wed, Nov 18.",
-            "Heading about $150 over for November, counting the $100 you started behind. Keep to $95 a day from tomorrow to finish even.",
+            "1 no-spend day (tomorrow) gets your full $100 limit back on Thu, Nov 12.",
+            "Heading about $150 over, counting the $100 you started behind. Keep to $95 a day from tomorrow to finish even.",
         ])
+        XCTAssertEqual(value.banner?.accessibilityText,
+                       "Daily limit. 1 no-spend day (tomorrow) gets your full $100 limit back on Thu, Nov 12. "
+                       + "November budget, Tracking over. Heading about $150 over, counting the $100 you started behind. "
+                       + "Keep to $95 a day from tomorrow to finish even.")
     }
 
-    func testBehindWithHeadlineOnly() {
-        XCTAssertEqual(result(input(today: date(2026, 11, 10), debt: 150, usual: 50)).banner?.lines.map(\.text), [
-            "At your usual $50 a day, your full $100 limit is back in 4 days (Sat, Nov 14).",
-        ])
+    func testBehindAloneShowsTheDailyLimitSection() {
+        let banner = result(input(today: date(2026, 11, 10), debt: 150)).banner
+        XCTAssertEqual(banner?.sections.map(\.title), ["Daily limit"])
+        XCTAssertEqual(banner?.lines.map(\.text), ["2 no-spend days from tomorrow get your full $100 limit back on Fri, Nov 13."])
+    }
+
+    func testWarningStatuses() {
+        XCTAssertNil(Calc.status(.none))
+        XCTAssertEqual(Calc.status(.trackingOver), "Tracking over")
+        XCTAssertEqual(Calc.status(.hardToRecover), "Hard to recover")
+        XCTAssertEqual(Calc.status(.pointOfNoReturn), "Over budget")
     }
 
     // MARK: - Copy
@@ -859,35 +644,35 @@ final class BudgetRecoveryCalculatorTests: XCTestCase {
 
     func testTrackingOverCopy() {
         XCTAssertEqual(line(.trackingOver, carryIn: -300)?.text,
-                       "Heading about $180 over for November, counting the $300 you started behind. Keep to $62 a day from tomorrow to finish even.")
+                       "Heading about $180 over, counting the $300 you started behind. Keep to $62 a day from tomorrow to finish even.")
         XCTAssertEqual(line(.trackingOver, carryIn: 500)?.text,
-                       "Heading about $180 over for November, counting the $500 carried over. Keep to $62 a day from tomorrow to finish even.")
+                       "Heading about $180 over, counting the $500 carried over. Keep to $62 a day from tomorrow to finish even.")
         XCTAssertEqual(line(.trackingOver, carryIn: Decimal(string: "0.4")!)?.text,
-                       "Heading about $180 over for November. Keep to $62 a day from tomorrow to finish even.")
+                       "Heading about $180 over. Keep to $62 a day from tomorrow to finish even.")
         // Reset mode always has C = 0.
         XCTAssertEqual(line(.trackingOver, carryIn: 0, carries: false)?.text,
-                       "Heading about $180 over for November. Keep to $62 a day from tomorrow to finish on budget.")
+                       "Heading about $180 over. Keep to $62 a day from tomorrow to finish on budget.")
         XCTAssertEqual(line(.trackingOver, carryIn: 0, needed: Decimal(string: "62.9")!)?.text,
-                       "Heading about $180 over for November. Keep to $62 a day from tomorrow to finish even.")
+                       "Heading about $180 over. Keep to $62 a day from tomorrow to finish even.")
         XCTAssertEqual(line(.trackingOver, carryIn: 0, needed: 1)?.text,
-                       "Heading about $180 over for November. Keep to $1 a day from tomorrow to finish even.")
+                       "Heading about $180 over. Keep to $1 a day from tomorrow to finish even.")
     }
 
     func testNeededUnderADollarOrNothingLeftCopy() {
         // 0 < needed < $1: "under $1", never "less than $1" or "$0".
         XCTAssertEqual(line(.trackingOver, carryIn: -300, needed: Decimal(string: "0.5")!)?.text,
-                       "Heading about $180 over for November, counting the $300 you started behind. Keep to under $1 a day from tomorrow to finish even.")
+                       "Heading about $180 over, counting the $300 you started behind. Keep to under $1 a day from tomorrow to finish even.")
         XCTAssertEqual(line(.hardToRecover, carryIn: 0, needed: Decimal(string: "0.5")!)?.text,
-                       "Heading about $180 over for November. Finishing even takes under $1 a day, lighter than almost any week you've had lately.")
+                       "Heading about $180 over. Finishing even takes under $1 a day, lighter than almost any week you've had lately.")
         // needed <= 0 within the $1 tolerance of level 3: finishing even means no more spending.
-        let none = "Heading about $180 over for November, counting the $300 you started behind. Finishing even means no more spending this month."
+        let none = "Heading about $180 over, counting the $300 you started behind. Finishing even means no more spending this month."
         XCTAssertEqual(line(.trackingOver, carryIn: -300, needed: 0)?.text, none)
         XCTAssertEqual(line(.trackingOver, carryIn: -300, needed: Decimal(string: "-0.04")!)?.text, none)
         XCTAssertEqual(line(.hardToRecover, carryIn: -300, needed: Decimal(string: "-0.04")!)?.text, none)
         XCTAssertEqual(line(.trackingOver, carryIn: 0, carries: false, needed: 0)?.text,
-                       "Heading about $180 over for November. Finishing on budget means no more spending this month.")
+                       "Heading about $180 over. Finishing on budget means no more spending this month.")
         XCTAssertEqual(line(.hardToRecover, carryIn: 0, carries: false, needed: Decimal(string: "-0.5")!)?.text,
-                       "Heading about $180 over for November. Finishing on budget means no more spending this month.")
+                       "Heading about $180 over. Finishing on budget means no more spending this month.")
     }
 
     func testNeededWithinTheToleranceOfLevelThreeThroughResult() throws {
@@ -897,23 +682,23 @@ final class BudgetRecoveryCalculatorTests: XCTestCase {
         XCTAssertEqual(value.warning.level, .hardToRecover)
         XCTAssertLessThan(try XCTUnwrap(value.warning.neededDaily), 0)
         XCTAssertEqual(value.banner?.lines.last?.text,
-                       "Heading about $600 over for November. Finishing even means no more spending this month.")
+                       "Heading about $600 over. Finishing even means no more spending this month.")
         // Spent 2990 => (3000 - 2990) / 20 = 0.50 a day.
         XCTAssertEqual(result(input(today: date(2026, 11, 10), spent: 2990, projectedDelta: -600)).banner?.lines.last?.text,
-                       "Heading about $600 over for November. Keep to under $1 a day from tomorrow to finish even.")
+                       "Heading about $600 over. Keep to under $1 a day from tomorrow to finish even.")
         XCTAssertNil(line(.trackingOver, carryIn: -300)?.deficitPhrase)
     }
 
     func testHardToRecoverCopy() {
         let tail = " takes $18 a day, lighter than almost any week you've had lately."
         XCTAssertEqual(line(.hardToRecover, carryIn: 500, needed: 18, heading: 420)?.text,
-                       "Heading about $420 over for November, counting the $500 carried over. Finishing even" + tail)
+                       "Heading about $420 over, counting the $500 carried over. Finishing even" + tail)
         XCTAssertEqual(line(.hardToRecover, carryIn: -300, needed: 18, heading: 420)?.text,
-                       "Heading about $420 over for November, counting the $300 you started behind. Finishing even" + tail)
+                       "Heading about $420 over, counting the $300 you started behind. Finishing even" + tail)
         XCTAssertEqual(line(.hardToRecover, carryIn: Decimal(string: "-0.3")!, needed: 18, heading: 420)?.text,
-                       "Heading about $420 over for November. Finishing even" + tail)
+                       "Heading about $420 over. Finishing even" + tail)
         XCTAssertEqual(line(.hardToRecover, carryIn: 0, carries: false, needed: 18, heading: 420)?.text,
-                       "Heading about $420 over for November. Finishing on budget" + tail)
+                       "Heading about $420 over. Finishing on budget" + tail)
         XCTAssertNil(line(.hardToRecover, carryIn: 500)?.deficitPhrase)
     }
 
@@ -944,7 +729,7 @@ final class BudgetRecoveryCalculatorTests: XCTestCase {
         XCTAssertEqual(Calc.carryClause(Decimal(string: "0.5")!), " counting the $1 carried over")
     }
 
-    func testResetHeadlineAndTargetCopyThroughInsights() throws {
+    func testResetRecoveryCopyThroughInsights() throws {
         // Reset mode, Nov 2026 base 100: 14 days at 90 then $400 today on the 24th.
         let b = budget(start: date(2026, 11, 1), carries: false)
         var t = (10...23).map { txn(90, date(2026, 11, $0)) }
@@ -957,8 +742,9 @@ final class BudgetRecoveryCalculatorTests: XCTestCase {
         t.append(txn(500, date(2026, 11, 24)))
         let behind = try recoveryResult(b, t, on: date(2026, 11, 24))
         XCTAssertEqual(behind.recovery?.debt, 360)
+        // 360 behind: Nov 25-28 => back Nov 29, inside the month.
         XCTAssertEqual(behind.banner?.lines.first?.text,
-                       "At your usual $90 a day, you'll still be behind when your limit resets on the 1st.")
+                       "4 no-spend days from tomorrow get your full $100 limit back on Sun, Nov 29.")
     }
 
     func testDateCopyIsEnUS() {
@@ -987,54 +773,31 @@ extension BudgetRecoveryCalculatorTests {
         XCTAssertEqual(Calc.completedDays(lookback: 90, before: today, notBefore: date(2025, 1, 1), calendar: calendar).count, 90)
     }
 
-    func testUsualPaceCapUsesEachDaysOwnBaseAcrossAMonthBoundary() {
-        // 3100/month: Oct base 100 (cap 200), Nov base 103.33 (cap 206.67).
-        let today = date(2026, 11, 5)
-        let days: [Date: Decimal] = [date(2026, 10, 31): 1000, date(2026, 11, 2): 1000]
-        let usualDaily = try? XCTUnwrap(Calc.usualDailySpend(
-            spentByDay: days, today: today, budgetStartDay: date(2025, 1, 1), schedule: .monthly(3100), calendar: calendar
-        ))
-        var total = (usualDaily ?? 0) * 14
-        var rounded = Decimal()
-        NSDecimalRound(&rounded, &total, 2, .plain)
-        XCTAssertEqual(rounded, Decimal(string: "406.67")!)
-    }
-
     func testPointOfNoReturnOnTheFirstDayOfAFreshBudget() throws {
-        // Mirrors the budgetPointOfNoReturn UI scenario when it runs on the 1st: no history, so
-        // no usual pace and no reachable target; the banner is the level-3 line alone.
+        // Mirrors the budgetPointOfNoReturn UI scenario when it runs on the 1st: 3403.23 behind,
+        // Dec 2-31 and Jan 1-6 => back Jan 7.
         let b = budget(start: date(2026, 12, 1))
         let value = try recoveryResult(b, [txn(3500, date(2026, 12, 1, hour: 10))], on: date(2026, 12, 1, hour: 15))
         XCTAssertEqual(value.carryIn, 0)
-        XCTAssertEqual(value.recovery?.outcome, .unavailable)
-        XCTAssertNil(value.recovery?.target)
+        XCTAssertEqual(value.recovery?.outcome, .noSpend(days: 36, backOn: date(2027, 1, 7)))
         XCTAssertEqual(value.warning.level, .pointOfNoReturn)
         XCTAssertEqual(value.warning.overBy, 500)
         XCTAssertEqual(value.banner?.lines.map(\.text), [
+            "36 no-spend days from tomorrow get your full $97 limit back on Thu, Jan 7.",
             "December's budget is spent, $500 over. More spending this month carries into January.",
         ])
         XCTAssertEqual(value.banner?.isDeficit, true)
     }
 
     func testPointOfNoReturnScenarioOnTheLastDayOfTheMonth() throws {
-        // Same scenario on the 30th: 29 zero days give a usual pace of $0, recovery crosses the 1st.
+        // Same scenario on the 30th: 500 behind, Dec 1-6 => back Dec 7.
         let b = budget(start: date(2026, 11, 1))
         let value = try recoveryResult(b, [txn(3500, date(2026, 11, 30, hour: 10))], on: date(2026, 11, 30, hour: 15))
         XCTAssertEqual(value.warning.level, .pointOfNoReturn)
         let recovery = try XCTUnwrap(value.recovery)
         XCTAssertEqual(recovery.debt, 500)
-        XCTAssertEqual(recovery.usualDaily, 0)
-        // Dec base 96.77: 5 days = 483.87, 6 days = 580.65 => paid off Dec 6, back Dec 7.
-        XCTAssertEqual(recovery.outcome, .days(7, on: date(2026, 12, 7)))
-        XCTAssertTrue(recovery.crossesMonth)
+        XCTAssertEqual(recovery.outcome, .noSpend(days: 6, backOn: date(2026, 12, 7)))
         XCTAssertEqual(value.banner?.lines.count, 2)
-    }
-
-    func testResetModeLastDayWithoutUsualPaceHasNoTarget() {
-        let value = result(input(today: date(2026, 11, 30), boundary: .reset, debt: 50, start: date(2026, 11, 25)))
-        XCTAssertEqual(value.recovery?.outcome, .unavailable)
-        XCTAssertNil(value.recovery?.target)
-        XCTAssertNil(value.banner)
     }
 
     func testSaoPauloLookbackStartingOnTheSkippedMidnight() {
@@ -1046,10 +809,5 @@ extension BudgetRecoveryCalculatorTests {
         let days = Calc.completedDays(lookback: 14, before: today, notBefore: date(2018, 1, 1, in: cal), calendar: cal)
         XCTAssertEqual(days.count, 14)
         XCTAssertEqual(days.first, skipped)
-
-        var spend = history(40, days: 14, before: today, cal: cal)
-        spend[cal.startOfDay(for: date(2018, 11, 3, hour: 12, in: cal))] = 1000
-        XCTAssertEqual(Calc.usualDailySpend(spentByDay: spend, today: today, budgetStartDay: date(2018, 1, 1, in: cal),
-                                            schedule: .monthly(3000), calendar: cal), 40)
     }
 }
