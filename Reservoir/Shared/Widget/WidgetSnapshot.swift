@@ -26,6 +26,28 @@ struct WidgetSnapshot: Codable, Equatable, Sendable {
         /// Only present for an active budget; powers the medium widget's right half when
         /// there is no savings goal.
         var month: MonthProgress?
+        /// The one short recovery / warning line for this reference day, computed in the app
+        /// (reservoir-nka.2). Optional so snapshots written before it decode with no line;
+        /// adding it did not bump `version` (optional fields never do, see README).
+        var recovery: RecoveryLine?
+    }
+
+    /// One short line under the budget sub-line: how to get back to the full daily limit, or the
+    /// month warning. Text is final copy; the widget only picks a color from `tone`.
+    struct RecoveryLine: Codable, Equatable, Sendable {
+        enum Tone: String, Codable, Sendable {
+            /// "Over budget by $X".
+            case overBudget
+            /// "Tracking over" / "Hard to recover".
+            case warning
+            /// No-spend recovery and resets-to-full: normal primary text.
+            case neutral
+        }
+
+        var text: String
+        /// The chosen banner section in full (title, status and sentence), for VoiceOver.
+        var accessibilityText: String
+        var tone: Tone
     }
 
     /// One daily-limit tracker (the monthly budget, or the savings-goal limit).

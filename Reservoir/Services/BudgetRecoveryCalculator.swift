@@ -4,7 +4,7 @@ import Foundation
 /// behind needs before its full daily limit is back, and one month-level warning (tracking over,
 /// hard to recover, point of no return), composed into an at-most-two-section banner for Today. Pure: no SwiftData, no SwiftUI, nothing persisted; every
 /// input is a plain value resolved by `BudgetSummaryCalculator.insights`, which runs this only
-/// when the caller passes `includeRecovery: true` (Today; the widget will with reservoir-nka.2).
+/// when the caller passes `includeRecovery: true` (Today and the widget).
 ///
 /// Notation (all amounts in dollars, `tolerance` = `BudgetSummaryCalculator.rightOnTolerance`):
 /// - `C` (carry into the month) = `remaining - paceDelta` in carry mode (an exact identity with
@@ -66,6 +66,11 @@ enum BudgetRecoveryCalculator {
         /// The month section's level (the view tints by it); `nil` for the daily limit.
         var level: BudgetWarningLevel?
         var sentence: BudgetSummaryCalculator.ProgressSentence
+
+        /// Title, status and sentence, for VoiceOver (and the widget's accessibility label).
+        var accessibilityText: String {
+            ([title, status].compactMap { $0 }.joined(separator: ", ")) + ". " + sentence.text
+        }
     }
 
     /// Up to two sections, daily limit first; only a level-3 sentence sets `deficitPhrase` (the one
@@ -76,11 +81,7 @@ enum BudgetRecoveryCalculator {
         var lines: [BudgetSummaryCalculator.ProgressSentence] { sections.map(\.sentence) }
         var text: String { lines.map(\.text).joined(separator: " ") }
         /// Titles included, for VoiceOver.
-        var accessibilityText: String {
-            sections.map { section in
-                ([section.title, section.status].compactMap { $0 }.joined(separator: ", ")) + ". " + section.sentence.text
-            }.joined(separator: " ")
-        }
+        var accessibilityText: String { sections.map(\.accessibilityText).joined(separator: " ") }
         /// Unused by Today's view today; intentional API for reservoir-nka.3/nka.4.
         var isDeficit: Bool { lines.contains { $0.deficitPhrase != nil } }
     }
@@ -370,7 +371,7 @@ enum BudgetRecoveryCalculator {
     }
 
     /// A positive daily need rounded down; under a dollar reads "under $1" rather than "$0".
-    private static func neededText(_ amount: Decimal) -> String {
+    static func neededText(_ amount: Decimal) -> String {
         amount >= 1 ? BudgetSummaryCalculator.whole(BudgetSummaryCalculator.wholeDollars(amount, mode: .down)) : "under $1"
     }
 

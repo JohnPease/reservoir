@@ -68,19 +68,32 @@ enum WidgetSnapshotBuilder {
             calendar: calendar
         )
 
+        // One insights run per figures set feeds both the month progress and the recovery line.
+        let insights = model.flatMap { model in
+            BudgetSummaryCalculator.insights(
+                budget: budget,
+                transactions: transactions,
+                isAccountBackfillComplete: isAccountBackfillComplete,
+                referenceDate: referenceDate,
+                accountStore: accountStore,
+                itemStore: itemStore,
+                summary: model.summary,
+                includeRecovery: true,
+                calendar: calendar
+            )
+        }
+
         return WidgetSnapshot.Figures(
             budget: budgetSection(model),
             savings: savingsSummary.map(section) ?? .notSet,
             month: monthProgress(
                 budget: budget,
-                model: model,
+                insights: insights,
                 transactions: transactions,
-                isAccountBackfillComplete: isAccountBackfillComplete,
                 referenceDate: referenceDate,
-                calendar: calendar,
-                accountStore: accountStore,
-                itemStore: itemStore
-            )
+                calendar: calendar
+            ),
+            recovery: WidgetRecoveryLineFormatter.line(for: insights?.recovery, calendar: calendar)
         )
     }
 
@@ -99,26 +112,12 @@ enum WidgetSnapshotBuilder {
 
     private static func monthProgress(
         budget: Budget?,
-        model: BudgetCalculator.CardModel?,
+        insights: BudgetSummaryCalculator.BudgetInsights?,
         transactions: [SpendTransaction],
-        isAccountBackfillComplete: Bool,
         referenceDate: Date,
-        calendar: Calendar,
-        accountStore: LinkedAccountStoring,
-        itemStore: LinkedItemStoring
+        calendar: Calendar
     ) -> WidgetSnapshot.MonthProgress? {
-        guard let budget, let model,
-              let insights = BudgetSummaryCalculator.insights(
-                budget: budget,
-                transactions: transactions,
-                isAccountBackfillComplete: isAccountBackfillComplete,
-                referenceDate: referenceDate,
-                accountStore: accountStore,
-                itemStore: itemStore,
-                summary: model.summary,
-                calendar: calendar
-              )
-        else { return nil }
+        guard let budget, let insights else { return nil }
         return WidgetSnapshot.MonthProgress(
             monthName: monthName(for: referenceDate, calendar: calendar),
             sentence: insights.sentence.text,
