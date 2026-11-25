@@ -590,6 +590,7 @@ final class BudgetRecoveryCalculatorTests: XCTestCase {
         XCTAssertEqual(section?.kind, .month)
         XCTAssertEqual(section?.title, "November budget")
         XCTAssertEqual(section?.status, "Tracking over")
+        XCTAssertEqual(section?.level, .trackingOver)
         XCTAssertEqual(section?.sentence.text,
                        "Heading about $180 over, counting the $2,000 carried over. Keep to $174 a day from tomorrow to finish even.")
         XCTAssertEqual(value.banner?.isDeficit, false)
@@ -601,6 +602,7 @@ final class BudgetRecoveryCalculatorTests: XCTestCase {
         XCTAssertEqual(value.recovery?.outcome, .noSpend(days: 26, backOn: date(2026, 12, 7)))
         XCTAssertEqual(value.banner?.sections.map(\.kind), [.dailyLimit, .month])
         XCTAssertEqual(value.banner?.sections.map(\.status), [nil, "Over budget"])
+        XCTAssertEqual(value.banner?.sections.map(\.level), [nil, .pointOfNoReturn])
         XCTAssertEqual(value.banner?.lines.first?.deficitPhrase, nil)
         XCTAssertEqual(value.banner?.lines.last?.text, "November's budget is spent, $500 over. More spending this month carries into December.")
         XCTAssertEqual(value.banner?.isDeficit, true)

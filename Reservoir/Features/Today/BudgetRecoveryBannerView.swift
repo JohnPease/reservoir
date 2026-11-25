@@ -3,8 +3,9 @@ import SwiftUI
 /// Today's budget recovery banner (reservoir-nka.1): a card under the budget hero or tank with up
 /// to two titled sections, the daily limit (how many no-spend days until it is full again) and the
 /// month (one warning with a status chip), split by a divider so the two read as separate facts.
-/// Only the point-of-no-return phrase and its chip use `ReservoirDeficit`. Wording and composition
-/// come from `BudgetRecoveryCalculator`.
+/// The point-of-no-return phrase and its chip use `ReservoirDeficit`; a tracking-over section is
+/// in the lighter `ReservoirDropletDeficit`. Wording and composition come from
+/// `BudgetRecoveryCalculator`.
 struct BudgetRecoveryBannerView: View {
     let banner: BudgetRecoveryCalculator.Banner
 
@@ -25,10 +26,12 @@ struct BudgetRecoveryBannerView: View {
 
     private func sectionView(_ section: BudgetRecoveryCalculator.Section) -> some View {
         let isDeficit = section.sentence.deficitPhrase != nil
+        let isTrackingOver = section.level == .trackingOver
+        let tint = isDeficit ? "ReservoirDeficit" : (isTrackingOver ? "ReservoirDropletDeficit" : nil)
         return HStack(alignment: .firstTextBaseline, spacing: 10) {
             Image(systemName: section.kind == .dailyLimit ? "drop.fill" : "calendar")
                 .font(.subheadline)
-                .foregroundStyle(Color(isDeficit ? "ReservoirDeficit" : "ReservoirAccent"))
+                .foregroundStyle(Color(tint ?? "ReservoirAccent"))
                 .frame(width: 20)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
@@ -41,16 +44,16 @@ struct BudgetRecoveryBannerView: View {
                             .font(.caption2.weight(.semibold))
                             .padding(.horizontal, 8)
                             .padding(.vertical, 2)
-                            .foregroundStyle(Color(isDeficit ? "ReservoirDeficit" : "ReservoirTextPrimary"))
+                            .foregroundStyle(Color(tint ?? "ReservoirTextPrimary"))
                             .background(
-                                Color(isDeficit ? "ReservoirSurfaceDeficit" : "ReservoirSurfaceAccent"),
+                                Color(tint == nil ? "ReservoirSurfaceAccent" : "ReservoirSurfaceDeficit"),
                                 in: Capsule()
                             )
                     }
                 }
                 sentenceText(section.sentence)
                     .font(.subheadline)
-                    .foregroundStyle(Color("ReservoirTextPrimary"))
+                    .foregroundStyle(Color(isTrackingOver ? "ReservoirDropletDeficit" : "ReservoirTextPrimary"))
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
             }

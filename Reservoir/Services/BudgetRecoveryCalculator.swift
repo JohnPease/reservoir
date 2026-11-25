@@ -63,6 +63,8 @@ enum BudgetRecoveryCalculator {
         var title: String
         /// The month section's warning state ("Tracking over", ...); `nil` for the daily limit.
         var status: String?
+        /// The month section's level (the view tints by it); `nil` for the daily limit.
+        var level: BudgetWarningLevel?
         var sentence: BudgetSummaryCalculator.ProgressSentence
     }
 
@@ -278,14 +280,14 @@ enum BudgetRecoveryCalculator {
         var sections: [Section] = []
         if let recovery {
             sections.append(Section(
-                kind: .dailyLimit, title: "Daily limit", status: nil,
+                kind: .dailyLimit, title: "Daily limit", status: nil, level: nil,
                 sentence: plain(recoveryText(recovery, daysLeft: daysLeft, schedule: schedule, calendar: calendar))
             ))
         }
         let nextMonthStart = calendar.dateInterval(of: .month, for: today)?.end ?? today
         if let sentence = warningLine(warning, carryIn: carryIn, carries: carries, today: today, nextMonthStart: nextMonthStart, calendar: calendar) {
             sections.append(Section(
-                kind: .month, title: "\(monthName(today, calendar: calendar)) budget", status: status(warning.level),
+                kind: .month, title: "\(monthName(today, calendar: calendar)) budget", status: status(warning.level), level: warning.level,
                 sentence: sentence
             ))
         }
