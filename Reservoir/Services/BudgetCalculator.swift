@@ -60,6 +60,24 @@ enum BudgetCalculator {
         }
     }
 
+    /// Counted spend (`countingTransactions`) summed per `startOfDay`. The one day-bucketing of
+    /// budget spend; the month strip, month review and recovery lookbacks all read it.
+    static func countedSpendByDay(
+        _ transactions: [SpendTransaction],
+        for budget: Budget,
+        calendar: Calendar = .current
+    ) -> [Date: Decimal] {
+        countedSpendByDay(counted: countingTransactions(transactions, for: budget, calendar: calendar), calendar: calendar)
+    }
+
+    /// Buckets transactions that are already counted (`countingTransactions`' output) per
+    /// `startOfDay`, for callers that also need the counted list itself and shouldn't filter twice.
+    static func countedSpendByDay(counted: [SpendTransaction], calendar: Calendar = .current) -> [Date: Decimal] {
+        counted.reduce(into: [:]) { result, transaction in
+            result[calendar.startOfDay(for: transaction.date), default: 0] += transaction.amount
+        }
+    }
+
     // MARK: - DailyLimitCalculator mapping
 
     /// `effectiveStartDate` is exactly `budget.startDate` — no `createdAt` floor (unlike

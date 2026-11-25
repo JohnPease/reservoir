@@ -56,10 +56,7 @@ enum BudgetMonthStripCalculator {
         let firstMonthStart = calendar.dateInterval(of: .month, for: startDay)?.start ?? startDay
         guard monthInterval.start >= firstMonthStart, monthInterval.start <= currentMonthStart else { return nil }
 
-        var spentByDay: [Date: Decimal] = [:]
-        for transaction in BudgetCalculator.countingTransactions(transactions, for: budget, calendar: calendar) {
-            spentByDay[calendar.startOfDay(for: transaction.date), default: 0] += transaction.amount
-        }
+        let spentByDay = BudgetCalculator.countedSpendByDay(transactions, for: budget, calendar: calendar)
 
         let schedule = BaseSchedule.monthly(budget.monthlyAmount)
         let resetsOnFirst = !budget.carriesAcrossMonths

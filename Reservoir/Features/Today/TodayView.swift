@@ -103,8 +103,10 @@ struct TodayView: View {
         recentTransactionsQuery
     }
 
-    /// Pace sentence figures; Today renders only the sentence. Wording is in
-    /// `BudgetSummaryCalculator`.
+    /// Pace sentence and recovery banner figures; Today renders the sentence and the banner.
+    /// Wording is in `BudgetSummaryCalculator` / `BudgetRecoveryCalculator`. `model` must be this
+    /// render's `cardModel` (same budget, transactions, reference date and calendar), which the
+    /// carry in relies on.
     private func budgetInsights(_ model: BudgetCalculator.CardModel) -> BudgetSummaryCalculator.BudgetInsights? {
         BudgetSummaryCalculator.insights(
             budget: budgets.first,
@@ -112,6 +114,7 @@ struct TodayView: View {
             isAccountBackfillComplete: importService?.isAccountBackfillComplete ?? true,
             referenceDate: todayClock.referenceDate,
             summary: model.summary,
+            includeRecovery: true,
             calendar: calendar
         )
     }
@@ -129,14 +132,17 @@ struct TodayView: View {
             referenceDate: todayClock.referenceDate,
             calendar: calendar
         )
+        // Resolved once per render for the hero's sentence and the recovery banner, whichever
+        // layout shows them (nil unless the card is `.active`).
+        let insights = budgetModel.flatMap(budgetInsights)
 
         // Subscriptions are detected once per render and shared by the "Coming up" card and the
         // unusual-charge flags.
         let entries = transactions.map(CategorySpendCalculator.Entry.init)
         let recurring = RecurringChargeCalculator.detect(entries: entries, now: todayClock.referenceDate, calendar: calendar)
 
-        // The pieces, laid out by `ScreenLayout` below (reservoir-h2k).
-        let lead = leadContent(budgetModel: budgetModel, tank: nil)
+        // The pieces, laid out by `ScreenLayout` below (reservoir-h2k). The lead content is built
+        // per branch (with or without the tank), so the panes layout doesn't build an unused copy.
         let categories = CategorySummaryCard(transactions: transactions, referenceDate: todayClock.referenceDate)
         let recent = RecentTransactionsSection(
             transactions: recentTransactions,
@@ -159,7 +165,7 @@ struct TodayView: View {
                 case .column:
                     ScrollView {
                         VStack(spacing: 24) {
-                            lead
+                            leadContent(budgetModel: budgetModel, insights: insights, tank: nil)
                             categories
                             recent
                             upcoming
@@ -172,7 +178,7 @@ struct TodayView: View {
                     ScrollView {
                         VStack(spacing: 24) {
                             ZoneLabel(title: "Now")
-                            lead
+                            leadContent(budgetModel: budgetModel, insights: insights, tank: nil)
                             recent
                             addButton
                             FoldDivider()
@@ -189,7 +195,7 @@ struct TodayView: View {
                     HStack(alignment: .top, spacing: 0) {
                         ScrollView {
                             VStack(spacing: 24) {
-                                leadContent(budgetModel: budgetModel, tank: tankView(budgetModel: budgetModel))
+                                leadContent(budgetModel: budgetModel, insights: insights, tank: tankView(budgetModel: budgetModel))
                                 addButton
                             }
                             .padding()
@@ -239,7 +245,11 @@ struct TodayView: View {
     /// The lead content: the hero (or its tank, when `tank` is given), completion banners and the
     /// savings or no-goal states.
     @ViewBuilder
-    private func leadContent(budgetModel: BudgetCalculator.CardModel?, tank: TodayTankView?) -> some View {
+    private func leadContent(
+        budgetModel: BudgetCalculator.CardModel?,
+        insights: BudgetSummaryCalculator.BudgetInsights?,
+        tank: TodayTankView?
+    ) -> some View {
         VStack(spacing: 24) {
 
             if let tank {
@@ -248,9 +258,14 @@ struct TodayView: View {
                 BudgetHeroCardView(
                     state: budgetModel.state,
                     summary: budgetModel.summary,
-                    insights: budgetInsights(budgetModel),
+                    insights: insights,
                     onChooseAccounts: { tabSelection.selected = .goals }
                 )
+            }
+
+            // After the hero's progress sentence (or the tank), in every layout (reservoir-nka.1).
+            if let banner = insights?.recovery?.banner {
+                BudgetRecoveryBannerView(banner: banner)
             }
 
             ForEach(completedGoals, id: \.persistentModelID) { goal in

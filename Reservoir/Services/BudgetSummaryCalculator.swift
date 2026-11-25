@@ -7,7 +7,12 @@ import SwiftData
 /// §4's `*Calculator` exception); never SwiftUI. Pure functions of (budget, transactions,
 /// reference date, linked accounts/items) — nothing is persisted.
 ///
-/// Definitions (identical in carry and reset mode, because they are month-local):
+/// Recovery and month warnings (reservoir-nka.1) come from `BudgetRecoveryCalculator` when the
+/// caller opts in (`includeRecovery`), and the carry-mode projection text counts the carry into
+/// the month. Everything else is month-local.
+///
+/// Month-local definitions (the same in carry and reset mode; only the carry-mode projection
+/// text and the recovery warnings add the carry `C` on top of them):
 /// - `windowStart` = the later of the 1st of the reference month and `budget.startDate`.
 /// - `e` = days from `windowStart` through today, inclusive.
 /// - `spent` = counted spend (`BudgetCalculator.countsTowardBudget`) in that window.
@@ -24,8 +29,10 @@ enum BudgetSummaryCalculator {
 
     // MARK: - Output types
 
-    /// The Today/Plans progress sentence in three parts so a view can color only the
-    /// over-pace/over-budget phrase: `lead + deficitPhrase + tail`.
+    /// A sentence in three parts so a view can color one phrase: `lead + deficitPhrase + tail`.
+    /// The progress sentence is fully neutral (reservoir-nka.1) and never sets `deficitPhrase`;
+    /// the Today recovery banner reuses this shape and sets it only for its point-of-no-return
+    /// line (`BudgetRecoveryCalculator`).
     struct ProgressSentence: Codable, Equatable {
         var lead: String
         var deficitPhrase: String?
@@ -40,8 +47,13 @@ enum BudgetSummaryCalculator {
         var projectedMonthTotal: Decimal
         /// Budget for the window (monthly amount for a full month).
         var windowBudget: Decimal
-        /// Positive = projected under budget.
+        /// Month-local: `windowBudget - projectedMonthTotal`. Positive = projected under budget.
         var projectedDelta: Decimal
+        /// The carry the month started with (`BudgetRecoveryCalculator.carryIn`); 0 in reset mode.
+        var carryIn: Decimal
+        /// What the month is heading to finish at counting the carry: `projectedDelta + carryIn`
+        /// (equal to `projectedDelta` in reset mode). Positive = under. `text` reads this.
+        var finishDelta: Decimal
         var text: String
     }
 
@@ -85,13 +97,26 @@ enum BudgetSummaryCalculator {
         /// `nil` when hidden (a single selected account).
         var breakdown: Breakdown?
         var monthResult: MonthResult
+        /// No-spend days to recover, the month warning, and the Today banner (reservoir-nka.1).
+        /// `nil` unless the caller passed `includeRecovery: true` (Today does; Plans and the
+        /// widget don't, though the widget will opt in with reservoir-nka.2).
+        var recovery: BudgetRecoveryCalculator.Result?
     }
 
     // MARK: - Entry point
 
     /// `nil` when there is no budget, the card isn't `.active` (syncing / no accounts), or
-    /// the budget hasn't started yet. `summary` may be passed (already computed for the
-    /// card) to avoid a second full-window recompute.
+    /// the budget hasn't started yet.
+    ///
+    /// - Parameters:
+    ///   - summary: optional, to avoid a second full-window recompute. Precondition: it must be
+    ///     `BudgetCalculator.summary` for this same budget, `transactions`, `referenceDate` and
+    ///     `calendar` (every caller passes its `cardModel(...).summary` from the same render).
+    ///     The carry in (`remaining - paceDelta`) is only exact under that identity; a summary
+    ///     cached across midnight or a transaction change would silently skew it.
+    ///   - includeRecovery: run `BudgetRecoveryCalculator` (a lookback over counted spend) and
+    ///     fill `BudgetInsights.recovery`. Off by default; only Today asks for it (the widget
+    ///     will in reservoir-nka.2). The carry in for the projection is computed either way.
     static func insights(
         budget: Budget?,
         transactions: [SpendTransaction],
@@ -100,6 +125,7 @@ enum BudgetSummaryCalculator {
         linkedAccounts: [LinkedAccount],
         linkedItems: [LinkedItem],
         summary: TodayScreenCalculator.Summary? = nil,
+        includeRecovery: Bool = false,
         calendar: Calendar = .current
     ) -> BudgetInsights? {
         guard let budget,
@@ -155,14 +181,38 @@ enum BudgetSummaryCalculator {
             calendar: calendar
         )
 
+        let remaining = resolvedSummary?.remaining ?? paceDelta
+        let boundary: MonthBoundary = budget.carriesAcrossMonths ? .carry : .reset
+        let carryIn = BudgetRecoveryCalculator.carryIn(remaining: remaining, paceDelta: paceDelta, boundary: boundary)
+
         let projection = projection(
             elapsedDays: elapsedDays,
             dayOfMonth: dayOfMonth,
             daysInMonth: daysInMonth,
             spent: spent,
             spentToday: spentToday,
-            windowBudget: windowBudget
+            windowBudget: windowBudget,
+            carryIn: budget.carriesAcrossMonths ? carryIn : nil,
+            monthName: BudgetRecoveryCalculator.monthName(today, calendar: calendar)
         )
+
+        let recovery = includeRecovery ? BudgetRecoveryCalculator.result(
+            BudgetRecoveryCalculator.Input(
+                monthlyAmount: budget.monthlyAmount,
+                monthBoundary: boundary,
+                today: today,
+                remaining: remaining,
+                spent: spent,
+                windowBudget: windowBudget,
+                paceDelta: paceDelta,
+                projectedDelta: projection?.projectedDelta,
+                dayOfMonth: dayOfMonth,
+                daysInMonth: daysInMonth,
+                spentByDay: BudgetCalculator.countedSpendByDay(transactions, for: budget, calendar: calendar),
+                budgetStartDay: calendar.startOfDay(for: budget.startDate)
+            ),
+            calendar: calendar
+        ) : nil
 
         let breakdown = breakdown(
             budget: budget,
@@ -183,7 +233,8 @@ enum BudgetSummaryCalculator {
             sentence: sentence,
             projection: projection,
             breakdown: breakdown,
-            monthResult: MonthResult(budgeted: budgetedToDate, spent: spent, delta: paceDelta, endingCarry: endingCarry)
+            monthResult: MonthResult(budgeted: budgetedToDate, spent: spent, delta: paceDelta, endingCarry: endingCarry),
+            recovery: recovery
         )
     }
 
@@ -197,6 +248,7 @@ enum BudgetSummaryCalculator {
         accountStore: LinkedAccountStoring = LinkedAccountStore(),
         itemStore: LinkedItemStoring = LinkedItemStore(),
         summary: TodayScreenCalculator.Summary? = nil,
+        includeRecovery: Bool = false,
         calendar: Calendar = .current
     ) -> BudgetInsights? {
         guard budget != nil else { return nil }
@@ -208,6 +260,7 @@ enum BudgetSummaryCalculator {
             linkedAccounts: accountStore.loadAll(),
             linkedItems: itemStore.loadAll(),
             summary: summary,
+            includeRecovery: includeRecovery,
             calendar: calendar
         )
     }
@@ -217,7 +270,7 @@ enum BudgetSummaryCalculator {
     /// The clause appended on the 1st only; `nil` = nothing to append (carry of $0).
     static func firstOfMonthClause(budget: Budget, carry: Decimal) -> String? {
         guard budget.carriesAcrossMonths else { return " Fresh month, nothing carried over." }
-        let rounded = wholeDollarsValue(carry)
+        let rounded = wholeDollars(carry)
         if rounded > 0 { return " \(whole(carry)) carried over from last month." }
         if rounded < 0 { return " Starting \(whole(-carry)) in the hole from last month." }
         return nil
@@ -245,11 +298,13 @@ enum BudgetSummaryCalculator {
         // as the ordinary pace sentence instead of "$0 over". `windowBudget` is the whole
         // monthly amount for a full month, or the prorated window budget for a mid-month
         // start, whose copy says "period" because the budget isn't the full month's.
-        if spent - windowBudget >= rightOnTolerance {
+        // Fully neutral (reservoir-nka.1): no phrase is set apart for coloring.
+        if isOver(by: spent - windowBudget) {
             return ProgressSentence(
-                lead: prefix + "You've spent \(whole(spent)) of your \(whole(windowBudget)) budget" + (trackingSince == nil ? ", " : " for this period, "),
-                deficitPhrase: "\(whole(spent - windowBudget)) over" + (trackingSince == nil ? " for the month" : ""),
-                tail: "." + clause
+                lead: prefix + "You've spent \(whole(spent)) of your \(whole(windowBudget)) budget" + (trackingSince == nil ? ", " : " for this period, ")
+                    + "\(whole(spent - windowBudget)) over" + (trackingSince == nil ? " for the month" : "") + "." + clause,
+                deficitPhrase: nil,
+                tail: ""
             )
         }
         if spent == 0 && elapsedDays == 1 {
@@ -262,7 +317,7 @@ enum BudgetSummaryCalculator {
         if paceDelta > 0 {
             return ProgressSentence(lead: lead + "about \(whole(paceDelta)) under pace.", deficitPhrase: nil, tail: clause)
         }
-        return ProgressSentence(lead: lead, deficitPhrase: "about \(whole(-paceDelta)) over pace", tail: "." + clause)
+        return ProgressSentence(lead: lead + "about \(whole(-paceDelta)) over pace." + clause, deficitPhrase: nil, tail: "")
     }
 
     // MARK: - Projection
@@ -273,7 +328,9 @@ enum BudgetSummaryCalculator {
         daysInMonth: Int,
         spent: Decimal,
         spentToday: Decimal,
-        windowBudget: Decimal
+        windowBudget: Decimal,
+        carryIn: Decimal?,
+        monthName: String
     ) -> Projection? {
         let completedDays = elapsedDays - 1
         guard completedDays >= projectionMinimumCompletedDays, dayOfMonth < daysInMonth else { return nil }
@@ -281,15 +338,27 @@ enum BudgetSummaryCalculator {
         let rate = (spent - spentToday) / Decimal(completedDays)
         let projected = spent + rate * Decimal(daysInMonth - dayOfMonth)
         let delta = windowBudget - projected
-        let text: String
-        if abs(delta) < rightOnTolerance {
-            text = "At this pace you'll finish right on budget."
-        } else if delta > 0 {
-            text = "At this pace you'll finish about \(whole(delta)) under budget."
-        } else {
-            text = "At this pace you'll finish about \(whole(-delta)) over budget."
+        let finish = delta + (carryIn ?? 0)
+        return Projection(
+            dailyRate: rate, projectedMonthTotal: projected, windowBudget: windowBudget, projectedDelta: delta,
+            carryIn: carryIn ?? 0, finishDelta: finish,
+            text: projectionText(finishDelta: finish, carryIn: carryIn, monthName: monthName)
+        )
+    }
+
+    /// Reset mode (`carryIn == nil`): the month-local wording. Carry mode counts the carry the
+    /// month started with, in the month warning's style.
+    static func projectionText(finishDelta: Decimal, carryIn: Decimal?, monthName: String) -> String {
+        guard let carryIn else {
+            if abs(finishDelta) < rightOnTolerance { return "At this pace you'll finish right on budget." }
+            if finishDelta > 0 { return "At this pace you'll finish about \(whole(finishDelta)) under budget." }
+            return "At this pace you'll finish about \(whole(-finishDelta)) over budget."
         }
-        return Projection(dailyRate: rate, projectedMonthTotal: projected, windowBudget: windowBudget, projectedDelta: delta, text: text)
+        let clause = BudgetRecoveryCalculator.carryClause(carryIn)
+        let counting = clause.isEmpty ? "" : "," + clause
+        if abs(finishDelta) < rightOnTolerance { return "At this pace you'll finish \(monthName) even\(counting)." }
+        if finishDelta > 0 { return "At this pace you'll finish \(monthName) about \(whole(finishDelta)) under\(counting)." }
+        return "At this pace you'll finish \(monthName) about \(whole(-finishDelta)) over\(counting)."
     }
 
     // MARK: - Breakdown
@@ -345,7 +414,8 @@ enum BudgetSummaryCalculator {
 
     // MARK: - Helpers
 
-    private static func baseSum(_ schedule: BaseSchedule, from start: Date, days: Int, calendar: Calendar) -> Decimal {
+    /// Sum of the daily bases over `days` days from `start` (crossing month ends exactly).
+    static func baseSum(_ schedule: BaseSchedule, from start: Date, days: Int, calendar: Calendar) -> Decimal {
         guard days > 0 else { return 0 }
         return (0..<days).reduce(Decimal(0)) { total, offset in
             guard let day = calendar.date(byAdding: .day, value: offset, to: start) else { return total }
@@ -353,10 +423,20 @@ enum BudgetSummaryCalculator {
         }
     }
 
-    private static func wholeDollarsValue(_ amount: Decimal) -> Decimal {
+    /// Whether an overage reads as "over": at least `rightOnTolerance`, so a few cents over is
+    /// never "$0 over". Shared by the progress sentence and the point-of-no-return warning.
+    static func isOver(by overage: Decimal) -> Bool {
+        overage >= rightOnTolerance
+    }
+
+    /// `amount` rounded to whole dollars (`NSDecimalRound`, scale 0). `.plain` (the default)
+    /// rounds half away from zero, matching `whole(_:)`'s copy. `.down` rounds toward negative
+    /// infinity and is only used for non-negative "keep to" amounts, where rounding up could
+    /// tell someone they can spend a few cents more than they can.
+    static func wholeDollars(_ amount: Decimal, mode: NSDecimalNumber.RoundingMode = .plain) -> Decimal {
         var value = amount
         var rounded = Decimal()
-        NSDecimalRound(&rounded, &value, 0, .plain)
+        NSDecimalRound(&rounded, &value, 0, mode)
         return rounded
     }
 
@@ -371,12 +451,17 @@ enum BudgetSummaryCalculator {
         return formatter.string(from: amount as NSDecimalNumber) ?? "$\(amount)"
     }
 
-    private static func monthDay(_ date: Date, calendar: Calendar) -> String {
+    static func monthDay(_ date: Date, calendar: Calendar) -> String {
+        formatted(date, "MMM d", calendar: calendar)
+    }
+
+    /// en_US date copy in `calendar`'s zone, so copy and tests don't vary by device locale.
+    static func formatted(_ date: Date, _ pattern: String, calendar: Calendar) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US")
         formatter.calendar = calendar
         formatter.timeZone = calendar.timeZone
-        formatter.dateFormat = "MMM d"
+        formatter.dateFormat = pattern
         return formatter.string(from: date)
     }
 }

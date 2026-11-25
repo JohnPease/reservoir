@@ -270,14 +270,17 @@ and environment changes.
 **Budget insights** (reservoir-j8t PR3): `BudgetSummaryCalculator` (pure; SwiftData
 for model types only) resolves a single Codable `BudgetInsights` value that the
 views just render. Everything is month-local (calendar month, `Calendar.current`)
-and identical in carry and reset mode. `windowStart` is the later of the 1st of
+and identical in carry and reset mode, except where noted (the carry-mode projection
+text and the recovery warnings below count the carry). `windowStart` is the later of the 1st of
 the month and `budget.startDate`; `spent` is counted spend
 (`BudgetCalculator.countsTowardBudget`) from `windowStart` through today;
 `budgetedToDate` is the sum of the `BaseSchedule` daily bases over those days;
 `paceDelta = budgetedToDate - spent` (positive = under pace).
 - *Progress sentence* (Today budget hero and Plans card): "Day 14 of 31. You've
-  spent $1,240, about $60 under pace." (or "over pace" in `ReservoirDeficit`, or
-  "right on pace" within $1). Variants: "No spending yet this month." on day 1
+  spent $1,240, about $60 under pace." (or "over pace", or "right on pace" within
+  $1). The sentence is fully neutral text: since reservoir-nka.1 no part of it uses
+  `ReservoirDeficit` (the recovery banner carries the warning instead), and its
+  wording stays month-local. Variants: "No spending yet this month." on day 1
   with no spend; "(tracking since Oct 12)" for a mid-month start; "You've spent
   $3,150 of your $3,000 budget, $150 over for the month." once month spend
   exceeds the window budget by at least $1 (for a mid-month start the window budget
@@ -291,7 +294,37 @@ the month and `budget.startDate`; `spent` is counted spend
   days`; `projected = spent + rate * (days left in month)`, compared with the
   budget for the window (the monthly amount, or the sum of daily bases from a
   mid-month start). Hidden until `projectionMinimumCompletedDays` (7) days have
-  completed, and on the month's last day.
+  completed, and on the month's last day. `projectedDelta` stays month-local; in
+  carry mode the text reads `finishDelta = projectedDelta + carryIn` ("At this pace
+  you'll finish November about $180 over, counting the $300 you started behind." /
+  "...about $X under, counting the $500 carried over." / "...finish November even.");
+  reset mode keeps "...about $X over budget." / "right on budget."
+- *Recovery and month warnings* (reservoir-nka.1, Today only): `BudgetRecoveryCalculator`
+  (pure, no SwiftData/SwiftUI) runs only when a caller of `insights` passes
+  `includeRecovery: true` (Today does; Plans doesn't; the widget will opt in with
+  reservoir-nka.2) and is returned as the optional `BudgetInsights.recovery`. Carry
+  into the month `C = remaining - paceDelta` (carry mode; an exact identity with the
+  carry walk, so no new walk, which is why a passed-in `summary` must match the same
+  reference date and transactions) or 0 (reset); the carry-aware projection computes
+  it either way. When today's remaining is at least $1 negative, it counts the no-spend
+  days needed to get the full daily limit back: from tomorrow it adds each day's base
+  (following the schedule into later months) until the sum covers the debt, and names
+  the day after the last one ("3 no-spend days from tomorrow get your full $100 limit
+  back on Sat, Nov 14."). In reset mode, when that day would be on or after the 1st it
+  says the reset clears it instead ("You'd need 8 no-spend days to catch up, but your
+  limit resets to full on Dec 1."). One month warning at a time (`BudgetWarningLevel`,
+  highest wins): *tracking over* (projection + carry at least $1 over), *hard to
+  recover* (finishing even needs less a day than the 10th-percentile rolling 7-day
+  average of the last 90 days, computed only once tracking over holds; needs 28 days of
+  history), *point of no return* (month spend past the window budget plus the carry by
+  at least $1; its bold phrase is the only `ReservoirDeficit` text, while a tracking-over section is tinted the lighter `ReservoirDropletDeficit`, e.g. "November's
+  budget can't cover the $300 you started behind, $50 over."). Within $1 of that point
+  the other warnings say "Finishing even means no more spending this month." or "Keep
+  to under $1 a day". In carry mode the warnings count the carried-over surplus or debt.
+  Rendered by `Features/Today/BudgetRecoveryBannerView.swift` as a card (id
+  `today.recoveryBanner`) under the hero or tank in every Today layout, with up to two
+  sections split by a divider: "Daily limit" (the no-spend count) and "November budget"
+  with a status chip (Tracking over / Hard to recover / Over budget) and the warning.
 - *Per-account breakdown* (Plans card only): this month's counted spend per
   selected account, highest first, zero-spend accounts included; names/masks come
   from `LinkedAccountStore` ("Unknown account" if the account's item is still
@@ -1295,6 +1328,15 @@ spend today on the home screen (small, medium) and lock screen
   savings one; the Plans card adds an end-of-month projection and a per-account
   spend breakdown. See
   "Monthly budget" under Architecture above.
+- **Budget recovery and month warnings** (reservoir-nka.1, implemented): when
+  today's budget is overspent, Today says how many no-spend days get the full
+  daily limit back (or, in reset mode, that the reset on the 1st clears it first);
+  and one month warning when the month
+  is tracking over, hard to recover, or already spent. In Carry over mode the
+  warnings and the Plans projection count what was carried over or started
+  behind. The pace sentence is now neutral text; only the point-of-no-return phrase
+  is red.
+  See "Budget insights" under Architecture above.
 - **Goals screen** (implemented): active-goal cards with a progress bar,
   target/start dates, and a per-card Pace/Simulation toggle for "at current
   pace" projections; completed-but-undismissed goals with the same banner as
