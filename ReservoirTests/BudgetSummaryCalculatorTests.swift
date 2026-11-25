@@ -70,14 +70,15 @@ final class BudgetSummaryCalculatorTests: XCTestCase {
         XCTAssertNil(result.sentence.deficitPhrase)
     }
 
-    func testOverPaceHighlightsOnlyThePhrase() throws {
+    func testOverPaceSentenceIsNeutral() throws {
+        // reservoir-nka.1: same wording, but no phrase is set apart for deficit coloring.
         let b = budget(start: date(2026, 9, 1))
         let t = [txn(560, date(2026, 10, 3))]
         let result = try XCTUnwrap(insights(b, t, on: date(2026, 10, 4)))
         XCTAssertEqual(result.sentence.text, "Day 4 of 31. You've spent $560, about $160 over pace.")
-        XCTAssertEqual(result.sentence.deficitPhrase, "about $160 over pace")
-        XCTAssertEqual(result.sentence.lead, "Day 4 of 31. You've spent $560, ")
-        XCTAssertEqual(result.sentence.tail, ".")
+        XCTAssertNil(result.sentence.deficitPhrase)
+        XCTAssertEqual(result.sentence.lead, result.sentence.text)
+        XCTAssertEqual(result.sentence.tail, "")
     }
 
     func testRightOnPaceWithinOneDollar() throws {
@@ -126,7 +127,7 @@ final class BudgetSummaryCalculatorTests: XCTestCase {
         let t = [txn(3150, date(2026, 10, 10))]
         let result = try XCTUnwrap(insights(b, t, on: date(2026, 10, 22)))
         XCTAssertEqual(result.sentence.text, "Day 22 of 31. You've spent $3,150 of your $3,000 budget, $150 over for the month.")
-        XCTAssertEqual(result.sentence.deficitPhrase, "$150 over for the month")
+        XCTAssertNil(result.sentence.deficitPhrase)
     }
 
     func testFewCentsOverBudgetReadsAsPaceNotZeroDollarsOver() throws {
@@ -142,7 +143,8 @@ final class BudgetSummaryCalculatorTests: XCTestCase {
         let b = budget(monthly: 3100, start: date(2026, 10, 1))
         let spend = txn(3101, date(2026, 10, 20))
         let result = try XCTUnwrap(insights(b, [spend], on: date(2026, 10, 31)))
-        XCTAssertEqual(result.sentence.deficitPhrase, "$1 over for the month")
+        XCTAssertTrue(result.sentence.text.hasSuffix("$1 over for the month."), result.sentence.text)
+        XCTAssertNil(result.sentence.deficitPhrase)
     }
 
     func testMidMonthStartOverBudgetComparesAgainstProratedWindowBudget() throws {
@@ -155,7 +157,7 @@ final class BudgetSummaryCalculatorTests: XCTestCase {
             result.sentence.text,
             "Day 14 of 31 (tracking since Oct 12). You've spent $2,500 of your $2,000 budget for this period, $500 over."
         )
-        XCTAssertEqual(result.sentence.deficitPhrase, "$500 over")
+        XCTAssertNil(result.sentence.deficitPhrase)
     }
 
     func testMidMonthStartUnderProratedBudgetKeepsPaceSentence() throws {
@@ -171,7 +173,7 @@ final class BudgetSummaryCalculatorTests: XCTestCase {
         let b = budget(monthly: 3100, start: date(2026, 10, 10))
         let t = [txn(2300, date(2026, 10, 11))]
         let result = try XCTUnwrap(insights(b, t, on: date(2026, 10, 17)))
-        XCTAssertEqual(result.sentence.deficitPhrase, "$100 over")
+        XCTAssertTrue(result.sentence.text.hasSuffix("$100 over."), result.sentence.text)
         XCTAssertEqual(result.projection?.windowBudget, 2200)
         XCTAssertTrue(try XCTUnwrap(result.projection).projectedDelta < 0)
     }
@@ -301,7 +303,7 @@ final class BudgetSummaryCalculatorTests: XCTestCase {
     func testProjectionNumbers() throws {
         // Spent 80/day through the 7th, 500 today (day 8). rate = 7*80/7 = 80.
         // projected = (560 + 500) + 80 * 23 = 2900; budget 3100 => 200 under.
-        let b = budget(monthly: 3100, start: date(2026, 9, 1))
+        let b = budget(monthly: 3100, start: date(2026, 9, 1), carries: false)
         var t = spendThrough(day: 7, daily: 80)
         t.append(txn(500, date(2026, 10, 8)))
         let projection = try XCTUnwrap(insights(b, t, on: date(2026, 10, 8))?.projection)
@@ -309,11 +311,13 @@ final class BudgetSummaryCalculatorTests: XCTestCase {
         XCTAssertEqual(projection.projectedMonthTotal, 2900)
         XCTAssertEqual(projection.windowBudget, 3100)
         XCTAssertEqual(projection.projectedDelta, 200)
+        XCTAssertEqual(projection.carryIn, 0)
+        XCTAssertEqual(projection.finishDelta, 200)
         XCTAssertEqual(projection.text, "At this pace you'll finish about $200 under budget.")
     }
 
     func testProjectionOverAndRightOn() throws {
-        let b = budget(monthly: 3100, start: date(2026, 9, 1))
+        let b = budget(monthly: 3100, start: date(2026, 9, 1), carries: false)
         let over = spendThrough(day: 8, daily: 150)
         // rate 150; projected 1200 + 150*23 = 4650; over 1550
         XCTAssertEqual(try XCTUnwrap(insights(b, over, on: date(2026, 10, 8))?.projection).text,
@@ -339,9 +343,73 @@ final class BudgetSummaryCalculatorTests: XCTestCase {
         XCTAssertEqual(projection.dailyRate, 100)
         // spent 800 + 100 * 14 = 2200 => right on
         XCTAssertEqual(projection.projectedMonthTotal, 2200)
-        XCTAssertEqual(projection.text, "At this pace you'll finish right on budget.")
+        // Carry mode, started this month: nothing carried, so no clause.
+        XCTAssertEqual(projection.text, "At this pace you'll finish October even.")
         // 6 completed days => hidden
         XCTAssertNil(try XCTUnwrap(insights(b, t, on: date(2026, 10, 16))).projection)
+    }
+
+    // MARK: - Carry-aware projection (reservoir-nka.1)
+
+    func testCarryModeProjectionCountsTheCarry() throws {
+        // September at 3100/month; October 100/day. Spending 100/day in October projects even
+        // month-locally, so the finish is the carry alone.
+        let t = spendThrough(day: 8, daily: 100)
+        let behind = budget(monthly: 3100, start: date(2026, 9, 1))
+        let behindSpend = t + [txn(3400, date(2026, 9, 10))]
+        let p1 = try XCTUnwrap(insights(behind, behindSpend, on: date(2026, 10, 8))?.projection)
+        XCTAssertEqual(p1.projectedDelta, 0)
+        XCTAssertEqual(p1.carryIn, -300)
+        XCTAssertEqual(p1.finishDelta, -300)
+        XCTAssertEqual(p1.text, "At this pace you'll finish October about $300 over, counting the $300 you started behind.")
+
+        let ahead = budget(monthly: 3100, start: date(2026, 9, 1))
+        let p2 = try XCTUnwrap(insights(ahead, t + [txn(2600, date(2026, 9, 10))], on: date(2026, 10, 8))?.projection)
+        XCTAssertEqual(p2.text, "At this pace you'll finish October about $500 under, counting the $500 carried over.")
+
+        let even = budget(monthly: 3100, start: date(2026, 9, 1))
+        let p3 = try XCTUnwrap(insights(even, t + [txn(3100, date(2026, 9, 10))], on: date(2026, 10, 8))?.projection)
+        XCTAssertEqual(p3.text, "At this pace you'll finish October even.")
+
+        // Over month-locally but the carry covers it: $1,550 over less $3,100 carried = $1,550 under.
+        let covered = budget(monthly: 3100, start: date(2026, 9, 1))
+        let p4 = try XCTUnwrap(insights(covered, spendThrough(day: 8, daily: 150), on: date(2026, 10, 8))?.projection)
+        XCTAssertEqual(p4.projectedDelta, -1550)
+        XCTAssertEqual(p4.text, "At this pace you'll finish October about $1,550 under, counting the $3,100 carried over.")
+    }
+
+    func testProjectionTextVariants() {
+        XCTAssertEqual(BudgetSummaryCalculator.projectionText(finishDelta: Decimal(string: "0.5")!, carryIn: 500, monthName: "October"),
+                       "At this pace you'll finish October even, counting the $500 carried over.")
+        XCTAssertEqual(BudgetSummaryCalculator.projectionText(finishDelta: -180, carryIn: Decimal(string: "0.2")!, monthName: "October"),
+                       "At this pace you'll finish October about $180 over.")
+        // Reset mode keeps the month-local wording.
+        XCTAssertEqual(BudgetSummaryCalculator.projectionText(finishDelta: -180, carryIn: nil, monthName: "October"),
+                       "At this pace you'll finish about $180 over budget.")
+        XCTAssertEqual(BudgetSummaryCalculator.projectionText(finishDelta: 0, carryIn: nil, monthName: "October"),
+                       "At this pace you'll finish right on budget.")
+    }
+
+    func testResetModeProjectionIgnoresAnyCarry() throws {
+        let b = budget(monthly: 3100, start: date(2026, 9, 1), carries: false)
+        let t = spendThrough(day: 8, daily: 100) + [txn(3400, date(2026, 9, 10))]
+        let p = try XCTUnwrap(insights(b, t, on: date(2026, 10, 8))?.projection)
+        XCTAssertEqual(p.carryIn, 0)
+        XCTAssertEqual(p.text, "At this pace you'll finish right on budget.")
+    }
+
+    func testWidgetSentenceStringIsUnchanged() throws {
+        // The widget reads `sentence.text`; dropping the colored phrase must not change it.
+        let b = budget(monthly: 3000, start: date(2026, 9, 1))
+        let result = try XCTUnwrap(insights(b, [txn(3150, date(2026, 10, 10))], on: date(2026, 10, 22)))
+        XCTAssertEqual(result.sentence.text, "Day 22 of 31. You've spent $3,150 of your $3,000 budget, $150 over for the month.")
+    }
+
+    func testWholeDollarsDownAndIsOver() {
+        XCTAssertEqual(BudgetSummaryCalculator.wholeDollarsDown(Decimal(string: "59.99")!), 59)
+        XCTAssertEqual(BudgetSummaryCalculator.wholeDollarsDown(62), 62)
+        XCTAssertFalse(BudgetSummaryCalculator.isOver(by: Decimal(string: "0.99")!))
+        XCTAssertTrue(BudgetSummaryCalculator.isOver(by: 1))
     }
 
     // MARK: - Months

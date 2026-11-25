@@ -23,6 +23,23 @@ final class BudgetUITests: XCTestCase {
         field.typeText(value)
     }
 
+    // MARK: - Recovery banner (reservoir-nka.1)
+
+    func testRecoveryBannerShowsOnTodayInColumnAndPanes() {
+        let app = launchedApp(scenario: "budgetPointOfNoReturn", seedAccount: true)
+        let banner = app.descendants(matching: .any)["today.recoveryBanner"]
+        XCTAssertTrue(banner.waitForExistence(timeout: 5), "column layout")
+        XCTAssertTrue(banner.label.contains("budget is spent"), banner.label)
+
+        // Panes: same setup as LandscapeUITests (rotate, let the animation settle).
+        XCUIDevice.shared.orientation = .landscapeLeft
+        defer { XCUIDevice.shared.orientation = .portrait }
+        Thread.sleep(forTimeInterval: 1.5)
+        XCTAssertTrue(app.descendants(matching: .any)["today.tank"].waitForExistence(timeout: 5), "panes layout")
+        XCTAssertTrue(banner.waitForExistence(timeout: 5), "panes layout")
+        XCTAssertTrue(banner.label.contains("budget is spent"), banner.label)
+    }
+
     func testPlansShowsTheMonthStrip() {
         let app = launchedApp(scenario: "budgetSeeded", seedAccount: true)
         app.tabBars.buttons["Plans"].tap()

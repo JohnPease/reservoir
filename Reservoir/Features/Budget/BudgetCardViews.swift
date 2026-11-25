@@ -189,25 +189,20 @@ struct BudgetSetRowView: View {
     }
 }
 
-/// The pace sentence; only the over-pace / over-budget phrase uses `ReservoirDeficit`.
-/// Wording and the three-part split come from `BudgetSummaryCalculator`.
+/// The pace sentence, fully neutral (reservoir-nka.1): no phrase uses `ReservoirDeficit`, even
+/// "over pace" or "over for the month"; the Today recovery banner carries the warning instead.
+/// Wording comes from `BudgetSummaryCalculator`.
 struct BudgetProgressSentenceView: View {
     let sentence: BudgetSummaryCalculator.ProgressSentence
 
     var body: some View {
-        Group {
-            if let deficit = sentence.deficitPhrase {
-                Text(sentence.lead) + Text(deficit).foregroundColor(Color("ReservoirDeficit")) + Text(sentence.tail)
-            } else {
-                Text(sentence.text)
-            }
-        }
-        .font(.subheadline)
-        .foregroundStyle(Color("ReservoirTextSecondary"))
-        .multilineTextAlignment(.leading)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(sentence.text)
-        .accessibilityIdentifier("budget.progressSentence")
+        Text(sentence.text)
+            .font(.subheadline)
+            .foregroundStyle(Color("ReservoirTextSecondary"))
+            .multilineTextAlignment(.leading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(sentence.text)
+            .accessibilityIdentifier("budget.progressSentence")
     }
 }
 

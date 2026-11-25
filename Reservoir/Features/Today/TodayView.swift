@@ -240,6 +240,8 @@ struct TodayView: View {
     /// savings or no-goal states.
     @ViewBuilder
     private func leadContent(budgetModel: BudgetCalculator.CardModel?, tank: TodayTankView?) -> some View {
+        // Resolved once for both the hero's sentence and the recovery banner (nil unless `.active`).
+        let insights = budgetModel.flatMap(budgetInsights)
         VStack(spacing: 24) {
 
             if let tank {
@@ -248,9 +250,14 @@ struct TodayView: View {
                 BudgetHeroCardView(
                     state: budgetModel.state,
                     summary: budgetModel.summary,
-                    insights: budgetInsights(budgetModel),
+                    insights: insights,
                     onChooseAccounts: { tabSelection.selected = .goals }
                 )
+            }
+
+            // After the hero's progress sentence (or the tank), in every layout (reservoir-nka.1).
+            if let banner = insights?.recovery.banner {
+                BudgetRecoveryBannerView(banner: banner)
             }
 
             ForEach(completedGoals, id: \.persistentModelID) { goal in

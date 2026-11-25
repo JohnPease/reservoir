@@ -86,6 +86,11 @@ enum UITestScenario: String {
     /// two completed months (reservoir-62p).
     case budgetPastMonths
 
+    /// A $3,000 budget on "uitest-account" starting the 1st of this month and one $3,500 imported
+    /// charge today, so the month's budget is spent on any date: Today shows the recovery banner
+    /// with its point-of-no-return line (reservoir-nka.1). Pair with `UITEST_SEED_LINKED_ACCOUNT=1`.
+    case budgetPointOfNoReturn
+
     /// Categorized history for Today's category card, "higher than usual" callout and "Coming up"
     /// card (reservoir-qj2, reservoir-nm8): Entertainment $30 in each of the three months before
     /// this one and $120 this month, and a $15 monthly "Streaming Co" charge whose next one is due
@@ -536,6 +541,23 @@ enum UITestScenario: String {
                 type: .variable,
                 entryMethod: .imported,
                 plaidTransactionID: "uitest-budget-txn",
+                plaidItemID: "uitest-item",
+                plaidAccountID: "uitest-account"
+            ))
+
+        case .budgetPointOfNoReturn:
+            context.insert(Budget(
+                monthlyAmount: 3000,
+                startDate: BudgetValidator.defaultStartDate(referenceDate: .now),
+                selectedAccountIDs: ["uitest-account"]
+            ))
+            context.insert(SpendTransaction(
+                amount: 3500,
+                date: .now,
+                merchantName: "Big Purchase",
+                type: .variable,
+                entryMethod: .imported,
+                plaidTransactionID: "uitest-budget-big-txn",
                 plaidItemID: "uitest-item",
                 plaidAccountID: "uitest-account"
             ))

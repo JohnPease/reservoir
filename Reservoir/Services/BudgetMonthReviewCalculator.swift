@@ -76,10 +76,7 @@ enum BudgetMonthReviewCalculator {
         else { return [] }
 
         let counting = BudgetCalculator.countingTransactions(transactions, for: budget, calendar: calendar)
-        var spentByDay: [Date: Decimal] = [:]
-        for transaction in counting {
-            spentByDay[calendar.startOfDay(for: transaction.date), default: 0] += transaction.amount
-        }
+        let spentByDay = BudgetCalculator.countedSpendByDay(transactions, for: budget, calendar: calendar)
 
         var categorySpendByMonth: [Date: [String: Decimal]] = [:]
         for transaction in counting {
