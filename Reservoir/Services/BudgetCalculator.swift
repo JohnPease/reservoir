@@ -67,7 +67,13 @@ enum BudgetCalculator {
         for budget: Budget,
         calendar: Calendar = .current
     ) -> [Date: Decimal] {
-        countingTransactions(transactions, for: budget, calendar: calendar).reduce(into: [:]) { result, transaction in
+        countedSpendByDay(counted: countingTransactions(transactions, for: budget, calendar: calendar), calendar: calendar)
+    }
+
+    /// Buckets transactions that are already counted (`countingTransactions`' output) per
+    /// `startOfDay`, for callers that also need the counted list itself and shouldn't filter twice.
+    static func countedSpendByDay(counted: [SpendTransaction], calendar: Calendar = .current) -> [Date: Decimal] {
+        counted.reduce(into: [:]) { result, transaction in
             result[calendar.startOfDay(for: transaction.date), default: 0] += transaction.amount
         }
     }

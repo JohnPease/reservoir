@@ -405,9 +405,13 @@ final class BudgetSummaryCalculatorTests: XCTestCase {
         XCTAssertEqual(result.sentence.text, "Day 22 of 31. You've spent $3,150 of your $3,000 budget, $150 over for the month.")
     }
 
-    func testWholeDollarsDownAndIsOver() {
-        XCTAssertEqual(BudgetSummaryCalculator.wholeDollarsDown(Decimal(string: "59.99")!), 59)
-        XCTAssertEqual(BudgetSummaryCalculator.wholeDollarsDown(62), 62)
+    func testWholeDollarsRoundingModesAndIsOver() {
+        XCTAssertEqual(BudgetSummaryCalculator.wholeDollars(Decimal(string: "59.99")!, mode: .down), 59)
+        XCTAssertEqual(BudgetSummaryCalculator.wholeDollars(62, mode: .down), 62)
+        XCTAssertEqual(BudgetSummaryCalculator.wholeDollars(Decimal(string: "0.5")!), 1)
+        XCTAssertEqual(BudgetSummaryCalculator.wholeDollars(Decimal(string: "-0.5")!), -1)
+        XCTAssertEqual(BudgetSummaryCalculator.wholeDollars(Decimal(string: "0.49")!), 0)
+        XCTAssertEqual(BudgetSummaryCalculator.wholeDollars(Decimal(string: "59.99")!), 60)
         XCTAssertFalse(BudgetSummaryCalculator.isOver(by: Decimal(string: "0.99")!))
         XCTAssertTrue(BudgetSummaryCalculator.isOver(by: 1))
     }

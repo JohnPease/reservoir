@@ -7,10 +7,12 @@ import SwiftData
 /// §4's `*Calculator` exception); never SwiftUI. Pure functions of (budget, transactions,
 /// reference date, linked accounts/items) — nothing is persisted.
 ///
-/// Recovery and month warnings (reservoir-nka.1) come from `BudgetRecoveryCalculator`, and the
-/// carry-mode projection text counts the carry into the month; everything else is month-local.
+/// Recovery and month warnings (reservoir-nka.1) come from `BudgetRecoveryCalculator` when the
+/// caller opts in (`includeRecovery`), and the carry-mode projection text counts the carry into
+/// the month. Everything else is month-local.
 ///
-/// Definitions (identical in carry and reset mode, because they are month-local):
+/// Month-local definitions (the same in carry and reset mode; only the carry-mode projection
+/// text and the recovery warnings add the carry `C` on top of them):
 /// - `windowStart` = the later of the 1st of the reference month and `budget.startDate`.
 /// - `e` = days from `windowStart` through today, inclusive.
 /// - `spent` = counted spend (`BudgetCalculator.countsTowardBudget`) in that window.
@@ -96,14 +98,25 @@ enum BudgetSummaryCalculator {
         var breakdown: Breakdown?
         var monthResult: MonthResult
         /// Recovery at the usual pace, the month warning, and the Today banner (reservoir-nka.1).
-        var recovery: BudgetRecoveryCalculator.Result
+        /// `nil` unless the caller passed `includeRecovery: true` (Today does; Plans and the
+        /// widget don't, though the widget will opt in with reservoir-nka.2).
+        var recovery: BudgetRecoveryCalculator.Result?
     }
 
     // MARK: - Entry point
 
     /// `nil` when there is no budget, the card isn't `.active` (syncing / no accounts), or
-    /// the budget hasn't started yet. `summary` may be passed (already computed for the
-    /// card) to avoid a second full-window recompute.
+    /// the budget hasn't started yet.
+    ///
+    /// - Parameters:
+    ///   - summary: optional, to avoid a second full-window recompute. Precondition: it must be
+    ///     `BudgetCalculator.summary` for this same budget, `transactions`, `referenceDate` and
+    ///     `calendar` (every caller passes its `cardModel(...).summary` from the same render).
+    ///     The carry in (`remaining - paceDelta`) is only exact under that identity; a summary
+    ///     cached across midnight or a transaction change would silently skew it.
+    ///   - includeRecovery: run `BudgetRecoveryCalculator` (a lookback over counted spend) and
+    ///     fill `BudgetInsights.recovery`. Off by default; only Today asks for it (the widget
+    ///     will in reservoir-nka.2). The carry in for the projection is computed either way.
     static func insights(
         budget: Budget?,
         transactions: [SpendTransaction],
@@ -112,6 +125,7 @@ enum BudgetSummaryCalculator {
         linkedAccounts: [LinkedAccount],
         linkedItems: [LinkedItem],
         summary: TodayScreenCalculator.Summary? = nil,
+        includeRecovery: Bool = false,
         calendar: Calendar = .current
     ) -> BudgetInsights? {
         guard let budget,
@@ -182,7 +196,7 @@ enum BudgetSummaryCalculator {
             monthName: BudgetRecoveryCalculator.monthName(today, calendar: calendar)
         )
 
-        let recovery = BudgetRecoveryCalculator.result(
+        let recovery = includeRecovery ? BudgetRecoveryCalculator.result(
             BudgetRecoveryCalculator.Input(
                 monthlyAmount: budget.monthlyAmount,
                 monthBoundary: boundary,
@@ -190,7 +204,6 @@ enum BudgetSummaryCalculator {
                 remaining: remaining,
                 spent: spent,
                 windowBudget: windowBudget,
-                budgetedToDate: budgetedToDate,
                 paceDelta: paceDelta,
                 projectedDelta: projection?.projectedDelta,
                 dayOfMonth: dayOfMonth,
@@ -199,7 +212,7 @@ enum BudgetSummaryCalculator {
                 budgetStartDay: calendar.startOfDay(for: budget.startDate)
             ),
             calendar: calendar
-        )
+        ) : nil
 
         let breakdown = breakdown(
             budget: budget,
@@ -235,6 +248,7 @@ enum BudgetSummaryCalculator {
         accountStore: LinkedAccountStoring = LinkedAccountStore(),
         itemStore: LinkedItemStoring = LinkedItemStore(),
         summary: TodayScreenCalculator.Summary? = nil,
+        includeRecovery: Bool = false,
         calendar: Calendar = .current
     ) -> BudgetInsights? {
         guard budget != nil else { return nil }
@@ -246,6 +260,7 @@ enum BudgetSummaryCalculator {
             linkedAccounts: accountStore.loadAll(),
             linkedItems: itemStore.loadAll(),
             summary: summary,
+            includeRecovery: includeRecovery,
             calendar: calendar
         )
     }
@@ -255,7 +270,7 @@ enum BudgetSummaryCalculator {
     /// The clause appended on the 1st only; `nil` = nothing to append (carry of $0).
     static func firstOfMonthClause(budget: Budget, carry: Decimal) -> String? {
         guard budget.carriesAcrossMonths else { return " Fresh month, nothing carried over." }
-        let rounded = wholeDollarsValue(carry)
+        let rounded = wholeDollars(carry)
         if rounded > 0 { return " \(whole(carry)) carried over from last month." }
         if rounded < 0 { return " Starting \(whole(-carry)) in the hole from last month." }
         return nil
@@ -414,19 +429,14 @@ enum BudgetSummaryCalculator {
         overage >= rightOnTolerance
     }
 
-    static func wholeDollarsValue(_ amount: Decimal) -> Decimal {
+    /// `amount` rounded to whole dollars (`NSDecimalRound`, scale 0). `.plain` (the default)
+    /// rounds half away from zero, matching `whole(_:)`'s copy. `.down` rounds toward negative
+    /// infinity and is only used for non-negative "keep to" amounts, where rounding up could
+    /// tell someone they can spend a few cents more than they can.
+    static func wholeDollars(_ amount: Decimal, mode: NSDecimalNumber.RoundingMode = .plain) -> Decimal {
         var value = amount
         var rounded = Decimal()
-        NSDecimalRound(&rounded, &value, 0, .plain)
-        return rounded
-    }
-
-    /// Whole dollars rounded down, for "keep to" amounts (rounding up could tell someone they
-    /// can spend a few cents more than they can).
-    static func wholeDollarsDown(_ amount: Decimal) -> Decimal {
-        var value = amount
-        var rounded = Decimal()
-        NSDecimalRound(&rounded, &value, 0, .down)
+        NSDecimalRound(&rounded, &value, 0, mode)
         return rounded
     }
 
