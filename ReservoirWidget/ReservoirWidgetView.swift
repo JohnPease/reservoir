@@ -49,8 +49,8 @@ private struct SmallWidgetView: View {
                     SlotView(
                         slot: primary,
                         isEstimate: presentation.isEstimate,
-                        amountSize: presentation.smallSecondary == nil ? 36 : 32,
-                        showsLimit: presentation.smallSecondary == nil
+                        amountSize: presentation.smallSavingsRow == nil ? 36 : 32,
+                        showsLimit: presentation.smallSavingsRow == nil
                     )
                     if let secondary = presentation.smallSavingsRow {
                         SavingsLine(slot: secondary)
