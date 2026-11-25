@@ -317,7 +317,7 @@ the month and `budget.startDate`; `spent` is counted spend
   recover* (finishing even needs less a day than the 10th-percentile rolling 7-day
   average of the last 90 days, computed only once tracking over holds; needs 28 days of
   history), *point of no return* (month spend past the window budget plus the carry by
-  at least $1; its bold phrase is the only `ReservoirDeficit` text, while a tracking-over section is tinted the lighter `ReservoirDropletDeficit`, e.g. "November's
+  at least $1; its bold phrase is the only `ReservoirDeficit` text, while a tracking-over or hard-to-recover section is tinted the lighter `ReservoirDropletDeficit`, e.g. "November's
   budget can't cover the $300 you started behind, $50 over."). Within $1 of that point
   the other warnings say "Finishing even means no more spending this month." or "Keep
   to under $1 a day". In carry mode the warnings count the carried-over surplus or debt.
