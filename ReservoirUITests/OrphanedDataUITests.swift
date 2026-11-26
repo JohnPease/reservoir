@@ -19,7 +19,14 @@ final class OrphanedDataUITests: XCTestCase {
         let app = launchedApp()
         app.tabBars.buttons["Settings"].tap()
 
+        // Below the fold now that the Notifications section sits above it, and the Form
+        // builds off-screen rows lazily: scroll until it exists.
         let control = app.buttons["settings.removeOrphanedData"]
+        var swipes = 0
+        while !control.exists, swipes < 5 {
+            app.swipeUp()
+            swipes += 1
+        }
         XCTAssertTrue(control.waitForExistence(timeout: 5))
         control.tap()
 

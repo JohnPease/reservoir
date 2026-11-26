@@ -44,17 +44,9 @@ final class WidgetSnapshotPublisher: WidgetSnapshotPublishing {
     /// Environment variable every UI-test launch sets (via `XCUIApplication.reservoirApp()`).
     nonisolated static let uiTestDisableKey = "UITEST_DISABLE_WIDGET_PUBLISH"
 
-    /// True for a unit-test host or any UI-test launch (the explicit disable key, or any
-    /// other `UITEST_*` variable as a backstop for launches that bypass the shared helper).
-    nonisolated static func isTestProcess(environment: [String: String]) -> Bool {
-        environment["XCTestConfigurationFilePath"] != nil
-            || environment[uiTestDisableKey] != nil
-            || environment.keys.contains { $0.hasPrefix("UITEST_") }
-    }
-
     /// The real publisher, or the no-op one under unit tests and UI tests.
     static func makeDefault(environment: [String: String] = ProcessInfo.processInfo.environment) -> WidgetSnapshotPublishing {
-        isTestProcess(environment: environment) ? NoOpWidgetSnapshotPublisher() : WidgetSnapshotPublisher()
+        TestProcessGate.isTestProcess(environment: environment) ? NoOpWidgetSnapshotPublisher() : WidgetSnapshotPublisher()
     }
 
     func requestRefresh(modelContext: ModelContext, isAccountBackfillComplete: Bool) {
@@ -67,14 +59,11 @@ final class WidgetSnapshotPublisher: WidgetSnapshotPublishing {
     }
 
     func refreshNow(modelContext: ModelContext, isAccountBackfillComplete: Bool, now: Date = .now) {
-        guard let goals = try? modelContext.fetch(FetchDescriptor<SavingsGoal>()),
-              let budgets = try? modelContext.fetch(FetchDescriptor<Budget>(sortBy: [SortDescriptor(\.createdAt)])),
-              let transactions = try? modelContext.fetch(FetchDescriptor<SpendTransaction>())
-        else { return }
+        guard let live = LiveStoreSnapshot.fetch(from: modelContext) else { return }
         let snapshot = WidgetSnapshotBuilder.make(
-            goals: goals,
-            budget: budgets.first,
-            transactions: transactions,
+            goals: live.goals,
+            budget: live.budget,
+            transactions: live.transactions,
             isAccountBackfillComplete: isAccountBackfillComplete,
             now: now,
             calendar: calendar

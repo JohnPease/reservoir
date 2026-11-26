@@ -185,8 +185,6 @@ final class WidgetSnapshotTests: XCTestCase {
         let key = WidgetSnapshotPublisher.uiTestDisableKey
         XCTAssertEqual(key, "UITEST_DISABLE_WIDGET_PUBLISH")
         XCTAssertTrue(WidgetSnapshotPublisher.makeDefault(environment: [key: "1"]) is NoOpWidgetSnapshotPublisher)
-        XCTAssertTrue(WidgetSnapshotPublisher.isTestProcess(environment: ["XCTestConfigurationFilePath": "/x"]))
-        XCTAssertFalse(WidgetSnapshotPublisher.isTestProcess(environment: [:]))
     }
 
     func testHasSameFiguresIgnoresGeneratedAt() {

@@ -82,12 +82,13 @@ enum BudgetRecoveryCalculator {
         var text: String { lines.map(\.text).joined(separator: " ") }
         /// Titles included, for VoiceOver.
         var accessibilityText: String { sections.map(\.accessibilityText).joined(separator: " ") }
-        /// Unused by Today's view today; intentional API for reservoir-nka.3/nka.4.
+        /// Unused by Today's view today; kept as intentional API for reservoir-nka.4.
         var isDeficit: Bool { lines.contains { $0.deficitPhrase != nil } }
     }
 
     struct Result: Codable, Equatable {
-        /// Unused by Today's view today; intentional API for reservoir-nka.3/nka.4.
+        /// The first instant of the evaluated month. Not shown by Today's view; budget warning
+        /// notifications (reservoir-nka.3) key their once-per-month record on it.
         var monthStart: Date
         var carryIn: Decimal
         var recovery: Recovery?
@@ -403,8 +404,8 @@ enum BudgetRecoveryCalculator {
 }
 
 /// One month-level budget warning at a time; the highest that holds wins. Raw values are pinned
-/// (`Comparable` follows them). `Comparable`/`CaseIterable` are intentional API for
-/// reservoir-nka.3/nka.4 (threshold comparisons), not yet used by the app.
+/// (`Comparable` follows them). `Comparable` drives the budget warning notification
+/// thresholds (reservoir-nka.3); `CaseIterable` is intentional API for reservoir-nka.4.
 enum BudgetWarningLevel: Int, Codable, Comparable, CaseIterable {
     case none = 0
     case trackingOver = 1

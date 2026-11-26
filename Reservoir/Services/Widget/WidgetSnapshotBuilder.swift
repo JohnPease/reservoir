@@ -50,11 +50,14 @@ enum WidgetSnapshotBuilder {
         accountStore: LinkedAccountStoring,
         itemStore: LinkedItemStoring
     ) -> WidgetSnapshot.Figures {
-        let model = BudgetCalculator.cardModel(
+        // One insights run per figures set feeds both the month progress and the recovery line.
+        let (model, insights) = BudgetSummaryCalculator.cardModelAndRecoveryInsights(
             budget: budget,
-            allTransactions: transactions,
+            transactions: transactions,
             isAccountBackfillComplete: isAccountBackfillComplete,
             referenceDate: referenceDate,
+            accountStore: accountStore,
+            itemStore: itemStore,
             calendar: calendar
         )
 
@@ -67,21 +70,6 @@ enum WidgetSnapshotBuilder {
             referenceDate: referenceDate,
             calendar: calendar
         )
-
-        // One insights run per figures set feeds both the month progress and the recovery line.
-        let insights = model.flatMap { model in
-            BudgetSummaryCalculator.insights(
-                budget: budget,
-                transactions: transactions,
-                isAccountBackfillComplete: isAccountBackfillComplete,
-                referenceDate: referenceDate,
-                accountStore: accountStore,
-                itemStore: itemStore,
-                summary: model.summary,
-                includeRecovery: true,
-                calendar: calendar
-            )
-        }
 
         return WidgetSnapshot.Figures(
             budget: budgetSection(model),

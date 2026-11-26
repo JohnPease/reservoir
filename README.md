@@ -83,6 +83,7 @@ Reservoir/
   Shared/         — reusable views, extensions
     Widget/       — snapshot/planner/presentation code compiled into BOTH the app and the widget extension
   Services/Widget/ — WidgetSnapshotBuilder + WidgetSnapshotPublisher (app only)
+  Services/Notifications/ — budget warning notifications: planner, record store, notifier, monitor, settings model, notification center client
   Resources/      — assets
 ReservoirWidget/   — WidgetKit extension (provider, views, Info.plist, entitlements)
 ReservoirTests/    — XCTest
@@ -1279,6 +1280,71 @@ spend today on the home screen (small, medium) and lock screen
 - Amounts are `.privacySensitive()` (redacted while the phone is locked).
   Out of scope: widget configuration, interactivity, per-account breakdown.
 
+### Budget warning notifications (reservoir-nka.3)
+
+A local notification when the month reaches **Hard to recover** or **Over budget** (the two
+`BudgetWarningLevel`s the Today banner already shows: `hardToRecover` and
+`pointOfNoReturn`). Off by default, switched on under Settings > Notifications > Budget
+warnings. There is no backend, no push and no background work: the checks run only while the
+app is in the foreground.
+
+- **Triggers (foreground only)**: `RootTabView.requestDerivedStateRefresh()` asks both the
+  widget publisher and `BudgetWarningMonitor` to refresh on launch, scene-active, backfill
+  completion, a sync ending, the midnight tick, turning the toggle on, and any SwiftData
+  save (so editing the budget in Plans or importing transactions re-evaluates). The monitor
+  debounces (500 ms) and holds evaluation while a sync is active (`isSyncActive`), then
+  re-evaluates when it ends. While the toggle is off (the default) it does nothing at all: no
+  fetch, no calculation, no scheduled task. There is deliberately no background timer or webhook; background
+  refresh is a follow-up (reservoir-kqy).
+- **One entry point**: `BudgetWarningNotifier.evaluate(result:isAccountBackfillComplete:)` is
+  UI-free and the only code that reads or writes the "already notified" record, so a future
+  background refresh can call it directly. It awaits the permission status (its only
+  suspension point), then synchronously loads the record, decides, writes the record and
+  only then posts, so overlapping evaluations cannot post twice.
+- **De-dup record**: `UserDefaults` key `budgetWarnings.notifiedRecord.v1` holds the month
+  (year and month integers, so a time zone change cannot shift it) and the highest level
+  already handled that month. The toggle is `budgetWarnings.enabled`. A corrupt record loads
+  as "none", which baselines silently.
+- **Decision rules** (`BudgetWarningNotificationPlanner.decide`, first match wins):
+  disabled: nothing. Permission not determined or denied (provisional and ephemeral count as
+  allowed): nothing. Account backfill incomplete: never notify, and drop any record. No
+  result (no budget, card inactive): nothing, record kept. No record yet: record the current
+  level **silently**, at any level (a budget first created mid-month already at a warning
+  level, or the first launch after turning warnings on, baselines rather than announces).
+  Record from an earlier month: treat as none, so a new month that starts at a warning level
+  notifies. Same month: a rise to Hard to recover or Over budget notifies; a rise below that
+  is recorded silently; no rise (including dip and re-rise, or a budget edit that lowers the
+  level) does nothing. At most one notification per level per month.
+- **Replacement**: one notification identifier per month (`budget-warning.<yyyy>-<MM>`, thread
+  `budget-warnings`), so Over budget replaces Hard to recover in Notification Center rather
+  than stacking.
+- **Privacy**: the copy is generic and carries no amounts or dates ("Hard to recover this
+  month" / "Over budget this month", body "Tap to see where you stand."); titles are built
+  from `BudgetRecoveryCalculator.status(_:)` so they match the banner.
+- **Tap**: the notification carries `reservoir://today`. `AppDelegate` installs
+  `NotificationResponder` as the `UNUserNotificationCenter` delegate at launch (so a
+  cold-launch tap is delivered), which hands the URL to `DeepLinkRouter`; `RootTabView`
+  consumes it and selects Today (same handler as the widget's `onOpenURL`). While the app is
+  open, `willPresent` still shows the banner.
+- **Permission flow**: the system prompt appears only when the user turns the toggle on
+  (`BudgetWarningSettings.setEnabled`). Allow: the toggle stays on and the record is reset so
+  the level already showing is baseline. Deny, or already denied: the toggle snaps off and
+  (only when iOS status is really denied, not on a failed request) Settings shows "Notifications are off for Reservoir in iOS Settings." with an Open
+  Settings button (`UIApplication.openNotificationSettingsURLString`). Permission is
+  re-read when the app becomes active and when Settings appears, so revoking it in iOS
+  Settings turns the toggle off.
+- **Evaluation quirk**: while account backfill is failing on every launch the card is not
+  trustworthy, so the notifier stays quiet (the rule above) instead of guessing.
+- **Test gate**: `TestProcessGate.isTestProcess` (unit-test host, or any `UITEST_*`
+  variable) selects `NoOpNotificationScheduler` and `StubNotificationAuthorizer`, and skips
+  installing the notification delegate, so tests never prompt or post. The stub is scripted
+  by `UITEST_NOTIFICATION_PERMISSION=allow|deny|alreadyDenied` (absent: not determined and
+  refuses). `UITEST_RESET_BUDGET_WARNINGS=1` clears the toggle and record at launch.
+- **Coverage**: everything under `Services/Notifications/` is unit tested except
+  `UserNotificationCenterClient`, the `UNUserNotificationCenter` I/O boundary (excluded like
+  `PlaidServiceLive`; only its status mapping is tested). Real permission prompts, delivery and
+  tap handling are manual (checklist under Testing).
+
 ## Technical details
 
 - **Minimum iOS version**: 17.0 (required for SwiftData and `@Observable`)
@@ -1391,7 +1457,12 @@ spend today on the home screen (small, medium) and lock screen
 - **Settings tab** (adq.7, implemented): linked-account management —
   Sandbox/Production toggle, link/relink/unlink a bank account. Does not
   manage goals or starting balances (see "Settings tab" under Architecture
-  above for why). See "Settings tab" under Architecture above.
+  above for why). Also holds the Notifications section (budget warnings
+  toggle, nka.3). See "Settings tab" under Architecture above.
+- **Budget warning notifications** (nka.3, implemented): an optional local notification
+  when the month gets hard to recover or goes over budget, at most one per level per month,
+  checked while the app is open. Turned on under Settings > Notifications; tapping a
+  notification opens Today. See "Budget warning notifications" under Architecture above.
 - **Home screen widget** (apd, implemented): small, medium, lock screen
   rectangular and inline widgets showing the amount left to spend today (budget
   and/or savings limit), with over-budget, syncing, choose-accounts,
@@ -1422,6 +1493,24 @@ spend today on the home screen (small, medium) and lock screen
   (`ReservoirUITests/XCUIApplication+TestHelpers.swift`), which sets
   `UITEST_DISABLE_WIDGET_PUBLISH=1` so the widget publisher is a no-op and a UI
   test never writes the real App Group snapshot or reloads widget timelines.
+- Budget warning notifications (nka.3): UI tests (`BudgetWarningSettingsUITests`) script the
+  permission with `UITEST_NOTIFICATION_PERMISSION=allow|deny|alreadyDenied` and reset the toggle
+  and record with `UITEST_RESET_BUDGET_WARNINGS=1`; the real system dialog never appears. Real
+  prompt, delivery and tap handling are manual. Manual device checklist:
+  1. Fresh install or update: no permission prompt at launch; Settings > Budget warnings is off.
+  2. Turn it on: iOS prompt, Allow, the toggle stays on, and no notification fires even if Today
+     already shows a warning (that is the baseline).
+  3. Lower the budget in Plans until Today says "Hard to recover": within about a second a
+     foreground banner "Hard to recover this month" appears, with no dollar amounts.
+  4. Lower it further to "Over budget": a second banner, and Notification Center shows ONE entry.
+  5. Raise then lower again: nothing. Relaunch: nothing.
+  6. From the Settings tab, background the app and tap the notification: it opens on Today.
+  7. Force-quit and tap the notification: a cold launch lands on Today.
+  8. iOS Settings > Reservoir > Notifications off, return: the toggle is off with the denied
+     text; Open Settings lands on Reservoir's notification page; re-allow, return, turn the
+     toggle on: no prompt, it stays on, and it baselines silently.
+  9. Turn the toggle off and push the level up: nothing.
+  10. Restore the real budget.
 - Manual widget checklist (on a device, or the simulator's home screen):
   1. Add each size: small, medium, lock screen rectangular and inline (the
      lock screen ones need a device or iOS 17+ simulator lock screen).
