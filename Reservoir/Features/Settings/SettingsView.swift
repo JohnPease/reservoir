@@ -41,6 +41,9 @@ struct SettingsView: View {
     /// via `PlaidServiceLive`, neither of which needs SwiftData.
     @Environment(\.modelContext) private var modelContext
 
+    /// Budget warning notifications (reservoir-nka.3), owned by `RootTabView`.
+    @Environment(BudgetWarningSettings.self) private var budgetWarnings
+
     /// One shared `PlaidEnvironmentStore` instance backs `environmentStore`,
     /// `environment`'s initial value, and `service`'s own environment resolution — see
     /// `PlaidDebugLinkView`'s equivalent `init()` doc comment (PR #12 review finding) for
@@ -194,6 +197,8 @@ struct SettingsView: View {
                 )
                 .saveErrorAlert($unlinkError)
 
+                BudgetWarningsSection()
+
                 Section {
                     NavigationLink("Sync log") { SyncLogView() }
                         .accessibilityIdentifier("settings.syncLog")
@@ -294,6 +299,8 @@ struct SettingsView: View {
             // `onRelinkSuccess` wiring above) fixes that.
             service.refreshLinkedItems()
             refreshOrphanedData()
+            // Permission may have changed in iOS Settings since the app was last active.
+            Task { await budgetWarnings.refreshAuthorization() }
         }
         .onChange(of: service.linkedItems.map(\.itemID)) { refreshOrphanedData() }
         .onChange(of: importService?.isSyncActive) { refreshOrphanedData() }
