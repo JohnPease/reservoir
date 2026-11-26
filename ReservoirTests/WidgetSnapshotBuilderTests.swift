@@ -275,4 +275,103 @@ final class WidgetSnapshotBuilderTests: XCTestCase {
         data = try JSONSerialization.data(withJSONObject: json)
         XCTAssertNil(try JSONDecoder().decode(WidgetSnapshot.MonthProgress.self, from: data).topCategory)
     }
+
+    // MARK: - Recovery line (reservoir-nka.2)
+
+    private func budgetSnapshot(
+        monthly: Decimal = 3100, start: Date, carries: Bool = true, spends: [(Decimal, Date)], now: Date
+    ) throws -> WidgetSnapshot {
+        let context = try makeContext()
+        let budget = Budget(monthlyAmount: monthly, startDate: start, carriesAcrossMonths: carries, selectedAccountIDs: ["a"])
+        context.insert(budget)
+        let txs = spends.map { spend($0.0, on: $0.1) }
+        txs.forEach(context.insert)
+        return build(budget: budget, transactions: txs, now: now)
+    }
+
+    func testNoLineWhenOnPace() throws {
+        let snapshot = try budgetSnapshot(start: date(10, 27), spends: [(10, date(10, 27, 9))], now: date(10, 27))
+        XCTAssertNil(snapshot.today.recovery)
+        XCTAssertNil(snapshot.tomorrow.recovery)
+    }
+
+    func testRecoveryLineWhenBehind() throws {
+        // 130 spent against a 100 limit: one no-spend day (a 100 base) clears the 30 debt.
+        let snapshot = try budgetSnapshot(start: date(10, 27), spends: [(130, date(10, 27, 9))], now: date(10, 27))
+        XCTAssertEqual(snapshot.today.recovery?.text, "1 no-spend day to full")
+        XCTAssertEqual(snapshot.today.recovery?.tone, .neutral)
+        XCTAssertTrue(snapshot.today.recovery?.accessibilityText.hasPrefix("Daily limit.") == true)
+        // Tomorrow's figures start in credit (remaining 70), so no recovery is needed there.
+        XCTAssertNotEqual(snapshot.tomorrow.recovery?.text, "1 no-spend day to full")
+    }
+
+    func testPointOfNoReturnLine() throws {
+        let snapshot = try budgetSnapshot(start: date(10, 1), spends: [(3300, date(10, 20, 9))], now: date(10, 27))
+        XCTAssertEqual(snapshot.today.recovery?.text, "Over budget by $200")
+        XCTAssertEqual(snapshot.today.recovery?.tone, .overBudget)
+        XCTAssertTrue(snapshot.today.recovery?.accessibilityText.contains("Over budget") == true)
+    }
+
+    func testTrackingOverLineWithoutDebt() throws {
+        // September ends 100 in credit (2,900 of 3,000 spent), October then overspends early but
+        // the carry keeps the day positive: heading over, no recovery block.
+        let snapshot = try budgetSnapshot(
+            monthly: 3000, start: date(9, 1),
+            spends: [(2900, date(9, 1, 9)), (1050, date(10, 1, 9))], now: date(10, 10)
+        )
+        XCTAssertEqual(snapshot.today.recovery?.text, "Tracking over: $97/day")
+        XCTAssertEqual(snapshot.today.recovery?.tone, .warning)
+        XCTAssertTrue(snapshot.today.recovery?.accessibilityText.contains("Tracking over") == true)
+    }
+
+    func testHardToRecoverBeatsRecovery() throws {
+        // A steady 96 a day through September makes ~96 a typical low week; October's early
+        // overspend then needs less than that, which is "hard to recover" and wins over the
+        // no-spend recovery that is also due.
+        var spends: [(Decimal, Date)] = (1...30).map { (96, date(9, $0, 9)) }
+        spends.append((1150, date(10, 1, 9)))
+        let snapshot = try budgetSnapshot(monthly: 3000, start: date(9, 1), spends: spends, now: date(10, 10))
+        XCTAssertEqual(snapshot.today.recovery?.text, "Hard to recover: $93/day")
+        XCTAssertEqual(snapshot.today.recovery?.tone, .warning)
+    }
+
+    func testRecoveryBeatsTrackingOver() throws {
+        let snapshot = try budgetSnapshot(start: date(10, 1), spends: [(2000, date(10, 5, 9))], now: date(10, 6))
+        XCTAssertEqual(snapshot.today.recovery?.text, "14 no-spend days to full")
+        XCTAssertEqual(snapshot.today.recovery?.tone, .neutral)
+    }
+
+    func testTodayAndTomorrowLinesDifferAcrossMidnight() throws {
+        let snapshot = try budgetSnapshot(start: date(10, 27), spends: [(250, date(10, 27, 9))], now: date(10, 27))
+        let today = try XCTUnwrap(snapshot.today.recovery)
+        XCTAssertEqual(today.text, "2 no-spend days to full")
+        XCTAssertNotEqual(snapshot.tomorrow.recovery, today)
+    }
+
+    func testResetModeClearsWithAResetBeforeTheFirst() throws {
+        // 30 a day; 920 spent by the 29th is 50 behind, and two no-spend days run to Nov 1.
+        let snapshot = try budgetSnapshot(
+            monthly: 930, start: date(10, 1), carries: false, spends: [(920, date(10, 29, 9))], now: date(10, 29)
+        )
+        XCTAssertEqual(snapshot.today.recovery?.text, "Resets to full Nov 1")
+        XCTAssertEqual(snapshot.today.recovery?.tone, .neutral)
+    }
+
+    func testResetModeOverBudgetTodayThenFreshOnTheFirst() throws {
+        let snapshot = try budgetSnapshot(
+            monthly: 930, start: date(10, 1), carries: false, spends: [(1000, date(10, 31, 9))], now: date(10, 31)
+        )
+        XCTAssertEqual(snapshot.today.recovery?.text, "Over budget by $70")
+        XCTAssertEqual(snapshot.today.recovery?.tone, .overBudget)
+        XCTAssertNil(snapshot.tomorrow.recovery)
+    }
+
+    func testCarryModeOverBudgetTodayRecoveryTomorrowAcrossTheFirst() throws {
+        let snapshot = try budgetSnapshot(
+            monthly: 930, start: date(10, 1), carries: true, spends: [(1000, date(10, 31, 9))], now: date(10, 31)
+        )
+        XCTAssertEqual(snapshot.today.recovery?.text, "Over budget by $70")
+        // Nov 1 opens carrying a 39 debt against a 31 base: two no-spend days.
+        XCTAssertEqual(snapshot.tomorrow.recovery?.text, "2 no-spend days to full")
+    }
 }

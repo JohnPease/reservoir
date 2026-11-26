@@ -299,10 +299,9 @@ the month and `budget.startDate`; `spent` is counted spend
   you'll finish November about $180 over, counting the $300 you started behind." /
   "...about $X under, counting the $500 carried over." / "...finish November even.");
   reset mode keeps "...about $X over budget." / "right on budget."
-- *Recovery and month warnings* (reservoir-nka.1, Today only): `BudgetRecoveryCalculator`
+- *Recovery and month warnings* (reservoir-nka.1, Today; reservoir-nka.2, widget): `BudgetRecoveryCalculator`
   (pure, no SwiftData/SwiftUI) runs only when a caller of `insights` passes
-  `includeRecovery: true` (Today does; Plans doesn't; the widget will opt in with
-  reservoir-nka.2) and is returned as the optional `BudgetInsights.recovery`. Carry
+  `includeRecovery: true` (Today and the widget do; Plans doesn't) and is returned as the optional `BudgetInsights.recovery`. Carry
   into the month `C = remaining - paceDelta` (carry mode; an exact identity with the
   carry walk, so no new walk, which is why a passed-in `summary` must match the same
   reference date and transactions) or 0 (reset); the carry-aware projection computes
@@ -1250,6 +1249,22 @@ spend today on the home screen (small, medium) and lock screen
   figures tagged "estimate"; after about 36 hours without an app launch it shows
   "Open Reservoir to refresh"; small and medium add an "Updated <time>" caption
   once the data is over about 3 hours old.
+- **Recovery line** (reservoir-nka.2): small and medium show one short line under
+  the budget sub-line when the budget is behind or warned, computed in the app by
+  `WidgetRecoveryLineFormatter` from `BudgetRecoveryCalculator`'s structured result
+  (`insights(includeRecovery: true)`, once per figures set) and carried as the optional
+  `Figures.recovery` (`text`, `accessibilityText` = the chosen banner section in full,
+  `tone`). One line, by precedence: "Over budget by $X", "Hard to recover: $X/day",
+  daily-limit recovery ("N no-spend days to full" / "Resets to full Dec 1"), "Tracking
+  over: $X/day"; a need under a dollar reads "<$1/day", none left reads "No room left
+  this month". Today's and tomorrow's lines are each computed for their own reference
+  day, so the estimate phase shows tomorrow's. `WidgetPresentation.recoveryLine` is set
+  only when the budget leads with an amount; on small it replaces the savings row while
+  it applies, and on medium the "Updated" caption flows under it rather than overlaying.
+  Syncing, choose-accounts, set-up, needs-refresh and savings-only layouts are unchanged.
+- **Snapshot versioning**: adding an optional field does not bump
+  `WidgetSnapshot.currentVersion` (old JSON decodes with the field absent); bump it only
+  for a breaking rename or type change.
 - **Publishing**: `WidgetSnapshotPublisher`, owned by `RootTabView`, rebuilds
   the snapshot (debounced) on foreground, `ModelContext.didSave` (edits and
   imports), backfill completion and the midnight tick, skips the write if the
@@ -1421,7 +1436,12 @@ spend today on the home screen (small, medium) and lock screen
      surface).
   6. Lock screen redaction: with the phone locked and the widget on the lock
      screen, amounts are redacted (privacy sensitive).
-  7. Tap the widget from another tab and from a cold launch: the app opens on
+  7. Recovery line: with the budget behind, small and medium show it under the sub-line
+     (a no-spend count in normal text, warnings in red); it is absent when on pace; after
+     crossing midnight it shows tomorrow's line. Small with a savings goal: the line
+     replaces the savings row while it applies. Medium: the "Updated" caption sits under
+     the line and does not overlap it. Lock screen redaction hides its amounts.
+  8. Tap the widget from another tab and from a cold launch: the app opens on
      Today (`reservoir://today`).
 - Widget logic (`WidgetSnapshotBuilder`, `WidgetTimelinePlanner`,
   `WidgetPresentation`, snapshot store and publish policy) is unit tested in

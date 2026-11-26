@@ -98,8 +98,8 @@ enum BudgetSummaryCalculator {
         var breakdown: Breakdown?
         var monthResult: MonthResult
         /// No-spend days to recover, the month warning, and the Today banner (reservoir-nka.1).
-        /// `nil` unless the caller passed `includeRecovery: true` (Today does; Plans and the
-        /// widget don't, though the widget will opt in with reservoir-nka.2).
+        /// `nil` unless the caller passed `includeRecovery: true` (Today and the widget do;
+        /// Plans doesn't).
         var recovery: BudgetRecoveryCalculator.Result?
     }
 
@@ -115,8 +115,8 @@ enum BudgetSummaryCalculator {
     ///     The carry in (`remaining - paceDelta`) is only exact under that identity; a summary
     ///     cached across midnight or a transaction change would silently skew it.
     ///   - includeRecovery: run `BudgetRecoveryCalculator` (a lookback over counted spend) and
-    ///     fill `BudgetInsights.recovery`. Off by default; only Today asks for it (the widget
-    ///     will in reservoir-nka.2). The carry in for the projection is computed either way.
+    ///     fill `BudgetInsights.recovery`. Off by default; Today and the widget ask for it.
+    ///     The carry in for the projection is computed either way.
     static func insights(
         budget: Budget?,
         transactions: [SpendTransaction],

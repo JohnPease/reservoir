@@ -309,4 +309,42 @@ final class WidgetSnapshotTests: XCTestCase {
         XCTAssertEqual(snapshot.today.savings.state, .active)
         XCTAssertEqual(snapshot.tomorrow.savings, .notSet)
     }
+
+    // MARK: Recovery line (reservoir-nka.2)
+
+    private var recoveryLine: WidgetSnapshot.RecoveryLine {
+        .init(text: "2 no-spend days to full", accessibilityText: "Daily limit. Two days.", tone: .neutral)
+    }
+
+    func testRecoveryLineRoundTripsThroughTheStore() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        var snapshot = WidgetSnapshot.sample(now: date(10, 27), calendar: calendar)
+        snapshot.today.recovery = recoveryLine
+        let store = FileWidgetSnapshotStore(fileURL: url)
+        try store.save(snapshot)
+        XCTAssertEqual(store.load()?.today.recovery, recoveryLine)
+        XCTAssertNil(store.load()?.tomorrow.recovery)
+    }
+
+    func testSnapshotWithoutRecoveryFieldStillDecodesAtCurrentVersion() throws {
+        let snapshot = WidgetSnapshot.sample(now: date(10, 27), calendar: calendar)
+        let data = try JSONEncoder().encode(snapshot)
+        XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("recovery"))
+        let decoded = try JSONDecoder().decode(WidgetSnapshot.self, from: data)
+        XCTAssertNil(decoded.today.recovery)
+        XCTAssertEqual(decoded.version, 1)
+        XCTAssertEqual(WidgetSnapshot.currentVersion, 1)
+    }
+
+    func testHasSameFiguresNoticesTheRecoveryLine() {
+        let a = WidgetSnapshot.sample(now: date(10, 27), calendar: calendar)
+        var b = a
+        b.today.recovery = recoveryLine
+        XCTAssertFalse(a.hasSameFigures(as: b))
+        var c = b
+        c.today.recovery?.text = "3 no-spend days to full"
+        XCTAssertFalse(b.hasSameFigures(as: c))
+        XCTAssertTrue(b.hasSameFigures(as: b))
+    }
 }

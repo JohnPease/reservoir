@@ -150,4 +150,59 @@ final class WidgetPresentationTests: XCTestCase {
         XCTAssertTrue(text.hasPrefix("Last updated "))
         XCTAssertTrue(text.contains("2 days ago"))
     }
+
+    // MARK: Recovery line (reservoir-nka.2)
+
+    private func line(_ text: String) -> WidgetSnapshot.RecoveryLine {
+        .init(text: text, accessibilityText: text, tone: .neutral)
+    }
+
+    private func lineSnapshot(budget: WidgetSnapshot.Section? = nil, savings: WidgetSnapshot.Section? = nil) -> WidgetSnapshot {
+        var s = snapshot(budget: budget ?? active, savings: savings ?? .notSet)
+        s.today.recovery = line("today line")
+        s.tomorrow.recovery = line("tomorrow line")
+        return s
+    }
+
+    func testCurrentPhaseUsesTodaysLine() {
+        let p = WidgetPresentation.make(snapshot: lineSnapshot(), phase: .current, showsUpdatedCaption: true)
+        XCTAssertEqual(p.recoveryLine?.text, "today line")
+    }
+
+    func testEstimatePhaseUsesTomorrowsLine() {
+        let p = WidgetPresentation.make(snapshot: lineSnapshot(), phase: .estimate, showsUpdatedCaption: true)
+        XCTAssertEqual(p.recoveryLine?.text, "tomorrow line")
+    }
+
+    func testNoLineInSetUpAndNeedsRefresh() {
+        XCTAssertNil(WidgetPresentation.make(snapshot: nil, phase: .current, showsUpdatedCaption: true).recoveryLine)
+        XCTAssertNil(WidgetPresentation.make(snapshot: lineSnapshot(), phase: .needsRefresh, showsUpdatedCaption: true).recoveryLine)
+        let nothing = lineSnapshot(budget: .notSet, savings: .notSet)
+        XCTAssertNil(WidgetPresentation.make(snapshot: nothing, phase: .current, showsUpdatedCaption: true).recoveryLine)
+    }
+
+    func testNoLineWhenBudgetDoesNotLeadWithAnAmount() {
+        for budget in [WidgetSnapshot.Section.message(.syncing), .message(.chooseAccounts)] {
+            let p = WidgetPresentation.make(snapshot: lineSnapshot(budget: budget, savings: savingsActive), phase: .current, showsUpdatedCaption: false)
+            XCTAssertNil(p.recoveryLine)
+        }
+        let savingsOnly = WidgetPresentation.make(snapshot: lineSnapshot(budget: .notSet, savings: savingsActive), phase: .current, showsUpdatedCaption: false)
+        XCTAssertNil(savingsOnly.recoveryLine)
+    }
+
+    func testAbsentLineStaysAbsent() {
+        let p = WidgetPresentation.make(snapshot: snapshot(budget: active, savings: .notSet), phase: .current, showsUpdatedCaption: false)
+        XCTAssertNil(p.recoveryLine)
+    }
+
+    func testLineReplacesSmallSavingsRowOnlyWhileItApplies() {
+        let with = WidgetPresentation.make(snapshot: lineSnapshot(savings: savingsActive), phase: .current, showsUpdatedCaption: false)
+        XCTAssertNotNil(with.smallSecondary)
+        XCTAssertNil(with.smallSavingsRow)
+        XCTAssertNotNil(with.recoveryLine)
+
+        let without = WidgetPresentation.make(snapshot: snapshot(budget: active, savings: savingsActive), phase: .current, showsUpdatedCaption: false)
+        XCTAssertEqual(without.smallSavingsRow, without.smallSecondary)
+        XCTAssertNotNil(without.smallSavingsRow)
+    }
 }

@@ -76,6 +76,10 @@ struct WidgetPresentation: Equatable {
     var isEstimate: Bool
     /// Non-nil when small/medium should show "Updated <time>".
     var updatedAt: Date?
+    /// The recovery / warning row (reservoir-nka.2). Set only while the budget leads with an
+    /// amount; nil everywhere else (set-up, needs-refresh, syncing, choose-accounts,
+    /// savings-only), so those layouts are unchanged.
+    var recoveryLine: WidgetSnapshot.RecoveryLine?
 
     /// The slot that leads small, rectangular and inline widgets: the budget, unless it
     /// is only a status message while a savings limit has real numbers.
@@ -93,6 +97,9 @@ struct WidgetPresentation: Equatable {
         else { return nil }
         return savings
     }
+
+    /// The savings row on the small widget: the line replaces it while one applies.
+    var smallSavingsRow: Slot? { recoveryLine == nil ? smallSecondary : nil }
 
     /// Over budget (or over the savings limit) on the leading slot.
     var isOver: Bool { primary?.isOver ?? false }
@@ -114,7 +121,8 @@ struct WidgetPresentation: Equatable {
         return WidgetPresentation(
             body: .figures(budget: budget, savings: savings, month: figures.month),
             isEstimate: isEstimate,
-            updatedAt: showsUpdatedCaption && !isEstimate ? snapshot.generatedAt : nil
+            updatedAt: showsUpdatedCaption && !isEstimate ? snapshot.generatedAt : nil,
+            recoveryLine: budget?.hasAmount == true ? figures.recovery : nil
         )
     }
 

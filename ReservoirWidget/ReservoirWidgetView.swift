@@ -49,11 +49,13 @@ private struct SmallWidgetView: View {
                     SlotView(
                         slot: primary,
                         isEstimate: presentation.isEstimate,
-                        amountSize: presentation.smallSecondary == nil ? 36 : 32,
-                        showsLimit: presentation.smallSecondary == nil
+                        amountSize: presentation.smallSavingsRow == nil ? 36 : 32,
+                        showsLimit: presentation.smallSavingsRow == nil
                     )
-                    if let secondary = presentation.smallSecondary {
+                    if let secondary = presentation.smallSavingsRow {
                         SavingsLine(slot: secondary)
+                    } else if let line = presentation.recoveryLine {
+                        RecoveryRow(line: line)
                     }
                     UpdatedCaption(date: presentation.updatedAt)
                 }
@@ -85,6 +87,12 @@ private struct MediumWidgetView: View {
                     if let left = budget ?? savings {
                         SlotView(slot: left, isEstimate: presentation.isEstimate, amountSize: 40, showsLimit: true)
                     }
+                    // With a recovery row the caption flows under it instead of overlaying the
+                    // half's bottom edge, where the two would collide.
+                    if let line = presentation.recoveryLine {
+                        RecoveryRow(line: line)
+                        UpdatedCaption(date: presentation.updatedAt)
+                    }
                 }
                 if hasRightHalf(budget: budget, savings: savings, month: month) {
                     Rectangle()
@@ -95,7 +103,7 @@ private struct MediumWidgetView: View {
                 }
             }
             .overlay(alignment: .bottomLeading) {
-                UpdatedCaption(date: presentation.updatedAt)
+                if presentation.recoveryLine == nil { UpdatedCaption(date: presentation.updatedAt) }
             }
         }
     }
@@ -233,6 +241,31 @@ private struct EstimateTag: View {
             .foregroundStyle(Color("ReservoirAccent"))
             .padding(.horizontal, 4)
             .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color("ReservoirAccent"), lineWidth: 1))
+    }
+}
+
+/// The one short recovery / warning line under the budget sub-line (reservoir-nka.2). Copy and
+/// tone come from the snapshot; one line, scaled down rather than truncated.
+private struct RecoveryRow: View {
+    let line: WidgetSnapshot.RecoveryLine
+
+    var body: some View {
+        Text(line.text)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(Color(colorName))
+            .lineLimit(1)
+            .minimumScaleFactor(0.85)
+            .privacySensitive(line.tone != .neutral)
+            .accessibilityLabel(line.accessibilityText)
+            .padding(.top, 3)
+    }
+
+    private var colorName: String {
+        switch line.tone {
+        case .overBudget: return "ReservoirDeficit"
+        case .warning: return "ReservoirDropletDeficit"
+        case .neutral: return "ReservoirTextPrimary"
+        }
     }
 }
 
