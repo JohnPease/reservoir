@@ -59,14 +59,11 @@ final class WidgetSnapshotPublisher: WidgetSnapshotPublishing {
     }
 
     func refreshNow(modelContext: ModelContext, isAccountBackfillComplete: Bool, now: Date = .now) {
-        guard let goals = try? modelContext.fetch(FetchDescriptor<SavingsGoal>()),
-              let budgets = try? modelContext.fetch(FetchDescriptor<Budget>(sortBy: [SortDescriptor(\.createdAt)])),
-              let transactions = try? modelContext.fetch(FetchDescriptor<SpendTransaction>())
-        else { return }
+        guard let live = LiveStoreSnapshot.fetch(from: modelContext) else { return }
         let snapshot = WidgetSnapshotBuilder.make(
-            goals: goals,
-            budget: budgets.first,
-            transactions: transactions,
+            goals: live.goals,
+            budget: live.budget,
+            transactions: live.transactions,
             isAccountBackfillComplete: isAccountBackfillComplete,
             now: now,
             calendar: calendar

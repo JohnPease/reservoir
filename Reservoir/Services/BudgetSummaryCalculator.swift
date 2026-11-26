@@ -265,6 +265,43 @@ enum BudgetSummaryCalculator {
         )
     }
 
+    /// The card model and its insights (with recovery) from one pass, so the summary the
+    /// insights consume is by construction the one for this budget, transactions, reference
+    /// date and calendar (the precondition documented on `insights`). Used by the widget and
+    /// the budget warning notifier. `insights` is `nil` when there is no budget or the card
+    /// isn't `.active`.
+    static func cardModelAndRecoveryInsights(
+        budget: Budget?,
+        transactions: [SpendTransaction],
+        isAccountBackfillComplete: Bool,
+        referenceDate: Date,
+        accountStore: LinkedAccountStoring = LinkedAccountStore(),
+        itemStore: LinkedItemStoring = LinkedItemStore(),
+        calendar: Calendar = .current
+    ) -> (model: BudgetCalculator.CardModel?, insights: BudgetInsights?) {
+        let model = BudgetCalculator.cardModel(
+            budget: budget,
+            allTransactions: transactions,
+            isAccountBackfillComplete: isAccountBackfillComplete,
+            referenceDate: referenceDate,
+            calendar: calendar
+        )
+        let insights = model.flatMap { model in
+            insights(
+                budget: budget,
+                transactions: transactions,
+                isAccountBackfillComplete: isAccountBackfillComplete,
+                referenceDate: referenceDate,
+                accountStore: accountStore,
+                itemStore: itemStore,
+                summary: model.summary,
+                includeRecovery: true,
+                calendar: calendar
+            )
+        }
+        return (model, insights)
+    }
+
     // MARK: - Sentence
 
     /// The clause appended on the 1st only; `nil` = nothing to append (carry of $0).
