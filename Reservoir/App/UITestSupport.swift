@@ -478,6 +478,14 @@ enum UITestScenario: String {
         UserDefaults.standard.removeObject(forKey: "plaid.linkedItems")
     }
 
+    /// Removes the budget warning toggle and its once-per-month record before launch, when
+    /// `UITEST_RESET_BUDGET_WARNINGS=1` is set. Both live in `UserDefaults.standard`, which
+    /// survives across launches within a test run (same rationale as the resets above).
+    static func resetBudgetWarningsIfRequested() {
+        guard ProcessInfo.processInfo.environment["UITEST_RESET_BUDGET_WARNINGS"] == "1" else { return }
+        BudgetWarningNotificationStore.resetAll()
+    }
+
     /// Seeds one `LinkedAccount` ("uitest-account", "Checking ••0000" at "UITest Bank")
     /// into the real `UserDefaults`-backed `LinkedAccountStore` when
     /// `UITEST_SEED_LINKED_ACCOUNT=1`, clearing any previous value first (the store, unlike

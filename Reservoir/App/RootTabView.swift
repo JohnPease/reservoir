@@ -47,6 +47,11 @@ struct RootTabView: View {
     /// here, above the tabs, so it works whichever tab is showing; a no-op under tests.
     @State private var widgetPublisher: WidgetSnapshotPublishing = WidgetSnapshotPublisher.makeDefault()
 
+    /// Budget warning notifications (reservoir-nka.3): the monitor that evaluates after
+    /// changes, and the settings model the Settings tab binds to. Foreground only.
+    @State private var budgetWarnings = BudgetWarningServices.makeDefault()
+    @Environment(DeepLinkRouter.self) private var deepLinkRouter
+
     var body: some View {
         TabView(selection: Bindable(tabSelection).selected) {
             TodayView()
@@ -91,6 +96,7 @@ struct RootTabView: View {
         .environment(todayClock)
         .environment(tabSelection)
         .environment(importService)
+        .environment(budgetWarnings.settings)
         .mergePromptConfirmation(
             pendingItem: mergeDecisionBinding,
             title: { decision in
@@ -121,31 +127,55 @@ struct RootTabView: View {
             UITabBar.appearance().unselectedItemTintColor = UIColor(named: "ReservoirTextMuted")
             // Cold launch after an upgrade: the one-time account backfill is owed but no
             // scene-phase transition will trigger it (reservoir-0fq).
-            requestWidgetRefresh()
+            handlePendingDeepLink()
+            requestDerivedStateRefresh()
             await importService?.runAccountBackfillIfNeeded()
         }
         .onChange(of: scenePhase) { _, newPhase in
             Task { await importService?.handleScenePhaseTransition(to: newPhase) }
-            if newPhase == .active { requestWidgetRefresh() }
+            if newPhase == .active {
+                requestDerivedStateRefresh()
+                // Permission may have been changed in iOS Settings while away.
+                Task { await budgetWarnings.settings.refreshAuthorization() }
+            }
         }
-        // Widget snapshot triggers: first launch / import service ready, backfill
-        // finishing, the midnight tick, and any SwiftData save (transaction, goal,
+        // Widget snapshot and budget warning triggers: first launch / import service ready,
+        // backfill finishing, a sync ending (warnings are held while one runs), the
+        // midnight tick, turning warnings on, and any SwiftData save (transaction, goal,
         // budget or account-selection edits, import completion).
-        .onChange(of: importService?.isAccountBackfillComplete) { requestWidgetRefresh() }
-        .onChange(of: todayClock.referenceDate) { requestWidgetRefresh() }
+        .onChange(of: importService?.isAccountBackfillComplete) { requestDerivedStateRefresh() }
+        .onChange(of: importService?.isSyncActive) { requestDerivedStateRefresh() }
+        .onChange(of: budgetWarnings.settings.isEnabled) { requestDerivedStateRefresh() }
+        .onChange(of: todayClock.referenceDate) { requestDerivedStateRefresh() }
         .onReceive(NotificationCenter.default.publisher(for: ModelContext.didSave)) { _ in
-            requestWidgetRefresh()
+            requestDerivedStateRefresh()
         }
-        .onOpenURL { url in
-            if WidgetDeepLink.isToday(url) { tabSelection.selected = .today }
-        }
+        .onOpenURL { url in handleDeepLink(url) }
+        .onChange(of: deepLinkRouter.pending) { handlePendingDeepLink() }
     }
 
-    private func requestWidgetRefresh() {
+    /// Everything derived from the store that lives outside the app's own views: the widget
+    /// snapshot and the budget warning evaluation.
+    private func requestDerivedStateRefresh() {
+        let isAccountBackfillComplete = importService?.isAccountBackfillComplete ?? true
         widgetPublisher.requestRefresh(
             modelContext: modelContext,
-            isAccountBackfillComplete: importService?.isAccountBackfillComplete ?? true
+            isAccountBackfillComplete: isAccountBackfillComplete
         )
+        budgetWarnings.monitor.requestEvaluation(
+            modelContext: modelContext,
+            isAccountBackfillComplete: isAccountBackfillComplete,
+            isSyncActive: importService?.isSyncActive ?? false
+        )
+    }
+
+    /// The widget and budget warning notifications both open Today.
+    private func handleDeepLink(_ url: URL) {
+        if WidgetDeepLink.isToday(url) { tabSelection.selected = .today }
+    }
+
+    private func handlePendingDeepLink() {
+        if let url = deepLinkRouter.consume() { handleDeepLink(url) }
     }
 
     /// `mergePromptConfirmation`'s `pendingItem` binding, sourced from

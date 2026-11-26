@@ -3,6 +3,7 @@ import SwiftData
 
 @main
 struct ReservoirApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     let modelContainer: ModelContainer = ReservoirApp.makeModelContainer()
 
     init() {
@@ -10,6 +11,7 @@ struct ReservoirApp: App {
         UITestScenario.resetPlaidKeychainIfRequested()
         UITestScenario.resetPlaidEnvironmentIfRequested()
         UITestScenario.resetPlaidLinkedItemsIfRequested()
+        UITestScenario.resetBudgetWarningsIfRequested()
         UITestScenario.seedPlaidLinkedItemIfRequested()
         UITestScenario.seedLinkedAccountIfRequested()
         UITestScenario.seedPlaidTokenIfRequested()
@@ -55,6 +57,7 @@ struct ReservoirApp: App {
     var body: some Scene {
         WindowGroup {
             RootTabView()
+                .environment(DeepLinkRouter.shared)
         }
         .modelContainer(modelContainer)
     }

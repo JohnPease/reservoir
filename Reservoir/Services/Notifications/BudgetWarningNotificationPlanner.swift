@@ -59,7 +59,7 @@ enum BudgetWarningNotificationPlanner {
     static let minimumNotifiedLevel: BudgetWarningLevel = .hardToRecover
     static let threadIdentifier = "budget-warnings"
     static let body = "Tap to see where you stand."
-    static let deepLink = URL(string: "reservoir://today")!
+    static let deepLink = WidgetDeepLink.todayURL
 
     struct Input {
         var isEnabled: Bool
