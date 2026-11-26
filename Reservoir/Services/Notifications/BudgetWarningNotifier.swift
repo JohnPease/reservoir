@@ -3,6 +3,9 @@ import Foundation
 /// What `BudgetWarningMonitor` and `BudgetWarningSettings` talk to.
 @MainActor
 protocol BudgetWarningEvaluating: AnyObject {
+    /// The Settings toggle. Callers skip building a result while it is off; the planner's
+    /// disabled rule stays the authoritative guard.
+    var isEnabled: Bool { get }
     /// Decides, records and (maybe) posts. Returns what was decided.
     @discardableResult
     func evaluate(result: BudgetRecoveryCalculator.Result?, isAccountBackfillComplete: Bool) async
@@ -36,6 +39,8 @@ final class BudgetWarningNotifier: BudgetWarningEvaluating {
         self.scheduler = scheduler
         self.calendar = calendar
     }
+
+    var isEnabled: Bool { store.isEnabled }
 
     @discardableResult
     func evaluate(result: BudgetRecoveryCalculator.Result?, isAccountBackfillComplete: Bool) async

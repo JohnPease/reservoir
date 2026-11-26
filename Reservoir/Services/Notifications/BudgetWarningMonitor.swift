@@ -4,7 +4,7 @@ import SwiftData
 /// Turns "something the budget depends on may have changed" into a budget warning evaluation
 /// (reservoir-nka.3): debounced (a burst of saves from an import becomes one evaluation),
 /// held back while a sync is running (a half-imported month would warn wrongly) and re-run
-/// when the app tells it the sync ended. Foreground only; `RootTabView` owns the triggers.
+/// when the app tells it the sync ended. Does nothing at all while the toggle is off. Foreground only; `RootTabView` owns the triggers.
 @MainActor
 final class BudgetWarningMonitor {
     private let notifier: BudgetWarningEvaluating
@@ -37,7 +37,8 @@ final class BudgetWarningMonitor {
     func requestEvaluation(modelContext: ModelContext, isAccountBackfillComplete: Bool, isSyncActive: Bool) {
         pending?.cancel()
         pending = nil
-        guard !isSyncActive else { return }
+        // Off by default: don't schedule (or later fetch and compute) for nothing.
+        guard notifier.isEnabled, !isSyncActive else { return }
         pending = Task { [debounce] in
             try? await Task.sleep(for: debounce)
             guard !Task.isCancelled else { return }
@@ -46,6 +47,7 @@ final class BudgetWarningMonitor {
     }
 
     func evaluateNow(modelContext: ModelContext, isAccountBackfillComplete: Bool) async {
+        guard notifier.isEnabled else { return }
         guard let snapshot = LiveStoreSnapshot.fetch(from: modelContext) else { return }
         let result = Self.currentResult(
             snapshot,

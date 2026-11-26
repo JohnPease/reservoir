@@ -43,7 +43,9 @@ final class BudgetWarningSettings {
             if await authorizer.requestAuthorization() {
                 enable()
             } else {
-                snapOff(denied: true)
+                // Declined, or the request itself failed: only a real `.denied` earns the
+                // "off in iOS Settings" hint.
+                snapOff(denied: await authorizer.authorizationStatus() == .denied)
             }
         }
     }

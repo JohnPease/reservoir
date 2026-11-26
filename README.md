@@ -1293,7 +1293,8 @@ app is in the foreground.
   completion, a sync ending, the midnight tick, turning the toggle on, and any SwiftData
   save (so editing the budget in Plans or importing transactions re-evaluates). The monitor
   debounces (500 ms) and holds evaluation while a sync is active (`isSyncActive`), then
-  re-evaluates when it ends. There is deliberately no background timer or webhook; background
+  re-evaluates when it ends. While the toggle is off (the default) it does nothing at all: no
+  fetch, no calculation, no scheduled task. There is deliberately no background timer or webhook; background
   refresh is a follow-up (reservoir-kqy).
 - **One entry point**: `BudgetWarningNotifier.evaluate(result:isAccountBackfillComplete:)` is
   UI-free and the only code that reads or writes the "already notified" record, so a future
@@ -1328,7 +1329,7 @@ app is in the foreground.
 - **Permission flow**: the system prompt appears only when the user turns the toggle on
   (`BudgetWarningSettings.setEnabled`). Allow: the toggle stays on and the record is reset so
   the level already showing is baseline. Deny, or already denied: the toggle snaps off and
-  Settings shows "Notifications are off for Reservoir in iOS Settings." with an Open
+  (only when iOS status is really denied, not on a failed request) Settings shows "Notifications are off for Reservoir in iOS Settings." with an Open
   Settings button (`UIApplication.openNotificationSettingsURLString`). Permission is
   re-read when the app becomes active and when Settings appears, so revoking it in iOS
   Settings turns the toggle off.

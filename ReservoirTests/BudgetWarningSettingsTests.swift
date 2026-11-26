@@ -4,6 +4,7 @@ import XCTest
 @MainActor
 private final class ResetCountingEvaluator: BudgetWarningEvaluating {
     private(set) var resets = 0
+    var isEnabled = false
     @discardableResult
     func evaluate(result: BudgetRecoveryCalculator.Result?, isAccountBackfillComplete: Bool) async
         -> BudgetWarningNotificationPlanner.Decision { .nothing }
@@ -46,6 +47,16 @@ final class BudgetWarningSettingsTests: XCTestCase {
         XCTAssertFalse(store.isEnabled)
         XCTAssertTrue(settings.isAuthorizationDenied)
         XCTAssertEqual(evaluator.resets, 0)
+    }
+
+    func testRequestErrorWhileStillUndeterminedSnapsOffWithoutDeniedHint() async {
+        let authorizer = ControlledAuthorizer(status: .notDetermined, grantOnRequest: false)
+        authorizer.statusAfterFailedRequest = .notDetermined
+        let settings = make(authorizer)
+        await settings.setEnabled(true)
+        XCTAssertFalse(settings.isEnabled)
+        XCTAssertFalse(store.isEnabled)
+        XCTAssertFalse(settings.isAuthorizationDenied)
     }
 
     func testAlreadyDeniedDoesNotRequest() async {

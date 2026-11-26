@@ -6,6 +6,7 @@ import SwiftData
 private final class RecordingEvaluator: BudgetWarningEvaluating {
     private(set) var calls: [(level: BudgetWarningLevel?, backfill: Bool)] = []
     private(set) var resets = 0
+    var isEnabled = true
     @discardableResult
     func evaluate(result: BudgetRecoveryCalculator.Result?, isAccountBackfillComplete: Bool) async
         -> BudgetWarningNotificationPlanner.Decision {
@@ -123,6 +124,31 @@ final class BudgetWarningMonitorTests: XCTestCase {
             snapshot, isAccountBackfillComplete: true, now: date(10, 2), calendar: calendar,
             accountStore: accounts, itemStore: items
         ))
+    }
+
+    func testDisabledSkipsEvaluationAndScheduling() async throws {
+        insertOverBudget()
+        evaluator.isEnabled = false
+        let monitor = makeMonitor()
+        monitor.requestEvaluation(modelContext: context, isAccountBackfillComplete: true, isSyncActive: false)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertTrue(evaluator.calls.isEmpty)
+        await monitor.evaluateNow(modelContext: context, isAccountBackfillComplete: true)
+        XCTAssertTrue(evaluator.calls.isEmpty)
+        // Turning it on makes the next request evaluate.
+        evaluator.isEnabled = true
+        monitor.requestEvaluation(modelContext: context, isAccountBackfillComplete: true, isSyncActive: false)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(evaluator.calls.count, 1)
+    }
+
+    func testDisablingBeforeDebounceFiresDropsPendingEvaluation() async throws {
+        insertOverBudget()
+        let monitor = makeMonitor()
+        monitor.requestEvaluation(modelContext: context, isAccountBackfillComplete: true, isSyncActive: false)
+        evaluator.isEnabled = false
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertTrue(evaluator.calls.isEmpty)
     }
 
     func testEvaluateNowWithoutBudgetPassesNilResult() async {

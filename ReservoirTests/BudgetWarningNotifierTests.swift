@@ -27,6 +27,9 @@ final class InMemoryWarningStore: BudgetWarningNotificationStoring {
 final class ControlledAuthorizer: NotificationAuthorizing {
     var status: NotificationAuthorization
     var grantOnRequest: Bool
+    /// What a failed request leaves the status as (a declined prompt leaves `.denied`; an
+    /// error leaves it unchanged).
+    var statusAfterFailedRequest: NotificationAuthorization = .denied
     private(set) var requestCount = 0
     private var holding: Bool
     private var waiters: [CheckedContinuation<Void, Never>] = []
@@ -45,7 +48,7 @@ final class ControlledAuthorizer: NotificationAuthorizing {
     func requestAuthorization() async -> Bool {
         requestCount += 1
         if holding { await withCheckedContinuation { waiters.append($0) } }
-        if grantOnRequest { status = .authorized } else { status = .denied }
+        status = grantOnRequest ? .authorized : statusAfterFailedRequest
         return grantOnRequest
     }
 
@@ -113,6 +116,13 @@ final class BudgetWarningNotifierTests: XCTestCase {
         authorizer.release()
         _ = await (first.value, second.value)
         XCTAssertEqual(scheduler.delivered.count, 1)
+    }
+
+    func testNotifierExposesStoreToggle() {
+        let (notifier, store, _, _) = make(enabled: false)
+        XCTAssertFalse(notifier.isEnabled)
+        store.isEnabled = true
+        XCTAssertTrue(notifier.isEnabled)
     }
 
     func testDeniedDisabledAndUndeterminedNeverDeliver() async {
